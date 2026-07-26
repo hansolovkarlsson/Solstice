@@ -1,0 +1,5 @@
+test/v10_error_lineno.pas:5: Type Error: Cannot assign expression to variable 'count'
+test/v16_hello.pas:3: Compile Error: Invalid factor entry
+test/v16_string.pas:10: Compile Error: Invalid factor entry
+test/v7_op_error.pas:7: Type Error: Mismatched operand types in binary operation
+test/v7_type_error.pas:5: Type Error: Cannot assign expression to variable 'count'

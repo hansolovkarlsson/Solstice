@@ -1,0 +1,345 @@
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[DCE Optimization] Removing dead assignment to unreferenced variable: result
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: x
+        Value:
+            [Number] 15
+    [Assignment] -> Variable: y
+        Value:
+            [Number] 5
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v1_math.bin (5 instructions, 3 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[Optimization] Folded constants: 1 and 1
+[DCE Optimization] Removing dead assignment to unreferenced variable: flag2
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: flag
+        Value:
+            [Boolean] true
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v11_comp.bin (3 instructions, 2 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[DCE Optimization] Removing dead assignment to unreferenced variable: is_equal
+[DCE Optimization] Removing dead assignment to unreferenced variable: is_greater
+[DCE Optimization] Removing dead assignment to unreferenced variable: is_less
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: x
+        Value:
+            [Number] 10
+    [Assignment] -> Variable: y
+        Value:
+            [Number] 20
+    [Assignment] -> Variable: z
+        Value:
+            [Binary Op] '+'
+                Left:
+                    [Variable] x
+                Right:
+                    [Number] 10
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v11_test.bin (9 instructions, 6 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [WriteLn]
+        Expression:
+            [Number] 100
+    [ReadLn] -> Target Variable: x
+    [Assignment] -> Variable: y
+        Value:
+            [Number] 20
+    [WriteLn]
+        Expression:
+            [Binary Op] '+'
+                Left:
+                    [Variable] x
+                Right:
+                    [Variable] y
+    [Assignment] -> Variable: is_greater
+        Value:
+            [Binary Op] '>'
+                Left:
+                    [Variable] y
+                Right:
+                    [Variable] x
+    [WriteLn]
+        Expression:
+            [Variable] is_greater
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v13_testIO.bin (16 instructions, 3 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: a
+        Value:
+            [Number] 15
+    [Assignment] -> Variable: neg_val
+        Value:
+            [Unary Op] '-'
+                Operand:
+                    [Variable] a
+    [WriteLn]
+        Expression:
+            [Variable] neg_val
+    [Assignment] -> Variable: bool1
+        Value:
+            [Boolean] true
+    [Assignment] -> Variable: bool2
+        Value:
+            [Unary Op] 'not'
+                Operand:
+                    [Variable] bool1
+    [WriteLn]
+        Expression:
+            [Variable] bool2
+    [Assignment] -> Variable: b
+        Value:
+            [Number] 20
+    [Assignment] -> Variable: res_lte
+        Value:
+            [Binary Op] '<='
+                Left:
+                    [Variable] a
+                Right:
+                    [Variable] b
+    [Assignment] -> Variable: res_gte
+        Value:
+            [Binary Op] '>='
+                Left:
+                    [Variable] a
+                Right:
+                    [Number] 20
+    [Assignment] -> Variable: res_neq
+        Value:
+            [Binary Op] '<>'
+                Left:
+                    [Variable] a
+                Right:
+                    [Variable] b
+    [WriteLn]
+        Expression:
+            [Variable] res_lte
+    [WriteLn]
+        Expression:
+            [Variable] res_gte
+    [WriteLn]
+        Expression:
+            [Variable] res_neq
+    [Assignment] -> Variable: bool_res
+        Value:
+            [Binary Op] 'and'
+                Left:
+                    [Variable] bool1
+                Right:
+                    [Binary Op] '<'
+                        Left:
+                            [Variable] a
+                        Right:
+                            [Variable] b
+    [WriteLn]
+        Expression:
+            [Variable] bool_res
+    [Assignment] -> Variable: bool_res
+        Value:
+            [Binary Op] 'or'
+                Left:
+                    [Variable] bool2
+                Right:
+                    [Binary Op] '>'
+                        Left:
+                            [Variable] a
+                        Right:
+                            [Variable] b
+    [WriteLn]
+        Expression:
+            [Variable] bool_res
+    [Assignment] -> Variable: bool_res
+        Value:
+            [Binary Op] 'and'
+                Left:
+                    [Unary Op] 'not'
+                        Operand:
+                            [Binary Op] '<>'
+                                Left:
+                                    [Binary Op] '+'
+                                        Left:
+                                            [Variable] a
+                                        Right:
+                                            [Variable] neg_val
+                                Right:
+                                    [Number] 0
+                Right:
+                    [Binary Op] '>='
+                        Left:
+                            [Variable] b
+                        Right:
+                            [Number] 20
+    [WriteLn]
+        Expression:
+            [Variable] bool_res
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v14_ops.bin (64 instructions, 9 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[Optimization] Folded constants: 17 and 5
+[Optimization] Folded constants: 17 and 5
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: rem
+        Value:
+            [Number] 2
+    [Assignment] -> Variable: quot
+        Value:
+            [Number] 3
+    [WriteLn]
+        Expression:
+            [Variable] rem
+    [WriteLn]
+        Expression:
+            [Variable] quot
+    [Assignment] -> Variable: x_res1
+        Value:
+            [Binary Op] 'xor'
+                Left:
+                    [Boolean] true
+                Right:
+                    [Boolean] false
+    [Assignment] -> Variable: x_res2
+        Value:
+            [Binary Op] 'xor'
+                Left:
+                    [Boolean] true
+                Right:
+                    [Boolean] true
+    [WriteLn]
+        Expression:
+            [Variable] x_res1
+    [WriteLn]
+        Expression:
+            [Variable] x_res2
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v15_more_ops.bin (21 instructions, 4 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[Optimization] Folded constants: 20 and 3
+[Optimization] Folded constants: 10 and 60
+[DCE Optimization] Removing dead assignment to unreferenced variable: result
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v2_optimize.bin (1 instructions, 1 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[DCE Optimization] Removing dead assignment to unreferenced variable: result
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: x
+        Value:
+            [Number] 9
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v3_ast.bin (3 instructions, 2 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[Optimization] Folded constants: 10 and 5
+[DCE Optimization] Removing dead assignment to unreferenced variable: flag
+[DCE Optimization] Removing dead assignment to unreferenced variable: count
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v7_type_ok.bin (1 instructions, 2 symbols)
+
+--- Phase 1: Parsing AST ---
+
+--- Phase 2: Type Checking ---
+
+--- Phase 3: Optimizing AST ---
+[Optimization] Folded constants: 10 and 2
+[DCE Optimization] Removing dead assignment to unreferenced variable: active
+[DCE Optimization] Removing dead assignment to unreferenced variable: x
+
+--- Abstract Syntax Tree Visualization ---
+[Compound Statement]
+    [Assignment] -> Variable: y
+        Value:
+            [Number] 12
+
+--- Phase 4: Code Generation ---
+[Compiler] Successfully written binary payload image to test/v8_dce.bin (3 instructions, 3 symbols)
