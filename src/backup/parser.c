@@ -6,12 +6,6 @@
 #include "lexer.h"
 #include "error.h"
 
-Instruction code[MAX_CODE];
-int code_idx = 0;
-
-Symbol sym_table[MAX_SYMBOLS];
-int sym_count = 0;
-
 static const char *current_filename = "<source>";
 
 const char *get_current_filename(void) {

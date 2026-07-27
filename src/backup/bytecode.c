@@ -4,6 +4,18 @@
 #include "bytecode.h"
 #include "error.h"
 
+// The in-memory bytecode program and symbol table. Populated either by the
+// compiler front end (parser.c fills sym_table[]/sym_count as it parses
+// declarations, codegen.c fills code[]/code_idx) and then written out by
+// save_bytecode(), or read directly from disk by load_bytecode() for the
+// VM to execute. Living here rather than in parser.c means the VM binary
+// can link bytecode.c + vm.c without pulling in any compiler-frontend code.
+Instruction code[MAX_CODE];
+int code_idx = 0;
+
+Symbol sym_table[MAX_SYMBOLS];
+int sym_count = 0;
+
 void save_bytecode(const char *filename) {
     FILE *f = fopen(filename, "wb");
     if (!f) {

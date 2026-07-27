@@ -97,6 +97,18 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_JMP:
+                ip = instr.arg;
+                break;
+
+            case OP_JZ: {
+                int cond = vm_pop(&sp);
+                if (cond == 0) {
+                    ip = instr.arg;
+                }
+                break;
+            }
+
             case OP_HALT:
                 printf("\n--- Final Runtime Execution Output Results ---\n");
                 for (int i = 0; i < sym_count; i++) {

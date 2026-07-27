@@ -1,2 +1,2 @@
-cp pascalc pascalvm test_recovery ../bin
+cp pascalc solas solvm desole test_recovery ../bin
 

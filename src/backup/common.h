@@ -48,7 +48,10 @@ typedef enum {
     OP_NEG,
     OP_MOD, OP_XOR,
     OP_PRINT, OP_READ,
-    OP_HALT
+    OP_HALT,
+    OP_JMP,  // Unconditional jump. arg = absolute target instruction index.
+    OP_JZ    // Pop the stack; if the value is zero (false), jump to arg.
+             // Otherwise fall through to the next instruction.
 } Opcode;
 
 typedef struct {

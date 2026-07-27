@@ -1,0 +1,6 @@
+.var result integer
+.var x integer
+
+    push 9 ; 0000
+    store x ; 0001
+    halt ; 0002
