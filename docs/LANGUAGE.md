@@ -47,11 +47,11 @@ y := 2; // this too, to end of line
 | Integer | `integer` | `42`, `-7`, `0` | Standard C `int` range |
 | Boolean | `boolean` | `true`, `false` | |
 | String | `string` | `'hello'`, `'it''s here'` | Doubled `''` is an escaped literal quote |
-| Array | `array[lower..upper] of T` | — | `T` is `integer`, `boolean`, or `string`; see [Arrays](#arrays) |
+| Char | `char` | `'a'`, `'!'`, `'x'` | See [Char](#char) below - a single-quoted literal of length exactly 1 |
+| Array | `array[lower..upper] of T` | — | `T` is `integer`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
 
-There is no `real`/floating-point type, no `char` type (single characters
-are just one-character strings), and no user-defined (`record`/`enum`)
-types.
+There is no `real`/floating-point type, and no user-defined
+(`record`/`enum`) types.
 
 ## Variable declarations
 
@@ -103,13 +103,13 @@ produce garbage.
 
 | Operator | Meaning | Works on |
 |---|---|---|
-| `=` | Equal | integer, string |
-| `<>` | Not equal | integer, string |
-| `<`, `>`, `<=`, `>=` | Ordering | integer, string |
+| `=` | Equal | integer, string, char |
+| `<>` | Not equal | integer, string, char |
+| `<`, `>`, `<=`, `>=` | Ordering | integer, string, char |
 
-String equality compares the actual characters, not identity. String
-ordering is lexicographic (character-by-character, like `strcmp`) — e.g.
-`'apple' < 'banana'` is `true`.
+String/char equality compares the actual characters, not identity.
+String/char ordering is lexicographic (character-by-character, like
+`strcmp`) — e.g. `'apple' < 'banana'` is `true`.
 
 ### Logical (boolean operands)
 
@@ -217,7 +217,30 @@ for i := 10 downto 1 do
 - After the loop, the loop variable holds one past the last value used
   (`n + 1` for `to`, `n - 1` for `downto`) — don't rely on its exact value
   after the loop without checking.
-- There is no `break`/`continue`.
+
+### `break` and `continue`
+
+```pascal
+while true do begin
+    i := i + 1;
+    if i = 5 then break;      { exit the loop immediately }
+end;
+
+for i := 1 to 10 do begin
+    if i mod 2 = 0 then continue;   { skip to the next iteration }
+    writeln(i);
+end;
+```
+
+- Valid inside `while`, `for`, and `repeat` — using either outside a loop
+  is a compile-time error, checked at the exact point it's written (not
+  just "somewhere in this function"), including when nested inside an
+  `if` that isn't itself inside a loop.
+- In nested loops, `break`/`continue` always apply to the **innermost**
+  enclosing loop only.
+- `continue` in a `for` loop still runs the increment step before
+  re-checking the loop condition — it doesn't skip incrementing the loop
+  variable.
 
 ### `write` and `writeln`
 
@@ -261,6 +284,47 @@ last one's trailing `;` is optional) into a single statement — usable
 anywhere a single statement is expected (loop/if bodies, or the whole
 program body).
 
+## Char
+
+```pascal
+var
+    grade: char;
+begin
+    grade := 'A';
+    writeln(grade);
+```
+
+`char` is implemented as a `string` that's constrained to hold exactly
+one character — there's no separate literal syntax; a `char` value comes
+from any single-quoted literal (or string expression) that happens to be
+exactly one character long. This means:
+
+- `char` and `string` freely mix in assignment, comparison (`=`, `<>`,
+  `<`, `>`, `<=`, `>=`, all lexicographic), and `+` concatenation (which
+  always produces a `string`, even from two `char`s).
+- The length-1 constraint is enforced **at runtime**, not compile time —
+  assigning a longer string-typed expression into a `char` variable
+  compiles fine but fails when it actually runs:
+
+  ```pascal
+  var c: char;
+  var s: string;
+  begin
+      s := 'hi';
+      c := s;   { runtime error: "c requires a single character, got "hi"" }
+  end.
+  ```
+
+  This mirrors how `readln` into a `boolean` is checked (must be `0` or
+  `1`) — the type is enforced by validating the actual value the moment
+  it's stored, not by tracking string lengths through arbitrary
+  expressions at compile time.
+- `readln` into a `char` variable works the same way: reads a line, then
+  requires it to be exactly one character.
+- There's no `ord`/`chr` (converting between a character and its integer
+  code) — those are conventionally built-in *functions*, and this
+  language doesn't have user-callable functions yet.
+
 ## Arrays
 
 ```pascal
@@ -299,9 +363,8 @@ a crash.
   is the biggest gap, and needs a call stack in SolVM first)
 - Multi-dimensional arrays
 - `real`/floating-point numbers
-- `char` as a distinct type
+- `ord`/`chr` (needs functions, above)
 - Records, sets, enumerated types
-- `break`/`continue` in loops
 - Units/modules/`uses`
 
 See the project README's Status section for the current plan.

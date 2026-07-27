@@ -28,6 +28,8 @@ typedef enum {
     TOKEN_FOR, TOKEN_TO, TOKEN_DOWNTO,
     TOKEN_ARRAY, TOKEN_OF, TOKEN_DOTDOT,
     TOKEN_LBRACKET, TOKEN_RBRACKET,
+    TOKEN_BREAK, TOKEN_CONTINUE,
+    TOKEN_CHAR_TYPE,
     TOKEN_EOF
 } TokenType;
 
@@ -35,7 +37,11 @@ typedef enum {
     TYPE_UNKNOWN,
     TYPE_INTEGER,
     TYPE_BOOLEAN,
-    TYPE_STRING
+    TYPE_STRING,
+    TYPE_CHAR   // Represented identically to TYPE_STRING at runtime (a
+                // string_pool[] index) - the only difference is the VM
+                // enforces a length-1 constraint whenever a value is
+                // actually stored into a char variable/array element.
 } DataType;
 
 typedef struct {
@@ -120,8 +126,10 @@ typedef enum {
     NODE_REPEAT,
     NODE_STRING,
     NODE_FOR,
-    NODE_ARRAY_ACCESS // 'arr[i]' as an expression. data.var_idx = the
+    NODE_ARRAY_ACCESS, // 'arr[i]' as an expression. data.var_idx = the
                        // array's symbol index, left = index expression.
+    NODE_BREAK,
+    NODE_CONTINUE
 } NodeType;
 
 typedef struct ASTNode {

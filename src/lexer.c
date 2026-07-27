@@ -122,6 +122,9 @@ void next_token(void) {
         else if (strcasecmp(token.text, "downto") == 0) token.type = TOKEN_DOWNTO;
         else if (strcasecmp(token.text, "array") == 0) token.type = TOKEN_ARRAY;
         else if (strcasecmp(token.text, "of") == 0) token.type = TOKEN_OF;
+        else if (strcasecmp(token.text, "break") == 0) token.type = TOKEN_BREAK;
+        else if (strcasecmp(token.text, "continue") == 0) token.type = TOKEN_CONTINUE;
+        else if (strcasecmp(token.text, "char") == 0) token.type = TOKEN_CHAR_TYPE;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

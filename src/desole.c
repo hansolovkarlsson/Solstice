@@ -59,6 +59,7 @@ static const char *type_name(DataType type) {
         case TYPE_INTEGER: return "integer";
         case TYPE_BOOLEAN: return "boolean";
         case TYPE_STRING:  return "string";
+        case TYPE_CHAR:    return "char";
         default:           return "unknown";
     }
 }

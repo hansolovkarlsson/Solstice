@@ -180,6 +180,20 @@ void print_ast(ASTNode *node, int indent) {
             printf("Index:\n");
             print_ast(node->left, indent + 2);
             break;
+
+        case NODE_BREAK:
+            printf("[Break]\n");
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_CONTINUE:
+            printf("[Continue]\n");
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
     }
 }
 

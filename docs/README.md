@@ -110,8 +110,9 @@ test_recovery.c   Demonstrates that a fatal compile error doesn't kill the proce
 
 ## Status
 
-Working: `if`/`while`/`repeat`/`for`, `integer`/`boolean`/`string` types,
-string concatenation and comparison, one-dimensional arrays,
+Working: `if`/`while`/`repeat`/`for` (with `break`/`continue`),
+`integer`/`boolean`/`string`/`char` types, string concatenation and
+comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
 elimination and constant folding.
 

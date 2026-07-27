@@ -318,25 +318,27 @@ void assemble(char *source, const char *filename) {
             if (strcasecmp(directive, "var") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
                 if (sscanf(line, ".%31s %31s %31s", directive, name, type_str) != 3) {
-                    asm_error(line_no, "Malformed directive (expected: .var <name> <integer|boolean|string>)");
+                    asm_error(line_no, "Malformed directive (expected: .var <name> <integer|boolean|string|char>)");
                 }
                 DataType type;
                 if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
                 else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', or 'string')", type_str); return; }
+                else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', or 'char')", type_str); return; }
                 add_var(line_no, name, type);
             } else if (strcasecmp(directive, "array") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
                 int lower, upper;
                 if (sscanf(line, ".%31s %31s %d %d %31s", directive, name, &lower, &upper, type_str) != 5) {
-                    asm_error(line_no, "Malformed directive (expected: .array <name> <lower> <upper> <integer|boolean|string>)");
+                    asm_error(line_no, "Malformed directive (expected: .array <name> <lower> <upper> <integer|boolean|string|char>)");
                 }
                 DataType type;
                 if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
                 else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', or 'string')", type_str); return; }
+                else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', or 'char')", type_str); return; }
                 add_array_var(line_no, name, type, lower, upper);
             } else {
                 asm_error(line_no, "Unknown directive '.%s' (expected .var or .array)", directive);

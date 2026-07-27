@@ -28,6 +28,17 @@ variable's declared type: the VM doesn't need to know or care what a slot
 value — printing, comparing, concatenating — need type-specific variants
 (`PRINT` vs `PRINT_STR`, `EQ` vs `SEQ`, etc.).
 
+**`char` is exactly the same representation as `string`** — a
+`string_pool[]` index, nothing more. Every string opcode works unchanged
+for `char` values; there's no `OP_LOAD_CHAR` or similar. The *only* place
+`char` is actually distinguished from `string` at runtime is `OP_STORE`
+and `OP_STORE_IDX`, which check the target `Symbol`'s declared type and,
+if it's `TYPE_CHAR`, reject a value whose `string_pool[]` entry isn't
+exactly one character long. This is the same pattern `OP_READ` already
+uses to enforce `boolean`'s `0`/`1` domain — a static type distinction
+enforced by a runtime value check at the point of storage, rather than by
+tracking it through the type system at compile time.
+
 **Every array in a program shares one flat memory region.** Each array's
 `Symbol` entry (see [File format](#file-format-bin)) carries `array_base`
 (where it starts in `vm_array_mem[]`), `array_lower`/`array_upper` (its
@@ -172,6 +183,26 @@ The end bound is evaluated once into a compiler-generated hidden variable
 (named `__for_tmp<N>`), not re-evaluated every iteration — Pascal
 semantics require the loop's range to be fixed at the start, even if the
 body later changes a variable the bound expression depended on.
+
+### `break` and `continue`
+
+Each loop's `JZ`/`JMP` targets above are all known at a single, fixed
+point during codegen (`loop_start` before the body, or `code_idx` right
+after it) — one placeholder, patched once. `break`/`continue` need a
+different technique, since either can appear an arbitrary number of times
+anywhere inside the loop body, and none of those occurrences know the
+loop's exit/continue address yet when they're generated.
+
+Each loop (`while`/`repeat`/`for`) pushes a small context before
+generating its body: two growable lists of pending `JMP` instruction
+indices, one for every `break` encountered, one for every `continue`.
+Each `break`/`continue` statement just emits a `JMP 0` placeholder and
+appends its own instruction index to the relevant list. Once the loop
+finishes generating - at which point both the break-target (just past the
+loop) and the continue-target (loop-type-specific: the condition
+re-check for `while`, the until-condition for `repeat`, the increment
+step for `for`) are finally known - every pending placeholder in both
+lists is patched in one pass.
 
 ## File format (`.bin`)
 

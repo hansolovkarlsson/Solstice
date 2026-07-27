@@ -27,7 +27,7 @@ narration.
 
 ```
 ; a comment - runs to end of line
-.var <name> <integer|boolean|string>         ; declare a variable
+.var <name> <integer|boolean|string|char>     ; declare a variable
 .array <name> <lower> <upper> <type>         ; declare an array
 label:                                        ; a label, alone on its own line
 MNEMONIC [operand]                            ; one instruction per line

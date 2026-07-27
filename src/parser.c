@@ -8,6 +8,11 @@
 
 static const char *current_filename = "<source>";
 
+// Tracks how many while/for/repeat bodies we're currently parsing inside
+// of (nested ifs don't count). Used to reject break/continue outside a
+// loop right where they're written, rather than only failing at codegen.
+static int loop_depth = 0;
+
 const char *get_current_filename(void) {
     return current_filename;
 }
@@ -237,6 +242,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     code_idx = 0;
     string_count = 0;
     array_mem_count = 0;
+    loop_depth = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -278,6 +284,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 if (token.type == TOKEN_INTEGER) { elem_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
                 else if (token.type == TOKEN_BOOLEAN) { elem_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
                 else if (token.type == TOKEN_STRING_TYPE) { elem_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
+                else if (token.type == TOKEN_CHAR_TYPE) { elem_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
                 else compile_error(token.line, "Unknown array element type");
 
                 for (int i = 0; i < count; i++) {
@@ -288,6 +295,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 if (token.type == TOKEN_INTEGER) { target_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
                 else if (token.type == TOKEN_BOOLEAN) { target_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
                 else if (token.type == TOKEN_STRING_TYPE) { target_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
+                else if (token.type == TOKEN_CHAR_TYPE) { target_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
                 else compile_error(token.line, "Unknown primitive category");
 
                 for (int i = 0; i < count; i++) {
@@ -308,7 +316,8 @@ ASTNode *parse_ast(const char *source, const char *filename) {
 // on a malformed file, all correctly fail this check).
 static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
-           t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN;
+           t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
+           t == TOKEN_BREAK || t == TOKEN_CONTINUE;
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
@@ -396,7 +405,9 @@ static ASTNode *statement(void) {
         match(TOKEN_WHILE);
         stmt->left = expression();       // condition
         match(TOKEN_DO);
+        loop_depth++;
         stmt->right = statement();       // body
+        loop_depth--;
         return stmt;
     }
 
@@ -421,16 +432,38 @@ static ASTNode *statement(void) {
         }
         stmt->right = expression();      // end bound
         match(TOKEN_DO);
+        loop_depth++;
         stmt->extra = statement();       // body
+        loop_depth--;
         return stmt;
     }
 
     if (token.type == TOKEN_REPEAT) {
         ASTNode *stmt = create_node(NODE_REPEAT);
         match(TOKEN_REPEAT);
+        loop_depth++;
         stmt->left = statement_list();   // body (chained via ->next, no wrapping compound needed)
+        loop_depth--;
         match(TOKEN_UNTIL);
         stmt->right = expression();      // until-condition
+        return stmt;
+    }
+
+    if (token.type == TOKEN_BREAK) {
+        if (loop_depth == 0) {
+            compile_error(token.line, "'break' used outside of a loop");
+        }
+        ASTNode *stmt = create_node(NODE_BREAK);
+        match(TOKEN_BREAK);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_CONTINUE) {
+        if (loop_depth == 0) {
+            compile_error(token.line, "'continue' used outside of a loop");
+        }
+        ASTNode *stmt = create_node(NODE_CONTINUE);
+        match(TOKEN_CONTINUE);
         return stmt;
     }
 

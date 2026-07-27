@@ -61,6 +61,25 @@ static int vm_array_offset(int var_idx, int runtime_index) {
     return sym->array_base + (runtime_index - sym->array_lower);
 }
 
+// char and string share the exact same runtime representation (a
+// string_pool[] index) - this is what lets every string opcode work
+// unchanged for char too. The only place char is actually enforced is
+// here: whenever a value is stored into a char-typed slot.
+static int is_string_type(DataType t) {
+    return t == TYPE_STRING || t == TYPE_CHAR;
+}
+
+// Validates that `val` is both a valid string_pool[] index and refers to
+// exactly one character - called whenever a value is stored into a
+// char-typed variable or array element.
+static void vm_check_char(int val, const char *what) {
+    int idx = vm_str_index(val);
+    if (strlen(string_pool[idx]) != 1) {
+        fprintf(stderr, "VM Runtime Error: %s requires a single character, got \"%s\"\n", what, string_pool[idx]);
+        fatal_abort();
+    }
+}
+
 // Adds a runtime-computed string (concatenation result, or a line read via
 // readln) to the pool, growing string_count if needed. Same dedup as the
 // compile-time interner in parser.c, and the same hard limit (MAX_STRINGS) -
@@ -103,7 +122,11 @@ void run_vm(void) {
 
             case OP_STORE: {
                 int val = vm_pop(&sp);
-                vm_vars[vm_var_index(instr.arg)] = val;
+                int idx = vm_var_index(instr.arg);
+                if (sym_table[idx].type == TYPE_CHAR) {
+                    vm_check_char(val, sym_table[idx].name);
+                }
+                vm_vars[idx] = val;
                 break;
             }
 
@@ -118,6 +141,9 @@ void run_vm(void) {
                 int val = vm_pop(&sp);
                 int runtime_index = vm_pop(&sp);
                 int offset = vm_array_offset(instr.arg, runtime_index);
+                if (sym_table[instr.arg].type == TYPE_CHAR) {
+                    vm_check_char(val, sym_table[instr.arg].name);
+                }
                 vm_array_mem[offset] = val;
                 break;
             }
@@ -227,7 +253,7 @@ void run_vm(void) {
                             for (int j = lower; j <= upper; j++) {
                                 if (j > lower) printf(", ");
                                 int elem = vm_array_mem[base + (j - lower)];
-                                if (sym_table[i].type == TYPE_STRING) {
+                                if (is_string_type(sym_table[i].type)) {
                                     if (elem >= 0 && elem < string_count) printf("%s", string_pool[elem]);
                                     else printf("<invalid string index %d>", elem);
                                 } else {
@@ -235,7 +261,7 @@ void run_vm(void) {
                                 }
                             }
                             printf("]\n");
-                        } else if (sym_table[i].type == TYPE_STRING) {
+                        } else if (is_string_type(sym_table[i].type)) {
                             int idx = vm_vars[i];
                             if (idx >= 0 && idx < string_count) {
                                 printf("%s = %s\n", sym_table[i].name, string_pool[idx]);
@@ -263,7 +289,7 @@ void run_vm(void) {
                 int idx = vm_var_index(instr.arg);
                 printf("> "); // Prompt user
 
-                if (sym_table[idx].type == TYPE_STRING) {
+                if (is_string_type(sym_table[idx].type)) {
                     char line[MAX_STRING_LEN];
                     if (!fgets(line, sizeof(line), stdin)) {
                         fprintf(stderr, "VM Runtime Error: Invalid string input\n");
@@ -271,6 +297,11 @@ void run_vm(void) {
                     }
                     size_t len = strlen(line);
                     if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+                    if (sym_table[idx].type == TYPE_CHAR && strlen(line) != 1) {
+                        fprintf(stderr, "VM Runtime Error: readln expected a single character for '%s', got \"%s\"\n",
+                                sym_table[idx].name, line);
+                        fatal_abort();
+                    }
                     vm_vars[idx] = vm_intern_string(line);
                 } else {
                     int input_val;

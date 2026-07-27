@@ -4,6 +4,15 @@
 #include "parser.h"
 #include "error.h"
 
+// char and string are representationally identical at runtime (both are
+// string_pool[] indices) - only the VM's runtime length-1 check actually
+// distinguishes them. So for assignment/comparison/concatenation purposes,
+// treat them as freely interchangeable; only variable declarations and
+// runtime storage actually enforce the length-1 constraint.
+static int is_string_type(DataType t) {
+    return t == TYPE_STRING || t == TYPE_CHAR;
+}
+
 void type_check(ASTNode *node) {
     if (!node) return;
 
@@ -21,12 +30,14 @@ void type_check(ASTNode *node) {
                             get_current_filename(), node->line);
                     fatal_abort();
                 }
-                if (node->right->expression_type != sym->type) {
+                if (!(is_string_type(node->right->expression_type) && is_string_type(sym->type))
+                    && node->right->expression_type != sym->type) {
                     fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
                             get_current_filename(), node->line, sym->name);
                     fatal_abort();
                 }
-            } else if (node->left->expression_type != sym->type) {
+            } else if (!(is_string_type(node->left->expression_type) && is_string_type(sym->type))
+                       && node->left->expression_type != sym->type) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to variable '%s'\n",
                         get_current_filename(), node->line, sym->name);
                 fatal_abort();
@@ -54,7 +65,7 @@ void type_check(ASTNode *node) {
             DataType left_t = node->left->expression_type;
             DataType right_t = node->right->expression_type;
 
-            if (left_t != right_t) {
+            if (!(is_string_type(left_t) && is_string_type(right_t)) && left_t != right_t) {
                 fprintf(stderr, "%s:%d: Type Error: Mismatched operand types in binary operation\n",
                         get_current_filename(), node->line);
                 fatal_abort();
@@ -67,23 +78,23 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
-            } else if (node->op == TOKEN_PLUS && left_t == TYPE_STRING && right_t == TYPE_STRING) {
-                node->expression_type = TYPE_STRING; // string concatenation
+            } else if (node->op == TOKEN_PLUS && is_string_type(left_t) && is_string_type(right_t)) {
+                node->expression_type = TYPE_STRING; // concatenation always yields a string, even from chars
             } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || 
                     node->op == TOKEN_MUL || node->op == TOKEN_DIV || 
                     node->op == TOKEN_DIV_KW || node->op == TOKEN_MOD) {
                 if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
                     fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer operands%s\n", 
                             get_current_filename(), node->line,
-                            node->op == TOKEN_PLUS ? " (or, for '+', string operands)" : "");
+                            node->op == TOKEN_PLUS ? " (or, for '+', string/char operands)" : "");
                     fatal_abort();
                 }
                 node->expression_type = TYPE_INTEGER;
             } else {
                 // Relational operators (=, <, >, <=, >=, <>)
-                if (!(left_t == TYPE_STRING && right_t == TYPE_STRING)
+                if (!(is_string_type(left_t) && is_string_type(right_t))
                     && (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER)) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer or string operands\n", get_current_filename(), node->line);
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, string, or char operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
