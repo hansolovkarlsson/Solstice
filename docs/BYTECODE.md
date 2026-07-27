@@ -1,0 +1,222 @@
+# SolVM: Bytecode & Virtual Machine Reference
+
+SolVM is a stack-based virtual machine. Every instruction is an
+`(opcode, arg)` pair; `arg` is a single `int` whose meaning depends on the
+opcode (an immediate value, a variable index, a jump target, a string-pool
+index — never more than one of these per instruction).
+
+## Memory model
+
+SolVM has four separate storage regions, each a fixed-size array sized at
+compile time (`common.h`'s `MAX_*` constants) — there is no dynamic
+allocation, no garbage collector, and no shared addressable memory between
+regions:
+
+| Region | What it holds | Size limit |
+|---|---|---|
+| `vm_stack[]` | The evaluation stack — operands for arithmetic, comparisons, etc. | `MAX_STACK` = 100 |
+| `vm_vars[]` | One `int` slot per scalar variable (an `integer`, a `0`/`1` `boolean`, or a string-pool index) | `MAX_SYMBOLS` = 100 |
+| `vm_array_mem[]` | Every array in the program, laid out contiguously; each array's `Symbol` entry carries its own base offset | `MAX_ARRAY_MEM` = 4096 elements total |
+| `string_pool[]` | Interned string contents (`char[256]` each) — populated at compile/assemble time, and can also grow at runtime (concatenation, `readln` into a string) | `MAX_STRINGS` = 256 |
+
+**Strings and booleans are represented as integers.** A string *value*
+anywhere in the VM — on the stack, in a variable slot, in an array
+element — is just an `int` index into `string_pool[]`. A boolean is `0` or
+`1`. This is why `LOAD`/`STORE` work identically regardless of a
+variable's declared type: the VM doesn't need to know or care what a slot
+"means" to move it around. Only the opcodes that actually interpret a
+value — printing, comparing, concatenating — need type-specific variants
+(`PRINT` vs `PRINT_STR`, `EQ` vs `SEQ`, etc.).
+
+**Every array in a program shares one flat memory region.** Each array's
+`Symbol` entry (see [File format](#file-format-bin)) carries `array_base`
+(where it starts in `vm_array_mem[]`), `array_lower`/`array_upper` (its
+declared index range). Element access computes
+`offset = array_base + (runtime_index - array_lower)` and is
+**bounds-checked against `[array_lower, array_upper]` on every single
+access** — this is the one place in the VM where an unchecked out-of-range
+write would silently corrupt a *different* array's data, since they all
+live in the same region, so it's checked rigorously on both read
+(`LOAD_IDX`) and write (`STORE_IDX`).
+
+## Execution model
+
+`run_vm()` is a straightforward fetch-decode-execute loop: read the
+instruction at `ip`, increment `ip`, dispatch on the opcode, repeat until
+`OP_HALT`. There's no call stack (no procedures/functions exist yet), so
+control flow is entirely `ip` manipulation — `OP_JMP`/`OP_JZ` just set
+`ip` directly, and the existing `ip` bounds check at the top of the loop
+is what catches a malformed or out-of-range jump target, on the very next
+cycle, with no special-casing needed.
+
+Every array/variable/string index used at runtime is validated before
+it's dereferenced. A bad index — from corrupted bytecode, a hand-written
+`.sasm` bug, or an out-of-range array access in valid-looking Pascal — is
+always a reported `VM Runtime Error`, never a crash or silent memory
+corruption.
+
+## Opcode reference
+
+`arg` is `0` (unused) unless noted.
+
+### Stack & variables
+
+| Opcode | Effect |
+|---|---|
+| `PUSH` | Push the integer `arg`. |
+| `LOAD` | Push `vm_vars[arg]`. |
+| `STORE` | Pop a value; store into `vm_vars[arg]`. |
+| `LOAD_IDX` | Pop a runtime index; bounds-check against `arg`'s (an array symbol's) declared range; push the element. |
+| `STORE_IDX` | Pop a value, then a runtime index (value was pushed *after* the index by codegen); bounds-check; store the element. |
+
+### Arithmetic (integer)
+
+| Opcode | Effect |
+|---|---|
+| `ADD` / `SUB` / `MUL` / `DIV` | Pop `b`, pop `a`, push `a op b`. `DIV` aborts with a runtime error on division by zero. |
+| `MOD` | Pop `b`, pop `a`, push `a % b`. Aborts on `b == 0`. |
+| `NEG` | Pop `a`, push `-a`. |
+
+### Comparison (integer) & logic (boolean)
+
+| Opcode | Effect |
+|---|---|
+| `EQ` / `LT` / `GT` / `LTE` / `GTE` / `NEQ` | Pop `b`, pop `a`, push `a op b` (as `0`/`1`). |
+| `AND` / `OR` | Pop `b`, pop `a`, push the logical result. No short-circuiting. |
+| `NOT` | Pop `a`, push `!a`. |
+| `XOR` | Pop `b`, pop `a`, push `a != b`. |
+
+### Strings
+
+| Opcode | Effect |
+|---|---|
+| `PUSH_STR` | Push `arg`, a `string_pool[]` index. |
+| `PRINT_STR` | Pop an index; print `string_pool[index]` — **no trailing newline**. |
+| `SEQ` | Pop two indices; push `1` if their `string_pool[]` contents are equal (`strcmp`), else `0`. There's no separate string-inequality opcode — `<>` compiles as `SEQ` then `NOT`. |
+| `SCONCAT` | Pop two indices; concatenate their contents; intern the result (deduped, may grow `string_pool[]` at runtime); push the new index. Aborts if the result exceeds 255 characters or the pool is full (256 distinct strings). |
+
+### I/O
+
+| Opcode | Effect |
+|---|---|
+| `PRINT` | Pop a value; print it as an integer — **no trailing newline**. |
+| `NEWLINE` | Print `\n`. No stack interaction. `writeln` emits exactly one of these, after all its arguments; `write` never does. |
+| `READ` | Prompt (`> `) and read from stdin into `vm_vars[arg]`. Behavior depends on the variable's declared type: integer reads with `scanf("%d")`; boolean does the same but aborts unless the value is `0` or `1`; string reads a full line via `fgets`. Either integer/boolean path flushes the rest of the input line afterward, so a following string `READ` isn't handed a stray empty line. |
+
+### Control flow
+
+| Opcode | Effect |
+|---|---|
+| `JMP` | Set `ip = arg` unconditionally. |
+| `JZ` | Pop a value; if it's `0`, set `ip = arg`. Otherwise fall through. |
+| `HALT` | Stop execution. With `-v`, prints the final value of every non-internal variable (see [`desole`](ASSEMBLER.md) for how `__`-prefixed names are hidden). |
+
+## How control flow compiles
+
+There's no dedicated "loop" or "branch" instruction — `if`/`while`/
+`repeat`/`for` all lower to `JZ`/`JMP` with backpatched targets. This is
+worth understanding if you're reading `desole` output or writing `.sasm`
+by hand.
+
+**`if <cond> then <then> [else <else>]`**
+```
+    <cond>
+    JZ else_or_end
+    <then>
+  [ JMP end            ; only if there's an else
+  else_or_end:
+    <else>
+  end: ]
+```
+
+**`while <cond> do <body>`**
+```
+loop_start:
+    <cond>
+    JZ end
+    <body>
+    JMP loop_start
+end:
+```
+
+**`repeat <body> until <cond>`**
+```
+loop_start:
+    <body>
+    <cond>
+    JZ loop_start        ; loop again while cond is still false
+```
+
+**`for <var> := <start> to/downto <end> do <body>`**
+```
+    <start>
+    STORE var
+    <end>
+    STORE end_tmp        ; cached ONCE - see below
+loop_start:
+    LOAD var
+    LOAD end_tmp
+    LTE/GTE              ; LTE for 'to', GTE for 'downto'
+    JZ loop_end
+    <body>
+    LOAD var
+    PUSH 1
+    ADD/SUB              ; ADD for 'to', SUB for 'downto'
+    STORE var
+    JMP loop_start
+loop_end:
+```
+
+The end bound is evaluated once into a compiler-generated hidden variable
+(named `__for_tmp<N>`), not re-evaluated every iteration — Pascal
+semantics require the loop's range to be fixed at the start, even if the
+body later changes a variable the bound expression depended on.
+
+## File format (`.bin`)
+
+Written/read by `save_bytecode()`/`load_bytecode()` in `bytecode.c`. All
+integers are the platform's native `int` (no explicit endianness handling
+— files aren't expected to move between architectures). Every count is
+validated against its `MAX_*` limit on load before being used to size a
+read, so a truncated or corrupted file is rejected with a clear error
+rather than overflowing a buffer.
+
+```
+"PASC"                  4 bytes, magic number
+
+sym_count               int
+Symbol[sym_count]        the symbol table
+
+code_idx                int
+Instruction[code_idx]     the program
+
+string_count             int
+char[string_count][256]  the string pool
+```
+
+`Symbol` (`common.h`):
+```c
+typedef struct {
+    char name[32];
+    DataType type;    // element type if is_array, else the scalar's type
+    int is_array;
+    int array_lower;  // inclusive
+    int array_upper;  // inclusive
+    int array_base;   // offset into vm_array_mem[]
+} Symbol;
+```
+
+`Instruction`:
+```c
+typedef struct {
+    Opcode op;
+    int arg;
+} Instruction;
+```
+
+Note that `array_mem_count` (how much of `vm_array_mem[]` is in use) is
+**not** part of the file format — it's purely a compile/assemble-time
+bookkeeping counter. The VM never needs it: each array's `base`/`lower`/
+`upper` in its own `Symbol` entry is all `LOAD_IDX`/`STORE_IDX` need, and
+`vm_array_mem[]` itself is a fixed-size array regardless of how much of it
+any particular program actually uses.
