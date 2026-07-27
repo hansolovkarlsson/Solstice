@@ -46,6 +46,12 @@ void next_token(void) {
         return;
     }
 
+    if (*src == '/' && *(src + 1) == '/') {
+        while (*src && *src != '\n') src++;
+        next_token();
+        return;
+    }
+
     if (!*src) {
         token.type = TOKEN_EOF;
         token.text[0] = '\0';

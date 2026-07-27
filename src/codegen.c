@@ -15,6 +15,20 @@ static void emit(Opcode op, int arg) {
     code_idx++;
 }
 
+// Emits an ordering comparison (<, >, <=, >=). For integer operands this
+// is just int_op directly. For strings, OP_SCMP first reduces the pair to
+// a -1/0/1 result, which int_op then compares against a literal 0 -
+// avoids needing four separate string-ordering opcodes.
+static void emit_ordering(ASTNode *node, Opcode int_op) {
+    if (node->left->expression_type == TYPE_STRING) {
+        emit(OP_SCMP, 0);
+        emit(OP_PUSH, 0);
+        emit(int_op, 0);
+    } else {
+        emit(int_op, 0);
+    }
+}
+
 // Allocates a hidden, compiler-generated variable slot (not reachable from
 // user code). Used to cache a for-loop's end bound: Pascal evaluates that
 // bound once, at loop start, not on every iteration - so if the loop body
@@ -96,12 +110,12 @@ void generate_code(ASTNode *node) {
                     if (node->left->expression_type == TYPE_STRING) emit(OP_SEQ, 0);
                     else emit(OP_EQ, 0);
                     break;
-                case TOKEN_LT:    emit(OP_LT, 0);  break;
-                case TOKEN_GT:    emit(OP_GT, 0);  break;
+                case TOKEN_LT:    emit_ordering(node, OP_LT);  break;
+                case TOKEN_GT:    emit_ordering(node, OP_GT);  break;
                 case TOKEN_AND: emit(OP_AND, 0); break;
                 case TOKEN_OR:  emit(OP_OR, 0); break;
-                case TOKEN_LTE: emit(OP_LTE, 0); break;
-                case TOKEN_GTE: emit(OP_GTE, 0); break;
+                case TOKEN_LTE: emit_ordering(node, OP_LTE); break;
+                case TOKEN_GTE: emit_ordering(node, OP_GTE); break;
                 case TOKEN_NEQ:
                     if (node->left->expression_type == TYPE_STRING) { emit(OP_SEQ, 0); emit(OP_NOT, 0); }
                     else emit(OP_NEQ, 0);

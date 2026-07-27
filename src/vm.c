@@ -190,6 +190,14 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_SCMP: {
+                int b = vm_str_index(vm_pop(&sp));
+                int a = vm_str_index(vm_pop(&sp));
+                int cmp = strcmp(string_pool[a], string_pool[b]);
+                vm_push(&sp, (cmp > 0) - (cmp < 0)); // normalize to -1/0/1
+                break;
+            }
+
             case OP_SCONCAT: {
                 int b = vm_str_index(vm_pop(&sp));
                 int a = vm_str_index(vm_pop(&sp));

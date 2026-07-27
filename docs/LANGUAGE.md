@@ -28,8 +28,8 @@ end.
 
 ## Comments
 
-Only block comments, delimited by curly braces, and they may span
-multiple lines:
+Two forms: block comments delimited by curly braces (may span multiple
+lines), and `//` line comments (run to end of line):
 
 ```pascal
 { this is a comment }
@@ -37,9 +37,8 @@ x := 1; { so is this }
 {
   and this
 }
+y := 2; // this too, to end of line
 ```
-
-There is no `//` line-comment syntax yet.
 
 ## Types
 
@@ -106,10 +105,11 @@ produce garbage.
 |---|---|---|
 | `=` | Equal | integer, string |
 | `<>` | Not equal | integer, string |
-| `<`, `>`, `<=`, `>=` | Ordering | integer only |
+| `<`, `>`, `<=`, `>=` | Ordering | integer, string |
 
 String equality compares the actual characters, not identity. String
-ordering comparisons (`<`, `>`, `<=`, `>=`) aren't implemented yet.
+ordering is lexicographic (character-by-character, like `strcmp`) — e.g.
+`'apple' < 'banana'` is `true`.
 
 ### Logical (boolean operands)
 
@@ -297,12 +297,10 @@ a crash.
 
 - Procedures and functions (no user-defined subroutines at all yet — this
   is the biggest gap, and needs a call stack in SolVM first)
-- String ordering comparisons (`<`, `>`, `<=`, `>=` on strings)
 - Multi-dimensional arrays
 - `real`/floating-point numbers
 - `char` as a distinct type
 - Records, sets, enumerated types
-- `//` line comments
 - `break`/`continue` in loops
 - Units/modules/`uses`
 

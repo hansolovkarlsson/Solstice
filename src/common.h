@@ -84,9 +84,14 @@ typedef enum {
     OP_LOAD_IDX,  // arg = array's symbol index. Pop a runtime index; bounds-
                   // check it against the symbol's declared [lower, upper];
                   // push the array element's value.
-    OP_STORE_IDX  // arg = array's symbol index. Pop a value, then a runtime
+    OP_STORE_IDX, // arg = array's symbol index. Pop a value, then a runtime
                   // index (value was pushed after the index by codegen);
                   // bounds-check the index; store the value into the array.
+    OP_SCMP       // Pop two indices; push -1, 0, or 1 for a < b, a == b,
+                  // a > b (lexicographic, via strcmp, normalized to a
+                  // fixed sign). String '<'/'>'/'<='/'>=' compile as
+                  // OP_SCMP followed by PUSH 0 and the matching integer
+                  // LT/GT/LTE/GTE - no separate string-ordering opcodes.
 } Opcode;
 
 typedef struct {

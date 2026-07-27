@@ -64,8 +64,8 @@ then one `NEWLINE` only for `writeln`.
 
 `PUSH`, `LOAD`, `STORE`, `READ`, `ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`,
 `GT`, `AND`, `OR`, `NOT`, `LTE`, `GTE`, `NEQ`, `NEG`, `MOD`, `XOR`,
-`PRINT`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`, `SEQ`, `SCONCAT`,
-`NEWLINE`, `LOAD_IDX`, `STORE_IDX`. See
+`PRINT`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`, `SEQ`, `SCMP`,
+`SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`. See
 [docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does.
 
 ## Example: countdown loop

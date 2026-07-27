@@ -28,7 +28,7 @@ void save_bytecode(const char *filename) {
         fatal_abort();
     }
 
-    char magic[4] = {'P', 'A', 'S', 'C'};
+    char magic[4] = {'S', 'O', 'L', 'E'};
     fwrite(magic, 1, 4, f);
     fwrite(&sym_count, sizeof(int), 1, f);
     fwrite(sym_table, sizeof(Symbol), sym_count, f);
@@ -49,7 +49,7 @@ void load_bytecode(const char *filename) {
     }
 
     char magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "PASC", 4) != 0) {
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "SOLE", 4) != 0) {
         fprintf(stderr, "Invalid executable header image format!\n");
         fclose(f);
         fatal_abort();

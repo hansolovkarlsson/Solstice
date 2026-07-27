@@ -81,14 +81,9 @@ void type_check(ASTNode *node) {
                 node->expression_type = TYPE_INTEGER;
             } else {
                 // Relational operators (=, <, >, <=, >=, <>)
-                if (left_t == TYPE_STRING && right_t == TYPE_STRING) {
-                    if (node->op != TOKEN_EQ && node->op != TOKEN_NEQ) {
-                        fprintf(stderr, "%s:%d: Type Error: Strings only support '=' and '<>' comparisons\n",
-                                get_current_filename(), node->line);
-                        fatal_abort();
-                    }
-                } else if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer (or, for =/<>, string) operands\n", get_current_filename(), node->line);
+                if (!(left_t == TYPE_STRING && right_t == TYPE_STRING)
+                    && (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER)) {
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer or string operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;

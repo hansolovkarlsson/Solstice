@@ -93,6 +93,7 @@ corruption.
 | `PUSH_STR` | Push `arg`, a `string_pool[]` index. |
 | `PRINT_STR` | Pop an index; print `string_pool[index]` — **no trailing newline**. |
 | `SEQ` | Pop two indices; push `1` if their `string_pool[]` contents are equal (`strcmp`), else `0`. There's no separate string-inequality opcode — `<>` compiles as `SEQ` then `NOT`. |
+| `SCMP` | Pop two indices (`b`, then `a`); push `-1`, `0`, or `1` for `a < b`, `a == b`, `a > b` (lexicographic, via `strcmp`, normalized to a fixed sign). `<`/`>`/`<=`/`>=` on strings compile as `SCMP` followed by `PUSH 0` and the matching integer `LT`/`GT`/`LTE`/`GTE` — no separate string-ordering opcodes needed. |
 | `SCONCAT` | Pop two indices; concatenate their contents; intern the result (deduped, may grow `string_pool[]` at runtime); push the new index. Aborts if the result exceeds 255 characters or the pool is full (256 distinct strings). |
 
 ### I/O
@@ -182,7 +183,7 @@ read, so a truncated or corrupted file is rejected with a clear error
 rather than overflowing a buffer.
 
 ```
-"PASC"                  4 bytes, magic number
+"SOLE"                  4 bytes, magic number
 
 sym_count               int
 Symbol[sym_count]        the symbol table

@@ -106,6 +106,7 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"PUSH_STR",  OP_PUSH_STR,  OPERAND_STRING},
     {"PRINT_STR", OP_PRINT_STR, OPERAND_NONE},
     {"SEQ",       OP_SEQ,       OPERAND_NONE},
+    {"SCMP",      OP_SCMP,      OPERAND_NONE},
     {"SCONCAT",   OP_SCONCAT,   OPERAND_NONE},
     {"NEWLINE",   OP_NEWLINE,   OPERAND_NONE},
     {"LOAD_IDX",  OP_LOAD_IDX,  OPERAND_VAR},

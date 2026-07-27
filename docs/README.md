@@ -116,5 +116,4 @@ string concatenation and comparison, one-dimensional arrays,
 elimination and constant folding.
 
 Not yet implemented: procedures/functions (and therefore no call stack in
-SolVM yet), string ordering comparisons (`<`/`>`), multi-dimensional
-arrays, `//` line comments (only `{ }` block comments exist today).
+SolVM yet), multi-dimensional arrays.
