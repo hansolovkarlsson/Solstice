@@ -5,6 +5,8 @@
 #define MAX_SYMBOLS 100
 #define MAX_CODE 500
 #define MAX_STACK 100
+#define MAX_STRING_LEN 256
+#define MAX_STRINGS 100
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -21,18 +23,21 @@ typedef enum {
     TOKEN_IF, TOKEN_THEN, TOKEN_ELSE,
     TOKEN_WHILE, TOKEN_DO,
     TOKEN_REPEAT, TOKEN_UNTIL,
+    TOKEN_STRING, TOKEN_STRING_TYPE,
     TOKEN_EOF
 } TokenType;
 
 typedef enum {
     TYPE_UNKNOWN,
     TYPE_INTEGER,
-    TYPE_BOOLEAN
+    TYPE_BOOLEAN,
+    TYPE_STRING
 } DataType;
 
 typedef struct {
     TokenType type;
     char text[MAX_NAME];
+    char string_value[MAX_STRING_LEN]; // populated only for TOKEN_STRING
     int value;
     int line;
 } Token;
@@ -53,8 +58,13 @@ typedef enum {
     OP_PRINT, OP_READ,
     OP_HALT,
     OP_JMP,  // Unconditional jump. arg = absolute target instruction index.
-    OP_JZ    // Pop the stack; if the value is zero (false), jump to arg.
+    OP_JZ,   // Pop the stack; if the value is zero (false), jump to arg.
              // Otherwise fall through to the next instruction.
+    OP_PUSH_STR,  // Push a string_pool[] index (arg) onto the stack.
+    OP_PRINT_STR, // Pop an index; print string_pool[index].
+    OP_SEQ        // Pop two indices; push 1 if string_pool[] contents are
+                  // equal (strcmp), else 0. '<>' is OP_SEQ followed by
+                  // OP_NOT - no separate string-not-equal opcode needed.
 } Opcode;
 
 typedef struct {
@@ -74,7 +84,8 @@ typedef enum {
     NODE_READLN,
     NODE_IF,
     NODE_WHILE,
-    NODE_REPEAT
+    NODE_REPEAT,
+    NODE_STRING
 } NodeType;
 
 typedef struct ASTNode {
@@ -98,6 +109,8 @@ extern Instruction code[MAX_CODE];
 extern int code_idx;
 extern Symbol sym_table[MAX_SYMBOLS];
 extern int sym_count;
+extern char string_pool[MAX_STRINGS][MAX_STRING_LEN];
+extern int string_count;
 extern Token token;
 
 #endif

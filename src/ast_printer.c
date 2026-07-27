@@ -96,6 +96,10 @@ void print_ast(ASTNode *node, int indent) {
             printf("[Variable] %s\n", sym_table[node->data.var_idx].name);
             break;
 
+        case NODE_STRING:
+            printf("[String] \"%s\"\n", string_pool[node->data.var_idx]);
+            break;
+
         case NODE_IF:
             printf("[If]\n");
             print_indent(indent + 1);

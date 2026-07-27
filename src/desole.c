@@ -42,6 +42,9 @@ static const char *opcode_name(Opcode op) {
         case OP_HALT:  return "halt";
         case OP_JMP:   return "jmp";
         case OP_JZ:    return "jz";
+        case OP_PUSH_STR:  return "push_str";
+        case OP_PRINT_STR: return "print_str";
+        case OP_SEQ:       return "seq";
         default:       return NULL;
     }
 }
@@ -50,6 +53,7 @@ static const char *type_name(DataType type) {
     switch (type) {
         case TYPE_INTEGER: return "integer";
         case TYPE_BOOLEAN: return "boolean";
+        case TYPE_STRING:  return "string";
         default:           return "unknown";
     }
 }
@@ -105,6 +109,13 @@ static void disassemble(FILE *out) {
 
         if (instr.op == OP_PUSH) {
             fprintf(out, "    %s %d ; %04d\n", mnemonic, instr.arg, i);
+        } else if (instr.op == OP_PUSH_STR) {
+            if (instr.arg >= 0 && instr.arg < string_count) {
+                fprintf(out, "    %s \"%s\" ; %04d\n", mnemonic, string_pool[instr.arg], i);
+            } else {
+                fprintf(out, "    ; <push_str with out-of-range string index %d: 0..%d> ; %04d\n",
+                        instr.arg, string_count - 1, i);
+            }
         } else if (is_var_ref(instr.op)) {
             if (instr.arg >= 0 && instr.arg < sym_count) {
                 fprintf(out, "    %s %s ; %04d\n", mnemonic, sym_table[instr.arg].name, i);
@@ -153,8 +164,8 @@ int main(int argc, char *argv[]) {
 
     if (out != stdout) {
         fclose(out);
-        fprintf(stderr, "[Disassembler] Wrote %s (%d instructions, %d symbols)\n",
-                argv[2], code_idx, sym_count);
+        fprintf(stderr, "[Disassembler] Wrote %s (%d instructions, %d symbols, %d strings)\n",
+                argv[2], code_idx, sym_count, string_count);
     }
 
     fatal_error_active = 0;

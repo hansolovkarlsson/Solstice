@@ -53,6 +53,21 @@ static void add_var(const char *name, DataType type) {
     sym_count++;
 }
 
+// Adds a string literal to the pool, reusing an existing slot if the exact
+// same text was already interned (this is a space-saving dedup, not a
+// correctness requirement - string equality is checked via strcmp at
+// runtime, not by comparing pool indices).
+static int intern_string(const char *s) {
+    for (int i = 0; i < string_count; i++) {
+        if (strcmp(string_pool[i], s) == 0) return i;
+    }
+    if (string_count >= MAX_STRINGS) {
+        compile_error(token.line, "Too many distinct string literals (limit is %d)", MAX_STRINGS);
+    }
+    strcpy(string_pool[string_count], s);
+    return string_count++;
+}
+
 static void match(TokenType type) {
     if (token.type == type) next_token();
     else compile_error(token.line, "Unexpected token '%s'", token.text[0] ? token.text : "EOF");
@@ -87,6 +102,12 @@ static ASTNode *factor(void) {
         node->data.num_value = token.value;
         node->expression_type = TYPE_BOOLEAN;
         next_token();
+        return node;
+    } else if (token.type == TOKEN_STRING) {
+        ASTNode *node = create_node(NODE_STRING);
+        node->data.var_idx = intern_string(token.string_value); // pool index
+        node->expression_type = TYPE_STRING;
+        match(TOKEN_STRING);
         return node;
     } else if (token.type == TOKEN_IDENTIFIER) {
         ASTNode *node = create_node(NODE_VARIABLE);
@@ -150,6 +171,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     current_filename = filename ? filename : "<source>";
     sym_count = 0;
     code_idx = 0;
+    string_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -178,6 +200,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
             DataType target_type = TYPE_UNKNOWN;
             if (token.type == TOKEN_INTEGER) { target_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
             else if (token.type == TOKEN_BOOLEAN) { target_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
+            else if (token.type == TOKEN_STRING_TYPE) { target_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
             else compile_error(token.line, "Unknown primitive category");
             
             for (int i = 0; i < count; i++) {

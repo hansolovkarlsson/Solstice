@@ -16,6 +16,9 @@ int code_idx = 0;
 Symbol sym_table[MAX_SYMBOLS];
 int sym_count = 0;
 
+char string_pool[MAX_STRINGS][MAX_STRING_LEN];
+int string_count = 0;
+
 void save_bytecode(const char *filename) {
     FILE *f = fopen(filename, "wb");
     if (!f) {
@@ -29,6 +32,9 @@ void save_bytecode(const char *filename) {
     fwrite(sym_table, sizeof(Symbol), sym_count, f);
     fwrite(&code_idx, sizeof(int), 1, f);
     fwrite(code, sizeof(Instruction), code_idx, f);
+
+    fwrite(&string_count, sizeof(int), 1, f);
+    fwrite(string_pool, sizeof(string_pool[0]), string_count, f);
 
     fclose(f);
 }
@@ -75,6 +81,22 @@ void load_bytecode(const char *filename) {
     }
     if (fread(code, sizeof(Instruction), code_idx, f) != (size_t)code_idx) {
         fprintf(stderr, "Invalid executable image: truncated bytecode\n");
+        fclose(f);
+        fatal_abort();
+    }
+
+    if (fread(&string_count, sizeof(int), 1, f) != 1) {
+        fprintf(stderr, "Invalid executable image: truncated string count\n");
+        fclose(f);
+        fatal_abort();
+    }
+    if (string_count < 0 || string_count > MAX_STRINGS) {
+        fprintf(stderr, "Invalid executable image: string count %d out of range (max %d)\n", string_count, MAX_STRINGS);
+        fclose(f);
+        fatal_abort();
+    }
+    if (fread(string_pool, sizeof(string_pool[0]), string_count, f) != (size_t)string_count) {
+        fprintf(stderr, "Invalid executable image: truncated string pool\n");
         fclose(f);
         fatal_abort();
     }

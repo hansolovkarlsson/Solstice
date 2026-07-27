@@ -66,10 +66,15 @@ void type_check(ASTNode *node) {
                 }
                 node->expression_type = TYPE_INTEGER;
             } else {
-                // else if (node->op == TOKEN_EQ || node->op == TOKEN_LT || node->op == TOKEN_GT) {
                 // Relational operators (=, <, >, <=, >=, <>)
-                if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer operands\n", get_current_filename(), node->line);
+                if (left_t == TYPE_STRING && right_t == TYPE_STRING) {
+                    if (node->op != TOKEN_EQ && node->op != TOKEN_NEQ) {
+                        fprintf(stderr, "%s:%d: Type Error: Strings only support '=' and '<>' comparisons\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                } else if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer (or, for =/<>, string) operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
@@ -89,6 +94,11 @@ void type_check(ASTNode *node) {
             // Ensures target is a defined variable
             if (node->data.var_idx < 0 || node->data.var_idx >= sym_count) {
                 fprintf(stderr, "%s:%d: Type Error: Invalid read target\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (sym_table[node->data.var_idx].type == TYPE_STRING) {
+                fprintf(stderr, "%s:%d: Type Error: readln does not yet support string variables\n",
                         get_current_filename(), node->line);
                 fatal_abort();
             }

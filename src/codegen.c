@@ -39,6 +39,10 @@ void generate_code(ASTNode *node) {
             emit(OP_LOAD, node->data.var_idx);
             break;
 
+        case NODE_STRING:
+            emit(OP_PUSH_STR, node->data.var_idx);
+            break;
+
         case NODE_UNARY_OP:
             generate_code(node->left);
             if (node->op == TOKEN_MINUS) emit(OP_NEG, 0);
@@ -53,14 +57,20 @@ void generate_code(ASTNode *node) {
                 case TOKEN_MINUS: emit(OP_SUB, 0); break;
                 case TOKEN_MUL:   emit(OP_MUL, 0); break;
                 case TOKEN_DIV:   emit(OP_DIV, 0); break;
-                case TOKEN_EQ:    emit(OP_EQ, 0);  break;
+                case TOKEN_EQ:
+                    if (node->left->expression_type == TYPE_STRING) emit(OP_SEQ, 0);
+                    else emit(OP_EQ, 0);
+                    break;
                 case TOKEN_LT:    emit(OP_LT, 0);  break;
                 case TOKEN_GT:    emit(OP_GT, 0);  break;
                 case TOKEN_AND: emit(OP_AND, 0); break;
                 case TOKEN_OR:  emit(OP_OR, 0); break;
                 case TOKEN_LTE: emit(OP_LTE, 0); break;
                 case TOKEN_GTE: emit(OP_GTE, 0); break;
-                case TOKEN_NEQ: emit(OP_NEQ, 0); break;
+                case TOKEN_NEQ:
+                    if (node->left->expression_type == TYPE_STRING) { emit(OP_SEQ, 0); emit(OP_NOT, 0); }
+                    else emit(OP_NEQ, 0);
+                    break;
                 case TOKEN_DIV_KW: emit(OP_DIV, 0); break; // Reuses OP_DIV
                 case TOKEN_MOD:    emit(OP_MOD, 0); break;
                 case TOKEN_XOR:    emit(OP_XOR, 0); break;
@@ -70,7 +80,8 @@ void generate_code(ASTNode *node) {
 
         case NODE_WRITELN:
             generate_code(node->left); // Evaluates expression onto VM stack
-            emit(OP_PRINT, 0);
+            if (node->left->expression_type == TYPE_STRING) emit(OP_PRINT_STR, 0);
+            else emit(OP_PRINT, 0);
             generate_code(node->next);
             break;
 

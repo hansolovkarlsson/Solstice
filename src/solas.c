@@ -16,7 +16,10 @@
 //     PUSH <integer literal>             e.g. PUSH 5, PUSH -1
 //     LOAD/STORE/READ <variable name>    must have a matching .var
 //     JMP/JZ <label name>                may be a forward reference
+//     PUSH_STR "<text>"                  interned into the string pool
 //     everything else                    no operand
+//
+// .var types: integer, boolean, string
 //
 // Example (countdown loop):
 //
@@ -56,7 +59,7 @@ typedef struct {
     int index; // instruction index the label points to
 } Label;
 
-typedef enum { OPERAND_NONE, OPERAND_IMMEDIATE, OPERAND_VAR, OPERAND_LABEL } OperandKind;
+typedef enum { OPERAND_NONE, OPERAND_IMMEDIATE, OPERAND_VAR, OPERAND_LABEL, OPERAND_STRING } OperandKind;
 
 typedef struct {
     const char *mnemonic;
@@ -65,30 +68,33 @@ typedef struct {
 } OpcodeInfo;
 
 static const OpcodeInfo OPCODE_TABLE[] = {
-    {"PUSH",  OP_PUSH,  OPERAND_IMMEDIATE},
-    {"LOAD",  OP_LOAD,  OPERAND_VAR},
-    {"STORE", OP_STORE, OPERAND_VAR},
-    {"READ",  OP_READ,  OPERAND_VAR},
-    {"ADD",   OP_ADD,   OPERAND_NONE},
-    {"SUB",   OP_SUB,   OPERAND_NONE},
-    {"MUL",   OP_MUL,   OPERAND_NONE},
-    {"DIV",   OP_DIV,   OPERAND_NONE},
-    {"EQ",    OP_EQ,    OPERAND_NONE},
-    {"LT",    OP_LT,    OPERAND_NONE},
-    {"GT",    OP_GT,    OPERAND_NONE},
-    {"AND",   OP_AND,   OPERAND_NONE},
-    {"OR",    OP_OR,    OPERAND_NONE},
-    {"NOT",   OP_NOT,   OPERAND_NONE},
-    {"LTE",   OP_LTE,   OPERAND_NONE},
-    {"GTE",   OP_GTE,   OPERAND_NONE},
-    {"NEQ",   OP_NEQ,   OPERAND_NONE},
-    {"NEG",   OP_NEG,   OPERAND_NONE},
-    {"MOD",   OP_MOD,   OPERAND_NONE},
-    {"XOR",   OP_XOR,   OPERAND_NONE},
-    {"PRINT", OP_PRINT, OPERAND_NONE},
-    {"HALT",  OP_HALT,  OPERAND_NONE},
-    {"JMP",   OP_JMP,   OPERAND_LABEL},
-    {"JZ",    OP_JZ,    OPERAND_LABEL},
+    {"PUSH",      OP_PUSH,      OPERAND_IMMEDIATE},
+    {"LOAD",      OP_LOAD,      OPERAND_VAR},
+    {"STORE",     OP_STORE,     OPERAND_VAR},
+    {"READ",      OP_READ,      OPERAND_VAR},
+    {"ADD",       OP_ADD,       OPERAND_NONE},
+    {"SUB",       OP_SUB,       OPERAND_NONE},
+    {"MUL",       OP_MUL,       OPERAND_NONE},
+    {"DIV",       OP_DIV,       OPERAND_NONE},
+    {"EQ",        OP_EQ,        OPERAND_NONE},
+    {"LT",        OP_LT,        OPERAND_NONE},
+    {"GT",        OP_GT,        OPERAND_NONE},
+    {"AND",       OP_AND,       OPERAND_NONE},
+    {"OR",        OP_OR,        OPERAND_NONE},
+    {"NOT",       OP_NOT,       OPERAND_NONE},
+    {"LTE",       OP_LTE,       OPERAND_NONE},
+    {"GTE",       OP_GTE,       OPERAND_NONE},
+    {"NEQ",       OP_NEQ,       OPERAND_NONE},
+    {"NEG",       OP_NEG,       OPERAND_NONE},
+    {"MOD",       OP_MOD,       OPERAND_NONE},
+    {"XOR",       OP_XOR,       OPERAND_NONE},
+    {"PRINT",     OP_PRINT,     OPERAND_NONE},
+    {"HALT",      OP_HALT,      OPERAND_NONE},
+    {"JMP",       OP_JMP,       OPERAND_LABEL},
+    {"JZ",        OP_JZ,        OPERAND_LABEL},
+    {"PUSH_STR",  OP_PUSH_STR,  OPERAND_STRING},
+    {"PRINT_STR", OP_PRINT_STR, OPERAND_NONE},
+    {"SEQ",       OP_SEQ,       OPERAND_NONE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
@@ -170,6 +176,30 @@ static void add_label(int line_no, const char *name, int index) {
     label_count++;
 }
 
+static int intern_string(int line_no, const char *s) {
+    for (int i = 0; i < string_count; i++) {
+        if (strcmp(string_pool[i], s) == 0) return i;
+    }
+    if (string_count >= MAX_STRINGS) {
+        asm_error(line_no, "Too many distinct string literals (limit is %d)", MAX_STRINGS);
+    }
+    strcpy(string_pool[string_count], s);
+    return string_count++;
+}
+
+// Extracts the text between the first and last '"' on the line (no escape
+// sequences supported yet - matches the "one instruction per line" format).
+static void extract_quoted_string(int line_no, const char *line, char *out, size_t out_cap) {
+    const char *start = strchr(line, '"');
+    if (!start) asm_error(line_no, "Expected a quoted string operand, e.g. PUSH_STR \"hello\"");
+    const char *end = strrchr(line, '"');
+    if (end <= start) asm_error(line_no, "Malformed string literal (missing closing quote)");
+    size_t len = (size_t)(end - start - 1);
+    if (len >= out_cap) asm_error(line_no, "String literal too long (limit is %zu characters)", out_cap - 1);
+    memcpy(out, start + 1, len);
+    out[len] = '\0';
+}
+
 static void asm_emit(int line_no, Opcode op, int arg) {
     if (code_idx >= MAX_CODE) {
         asm_error(line_no, "Program exceeds maximum bytecode size (limit is %d instructions)", MAX_CODE);
@@ -220,6 +250,7 @@ void assemble(char *source, const char *filename) {
     asm_filename = filename;
     sym_count = 0;
     code_idx = 0;
+    string_count = 0;
     label_count = 0;
 
     split_lines(source);
@@ -241,7 +272,8 @@ void assemble(char *source, const char *filename) {
             DataType type;
             if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
             else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
-            else { asm_error(line_no, "Unknown type '%s' (expected 'integer' or 'boolean')", type_str); return; }
+            else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
+            else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', or 'string')", type_str); return; }
             add_var(line_no, name, type);
         } else if (is_label_line(line)) {
             char label_name[MAX_NAME];
@@ -304,6 +336,13 @@ void assemble(char *source, const char *filename) {
                 arg = idx;
                 break;
             }
+
+            case OPERAND_STRING: {
+                char str_content[MAX_STRING_LEN];
+                extract_quoted_string(line_no, line, str_content, sizeof(str_content));
+                arg = intern_string(line_no, str_content);
+                break;
+            }
         }
         asm_emit(line_no, info->op, arg);
     }
@@ -342,8 +381,8 @@ int main(int argc, char *argv[]) {
 
     assemble(source, source_path);
     save_bytecode(bin_path);
-    printf("[Assembler] Successfully written binary payload image to %s (%d instructions, %d symbols)\n",
-           bin_path, code_idx, sym_count);
+    printf("[Assembler] Successfully written binary payload image to %s (%d instructions, %d symbols, %d strings)\n",
+           bin_path, code_idx, sym_count, string_count);
 
     free(source);
     fatal_error_active = 0;
