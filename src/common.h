@@ -18,6 +18,9 @@ typedef enum {
     TOKEN_SEMI, TOKEN_COLON, TOKEN_COMMA, TOKEN_PERIOD,
     TOKEN_LPAREN, TOKEN_RPAREN,
     TOKEN_WRITELN, TOKEN_READLN,
+    TOKEN_IF, TOKEN_THEN, TOKEN_ELSE,
+    TOKEN_WHILE, TOKEN_DO,
+    TOKEN_REPEAT, TOKEN_UNTIL,
     TOKEN_EOF
 } TokenType;
 
@@ -68,7 +71,10 @@ typedef enum {
     NODE_BOOLEAN,
     NODE_VARIABLE,
     NODE_WRITELN,
-    NODE_READLN
+    NODE_READLN,
+    NODE_IF,
+    NODE_WHILE,
+    NODE_REPEAT
 } NodeType;
 
 typedef struct ASTNode {
@@ -83,6 +89,8 @@ typedef struct ASTNode {
     struct ASTNode *left;
     struct ASTNode *right;
     struct ASTNode *next;
+    struct ASTNode *extra;  // Node-specific 4th child. Currently only used
+                             // by NODE_IF, for the optional else-branch.
 } ASTNode;
 
 // Shared Global State

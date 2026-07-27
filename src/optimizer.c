@@ -11,6 +11,7 @@ ASTNode *optimize_ast(ASTNode *node) {
     node->left = optimize_ast(node->left);
     node->right = optimize_ast(node->right);
     node->next = optimize_ast(node->next);
+    node->extra = optimize_ast(node->extra);
 
     if (node->type == NODE_UNARY_OP 
         && (node->left->type == NODE_NUMBER || node->left->type == NODE_BOOLEAN)) {
@@ -92,6 +93,7 @@ static void mark_used_variables(ASTNode *node) {
     mark_used_variables(node->left);
     mark_used_variables(node->right);
     mark_used_variables(node->next);
+    mark_used_variables(node->extra);
 }
 
 static ASTNode *sweep_dead_assignments(ASTNode *node) {
@@ -127,6 +129,7 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
     node->left = sweep_dead_assignments(node->left);
     node->right = sweep_dead_assignments(node->right);
     node->next = sweep_dead_assignments(node->next);
+    node->extra = sweep_dead_assignments(node->extra);
     return node;
 }
 

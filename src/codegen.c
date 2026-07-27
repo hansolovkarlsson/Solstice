@@ -21,7 +21,7 @@ void generate_code(ASTNode *node) {
     switch (node->type) {
         case NODE_COMPOUND:
             generate_code(node->left);
-            emit(OP_HALT, 0);
+            generate_code(node->next);
             break;
 
         case NODE_ASSIGN:
@@ -77,7 +77,70 @@ void generate_code(ASTNode *node) {
         case NODE_READLN:
             emit(OP_READ, node->data.var_idx); // Reads stdin into var_idx
             generate_code(node->next);
-            break;            
+            break;
+
+        // if <cond> then <then> [else <else>]
+        //     <cond>
+        //     JZ else_or_end     ; patched below
+        //     <then>
+        //   [ JMP end            ; only emitted if there's an else, patched below
+        //   else_or_end:
+        //     <else>
+        //   end: ]
+        case NODE_IF: {
+            generate_code(node->left);        // condition
+            int jz_idx = code_idx;
+            emit(OP_JZ, 0);                   // placeholder, patched below
+            generate_code(node->right);       // then-branch
+            if (node->extra) {
+                int jmp_idx = code_idx;
+                emit(OP_JMP, 0);              // placeholder, patched below
+                code[jz_idx].arg = code_idx;  // JZ lands here: start of else
+                generate_code(node->extra);   // else-branch
+                code[jmp_idx].arg = code_idx; // JMP lands here: past the else
+            } else {
+                code[jz_idx].arg = code_idx;  // JZ lands here: past the then
+            }
+            generate_code(node->next);
+            break;
+        }
+
+        // while <cond> do <body>
+        //   loop_start:
+        //     <cond>
+        //     JZ end             ; patched below
+        //     <body>
+        //     JMP loop_start
+        //   end:
+        case NODE_WHILE: {
+            int loop_start = code_idx;
+            generate_code(node->left);        // condition
+            int jz_idx = code_idx;
+            emit(OP_JZ, 0);                   // placeholder, patched below
+            generate_code(node->right);       // body
+            emit(OP_JMP, loop_start);
+            code[jz_idx].arg = code_idx;      // JZ lands here: past the loop
+            generate_code(node->next);
+            break;
+        }
+
+        // repeat <body> until <cond>
+        //   loop_start:
+        //     <body>
+        //     <cond>
+        //     JZ loop_start      ; loop again while cond is still false
+        case NODE_REPEAT: {
+            int loop_start = code_idx;
+            generate_code(node->left);        // body (statement chain)
+            generate_code(node->right);       // until-condition
+            emit(OP_JZ, loop_start);
+            generate_code(node->next);
+            break;
+        }
     }
+}
+
+void emit_halt(void) {
+    emit(OP_HALT, 0);
 }
 

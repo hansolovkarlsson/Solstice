@@ -10,6 +10,7 @@ void type_check(ASTNode *node) {
     type_check(node->left);
     type_check(node->right);
     type_check(node->next);
+    type_check(node->extra);
 
     switch (node->type) {
         case NODE_ASSIGN: {
@@ -93,6 +94,29 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_IF:
+            if (node->left->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'if' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_WHILE:
+            if (node->left->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'while' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_REPEAT:
+            if (node->right->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'until' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
 
         default:
             break;

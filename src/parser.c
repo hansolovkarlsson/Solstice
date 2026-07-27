@@ -59,6 +59,9 @@ static void match(TokenType type) {
 }
 
 static ASTNode *expression(void);
+static ASTNode *statement(void);
+static ASTNode *statement_list(void);
+static ASTNode *compound_statement(void);
 
 static ASTNode *factor(void) {
     if (token.type == TOKEN_MINUS || token.type == TOKEN_NOT) {
@@ -184,51 +187,120 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         }
     }
 
-    match(TOKEN_BEGIN);
-    ASTNode *root = create_node(NODE_COMPOUND);
-    ASTNode *current = NULL;
+    ASTNode *root = compound_statement();
+    match(TOKEN_PERIOD);
+    return root;
+}
 
-    // Add parsing for writeln and readln inside statement loop in parse_ast():
-    while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_WRITELN || token.type == TOKEN_READLN) {
-        ASTNode *stmt = NULL;
+// True for every token that can legally start a statement. Used by
+// statement_list() to know when to stop (hitting END/ELSE/UNTIL, or EOF
+// on a malformed file, all correctly fail this check).
+static int is_statement_start(TokenType t) {
+    return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_READLN ||
+           t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_BEGIN;
+}
 
-        if (token.type == TOKEN_IDENTIFIER) {
-            stmt = create_node(NODE_ASSIGN);
-            stmt->data.var_idx = find_var(token.text);
-            match(TOKEN_IDENTIFIER);
-            match(TOKEN_ASSIGN);
-            stmt->left = expression();
-            match(TOKEN_SEMI);
-        } 
-        else if (token.type == TOKEN_WRITELN) {
-            match(TOKEN_WRITELN);
-            match(TOKEN_LPAREN); // Note: Ensure TOKEN_LPAREN '(' and TOKEN_RPAREN ')' exist in lexer
-            stmt = create_node(NODE_WRITELN);
-            stmt->left = expression();
-            match(TOKEN_RPAREN);
-            match(TOKEN_SEMI);
-        } 
-        else if (token.type == TOKEN_READLN) {
-            match(TOKEN_READLN);
-            match(TOKEN_LPAREN);
-            stmt = create_node(NODE_READLN);
-            if (token.type == TOKEN_IDENTIFIER) {
-                stmt->data.var_idx = find_var(token.text);
-                match(TOKEN_IDENTIFIER);
-            } else {
-                compile_error(token.line, "readln expects a variable identifier");
-            }
-            match(TOKEN_RPAREN);
-            match(TOKEN_SEMI);
-        }
-
-        if (!root->left) root->left = stmt;
-        else current->next = stmt;
-        current = stmt;
+// Parses exactly one statement - an assignment, writeln/readln call,
+// if/while/repeat, or a nested begin...end block. Never touches a
+// separating semicolon or the node's ->next; that's statement_list()'s job.
+static ASTNode *statement(void) {
+    if (token.type == TOKEN_BEGIN) {
+        return compound_statement();
     }
 
+    if (token.type == TOKEN_IDENTIFIER) {
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = find_var(token.text);
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_ASSIGN);
+        stmt->left = expression();
+        return stmt;
+    }
+
+    if (token.type == TOKEN_WRITELN) {
+        match(TOKEN_WRITELN);
+        match(TOKEN_LPAREN);
+        ASTNode *stmt = create_node(NODE_WRITELN);
+        stmt->left = expression();
+        match(TOKEN_RPAREN);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_READLN) {
+        match(TOKEN_READLN);
+        match(TOKEN_LPAREN);
+        ASTNode *stmt = create_node(NODE_READLN);
+        if (token.type == TOKEN_IDENTIFIER) {
+            stmt->data.var_idx = find_var(token.text);
+            match(TOKEN_IDENTIFIER);
+        } else {
+            compile_error(token.line, "readln expects a variable identifier");
+        }
+        match(TOKEN_RPAREN);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_IF) {
+        ASTNode *stmt = create_node(NODE_IF);
+        match(TOKEN_IF);
+        stmt->left = expression();       // condition
+        match(TOKEN_THEN);
+        stmt->right = statement();       // then-branch
+        if (token.type == TOKEN_ELSE) {
+            match(TOKEN_ELSE);
+            stmt->extra = statement();   // else-branch (optional)
+        }
+        return stmt;
+    }
+
+    if (token.type == TOKEN_WHILE) {
+        ASTNode *stmt = create_node(NODE_WHILE);
+        match(TOKEN_WHILE);
+        stmt->left = expression();       // condition
+        match(TOKEN_DO);
+        stmt->right = statement();       // body
+        return stmt;
+    }
+
+    if (token.type == TOKEN_REPEAT) {
+        ASTNode *stmt = create_node(NODE_REPEAT);
+        match(TOKEN_REPEAT);
+        stmt->left = statement_list();   // body (chained via ->next, no wrapping compound needed)
+        match(TOKEN_UNTIL);
+        stmt->right = expression();      // until-condition
+        return stmt;
+    }
+
+    compile_error(token.line, "Unexpected token '%s' at start of statement", token.text[0] ? token.text : "EOF");
+    return NULL;
+}
+
+// Parses statements separated by ';' until a non-statement token is hit
+// (END, ELSE, UNTIL, or EOF). A trailing ';' before that terminator is
+// optional, matching normal Pascal statement-list syntax.
+static ASTNode *statement_list(void) {
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    while (is_statement_start(token.type)) {
+        ASTNode *stmt = statement();
+        if (!head) head = stmt;
+        else tail->next = stmt;
+        tail = stmt;
+
+        if (token.type == TOKEN_SEMI) {
+            match(TOKEN_SEMI);
+        } else {
+            break;
+        }
+    }
+    return head;
+}
+
+static ASTNode *compound_statement(void) {
+    match(TOKEN_BEGIN);
+    ASTNode *root = create_node(NODE_COMPOUND);
+    root->left = statement_list();
     match(TOKEN_END);
-    match(TOKEN_PERIOD);
     return root;
 }
 
@@ -237,6 +309,7 @@ void free_ast(ASTNode *node) {
     free_ast(node->left);
     free_ast(node->right);
     free_ast(node->next);
+    free_ast(node->extra);
     free(node);
 }
 

@@ -1,0 +1,18 @@
+.var i integer
+
+    push 5 ; 0000
+    store i ; 0001
+L2:
+    load i ; 0002
+    push 0 ; 0003
+    gt ; 0004
+    jz L13 ; 0005
+    load i ; 0006
+    print ; 0007
+    load i ; 0008
+    push 1 ; 0009
+    sub ; 0010
+    store i ; 0011
+    jmp L2 ; 0012
+L13:
+    halt ; 0013

@@ -95,6 +95,50 @@ void print_ast(ASTNode *node, int indent) {
         case NODE_VARIABLE:
             printf("[Variable] %s\n", sym_table[node->data.var_idx].name);
             break;
+
+        case NODE_IF:
+            printf("[If]\n");
+            print_indent(indent + 1);
+            printf("Condition:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Then:\n");
+            print_ast(node->right, indent + 2);
+            if (node->extra) {
+                print_indent(indent + 1);
+                printf("Else:\n");
+                print_ast(node->extra, indent + 2);
+            }
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_WHILE:
+            printf("[While]\n");
+            print_indent(indent + 1);
+            printf("Condition:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Body:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_REPEAT:
+            printf("[Repeat]\n");
+            print_indent(indent + 1);
+            printf("Body:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Until:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
     }
 }
 
