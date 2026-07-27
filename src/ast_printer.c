@@ -41,10 +41,20 @@ void print_ast(ASTNode *node, int indent) {
             break;
 
         case NODE_ASSIGN:
-            printf("[Assignment] -> Variable: %s\n", sym_table[node->data.var_idx].name);
-            print_indent(indent + 1);
-            printf("Value:\n");
-            print_ast(node->left, indent + 2);
+            if (sym_table[node->data.var_idx].is_array) {
+                printf("[Array Assignment] -> Array: %s\n", sym_table[node->data.var_idx].name);
+                print_indent(indent + 1);
+                printf("Index:\n");
+                print_ast(node->left, indent + 2);
+                print_indent(indent + 1);
+                printf("Value:\n");
+                print_ast(node->right, indent + 2);
+            } else {
+                printf("[Assignment] -> Variable: %s\n", sym_table[node->data.var_idx].name);
+                print_indent(indent + 1);
+                printf("Value:\n");
+                print_ast(node->left, indent + 2);
+            }
             if (node->next) {
                 print_ast(node->next, indent);
             }
@@ -162,6 +172,13 @@ void print_ast(ASTNode *node, int indent) {
             if (node->next) {
                 print_ast(node->next, indent);
             }
+            break;
+
+        case NODE_ARRAY_ACCESS:
+            printf("[Array Access] -> Array: %s\n", sym_table[node->data.var_idx].name);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
             break;
     }
 }

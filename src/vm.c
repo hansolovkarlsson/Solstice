@@ -6,6 +6,7 @@
 
 static int vm_stack[MAX_STACK];
 static int vm_vars[MAX_SYMBOLS];
+static int vm_array_mem[MAX_ARRAY_MEM];
 
 static inline void vm_push(int *sp, int val) {
     if (*sp >= MAX_STACK - 1) {
@@ -39,6 +40,27 @@ static inline int vm_str_index(int idx) {
     return idx;
 }
 
+// Resolves arr[runtime_index] to an offset into vm_array_mem[], validating
+// that var_idx actually names an array and that the runtime index falls
+// within its declared [lower, upper] bounds - critical here specifically,
+// since vm_array_mem is one shared region across every array in the
+// program, and an unchecked out-of-bounds write would corrupt a
+// completely different array's data.
+static int vm_array_offset(int var_idx, int runtime_index) {
+    vm_var_index(var_idx);
+    Symbol *sym = &sym_table[var_idx];
+    if (!sym->is_array) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not an array\n", sym->name);
+        fatal_abort();
+    }
+    if (runtime_index < sym->array_lower || runtime_index > sym->array_upper) {
+        fprintf(stderr, "VM Runtime Error: Array index %d out of range (%d..%d) for '%s'\n",
+                runtime_index, sym->array_lower, sym->array_upper, sym->name);
+        fatal_abort();
+    }
+    return sym->array_base + (runtime_index - sym->array_lower);
+}
+
 // Adds a runtime-computed string (concatenation result, or a line read via
 // readln) to the pool, growing string_count if needed. Same dedup as the
 // compile-time interner in parser.c, and the same hard limit (MAX_STRINGS) -
@@ -59,6 +81,7 @@ static int vm_intern_string(const char *s) {
 
 void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
+    memset(vm_array_mem, 0, sizeof(vm_array_mem));
     int sp = -1;
     int ip = 0;
 
@@ -81,6 +104,21 @@ void run_vm(void) {
             case OP_STORE: {
                 int val = vm_pop(&sp);
                 vm_vars[vm_var_index(instr.arg)] = val;
+                break;
+            }
+
+            case OP_LOAD_IDX: {
+                int runtime_index = vm_pop(&sp);
+                int offset = vm_array_offset(instr.arg, runtime_index);
+                vm_push(&sp, vm_array_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_IDX: {
+                int val = vm_pop(&sp);
+                int runtime_index = vm_pop(&sp);
+                int offset = vm_array_offset(instr.arg, runtime_index);
+                vm_array_mem[offset] = val;
                 break;
             }
 
@@ -173,7 +211,23 @@ void run_vm(void) {
                         if (sym_table[i].name[0] == '_' && sym_table[i].name[1] == '_') {
                             continue; // hidden compiler-internal variable (e.g. a for-loop's cached bound)
                         }
-                        if (sym_table[i].type == TYPE_STRING) {
+                        if (sym_table[i].is_array) {
+                            printf("%s = [", sym_table[i].name);
+                            int lower = sym_table[i].array_lower;
+                            int upper = sym_table[i].array_upper;
+                            int base = sym_table[i].array_base;
+                            for (int j = lower; j <= upper; j++) {
+                                if (j > lower) printf(", ");
+                                int elem = vm_array_mem[base + (j - lower)];
+                                if (sym_table[i].type == TYPE_STRING) {
+                                    if (elem >= 0 && elem < string_count) printf("%s", string_pool[elem]);
+                                    else printf("<invalid string index %d>", elem);
+                                } else {
+                                    printf("%d", elem);
+                                }
+                            }
+                            printf("]\n");
+                        } else if (sym_table[i].type == TYPE_STRING) {
                             int idx = vm_vars[i];
                             if (idx >= 0 && idx < string_count) {
                                 printf("%s = %s\n", sym_table[i].name, string_pool[idx]);

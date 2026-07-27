@@ -19,6 +19,8 @@ int sym_count = 0;
 char string_pool[MAX_STRINGS][MAX_STRING_LEN];
 int string_count = 0;
 
+int array_mem_count = 0;
+
 void save_bytecode(const char *filename) {
     FILE *f = fopen(filename, "wb");
     if (!f) {

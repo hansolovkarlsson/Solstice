@@ -47,6 +47,8 @@ static const char *opcode_name(Opcode op) {
         case OP_SEQ:       return "seq";
         case OP_SCONCAT:   return "sconcat";
         case OP_NEWLINE:   return "newline";
+        case OP_LOAD_IDX:  return "load_idx";
+        case OP_STORE_IDX: return "store_idx";
         default:       return NULL;
     }
 }
@@ -68,7 +70,7 @@ static int is_jump(Opcode op) {
 
 // True for opcodes whose arg is a variable index into sym_table[].
 static int is_var_ref(Opcode op) {
-    return op == OP_LOAD || op == OP_STORE || op == OP_READ;
+    return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_LOAD_IDX || op == OP_STORE_IDX;
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index
@@ -89,7 +91,12 @@ static void mark_jump_targets(void) {
 static void disassemble(FILE *out) {
     if (sym_count > 0) {
         for (int i = 0; i < sym_count; i++) {
-            fprintf(out, ".var %s %s\n", sym_table[i].name, type_name(sym_table[i].type));
+            if (sym_table[i].is_array) {
+                fprintf(out, ".array %s %d %d %s\n", sym_table[i].name,
+                        sym_table[i].array_lower, sym_table[i].array_upper, type_name(sym_table[i].type));
+            } else {
+                fprintf(out, ".var %s %s\n", sym_table[i].name, type_name(sym_table[i].type));
+            }
         }
         fprintf(out, "\n");
     }

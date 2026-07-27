@@ -8,18 +8,24 @@
 // Syntax:
 //
 //     ; comments start with a semicolon and run to end of line
-//     .var <name> <integer|boolean>      ; declare a variable
+//     .var <name> <integer|boolean|string>       ; declare a variable
+//     .array <name> <lower> <upper> <type>       ; declare an array
 //     label:                             ; a label, alone on its own line
 //     MNEMONIC [operand]                 ; one instruction per line
 //
 // Operand kinds, by instruction:
 //     PUSH <integer literal>             e.g. PUSH 5, PUSH -1
 //     LOAD/STORE/READ <variable name>    must have a matching .var
+//     LOAD_IDX/STORE_IDX <array name>    must have a matching .array; the
+//                                        runtime index comes off the stack
 //     JMP/JZ <label name>                may be a forward reference
 //     PUSH_STR "<text>"                  interned into the string pool
 //     everything else                    no operand
 //
 // .var types: integer, boolean, string
+// .array bounds are integer literals (may be negative), e.g.:
+//     .array nums 1 10 integer
+//     .array flags -3 3 boolean
 //
 // Note: PRINT and PRINT_STR do NOT print a trailing newline - use NEWLINE
 // explicitly (this is what write/writeln in the Pascal compiler compile
@@ -102,6 +108,8 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"SEQ",       OP_SEQ,       OPERAND_NONE},
     {"SCONCAT",   OP_SCONCAT,   OPERAND_NONE},
     {"NEWLINE",   OP_NEWLINE,   OPERAND_NONE},
+    {"LOAD_IDX",  OP_LOAD_IDX,  OPERAND_VAR},
+    {"STORE_IDX", OP_STORE_IDX, OPERAND_VAR},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
@@ -165,6 +173,37 @@ static void add_var(int line_no, const char *name, DataType type) {
     }
     strcpy(sym_table[sym_count].name, name);
     sym_table[sym_count].type = type;
+    sym_table[sym_count].is_array = 0;
+    sym_table[sym_count].array_lower = 0;
+    sym_table[sym_count].array_upper = 0;
+    sym_table[sym_count].array_base = 0;
+    sym_count++;
+}
+
+static void add_array_var(int line_no, const char *name, DataType elem_type, int lower, int upper) {
+    if (strlen(name) >= MAX_NAME) {
+        asm_error(line_no, "Array name '%s' too long (limit is %d characters)", name, MAX_NAME - 1);
+    }
+    if (find_var(name) != -1) {
+        asm_error(line_no, "Duplicate variable declaration '%s'", name);
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        asm_error(line_no, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    if (upper < lower) {
+        asm_error(line_no, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+    }
+    int size = upper - lower + 1;
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        asm_error(line_no, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = elem_type;
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = lower;
+    sym_table[sym_count].array_upper = upper;
+    sym_table[sym_count].array_base = array_mem_count;
+    array_mem_count += size;
     sym_count++;
 }
 
@@ -258,6 +297,7 @@ void assemble(char *source, const char *filename) {
     sym_count = 0;
     code_idx = 0;
     string_count = 0;
+    array_mem_count = 0;
     label_count = 0;
 
     split_lines(source);
@@ -271,17 +311,35 @@ void assemble(char *source, const char *filename) {
         int line_no = line_numbers[i];
 
         if (line[0] == '.') {
-            char directive[MAX_NAME], name[MAX_NAME], type_str[MAX_NAME];
-            if (sscanf(line, ".%31s %31s %31s", directive, name, type_str) != 3
-                || strcasecmp(directive, "var") != 0) {
-                asm_error(line_no, "Malformed directive (expected: .var <name> <integer|boolean>)");
+            char directive[MAX_NAME];
+            sscanf(line, ".%31s", directive);
+
+            if (strcasecmp(directive, "var") == 0) {
+                char name[MAX_NAME], type_str[MAX_NAME];
+                if (sscanf(line, ".%31s %31s %31s", directive, name, type_str) != 3) {
+                    asm_error(line_no, "Malformed directive (expected: .var <name> <integer|boolean|string>)");
+                }
+                DataType type;
+                if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
+                else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
+                else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', or 'string')", type_str); return; }
+                add_var(line_no, name, type);
+            } else if (strcasecmp(directive, "array") == 0) {
+                char name[MAX_NAME], type_str[MAX_NAME];
+                int lower, upper;
+                if (sscanf(line, ".%31s %31s %d %d %31s", directive, name, &lower, &upper, type_str) != 5) {
+                    asm_error(line_no, "Malformed directive (expected: .array <name> <lower> <upper> <integer|boolean|string>)");
+                }
+                DataType type;
+                if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
+                else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
+                else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', or 'string')", type_str); return; }
+                add_array_var(line_no, name, type, lower, upper);
+            } else {
+                asm_error(line_no, "Unknown directive '.%s' (expected .var or .array)", directive);
             }
-            DataType type;
-            if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
-            else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
-            else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
-            else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', or 'string')", type_str); return; }
-            add_var(line_no, name, type);
         } else if (is_label_line(line)) {
             char label_name[MAX_NAME];
             size_t len = strlen(line) - 1;
@@ -331,7 +389,7 @@ void assemble(char *source, const char *filename) {
             case OPERAND_VAR: {
                 if (noperand < 2) asm_error(line_no, "Instruction '%s' requires a variable operand", info->mnemonic);
                 int idx = find_var(operand);
-                if (idx == -1) asm_error(line_no, "Undeclared variable '%s' (missing .var?)", operand);
+                if (idx == -1) asm_error(line_no, "Undeclared variable '%s' (missing .var or .array?)", operand);
                 arg = idx;
                 break;
             }

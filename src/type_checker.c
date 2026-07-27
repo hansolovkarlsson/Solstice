@@ -14,10 +14,21 @@ void type_check(ASTNode *node) {
 
     switch (node->type) {
         case NODE_ASSIGN: {
-            DataType target_type = sym_table[node->data.var_idx].type;
-            if (node->left->expression_type != target_type) {
+            Symbol *sym = &sym_table[node->data.var_idx];
+            if (sym->is_array) {
+                if (node->left->expression_type != TYPE_INTEGER) {
+                    fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                if (node->right->expression_type != sym->type) {
+                    fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
+                            get_current_filename(), node->line, sym->name);
+                    fatal_abort();
+                }
+            } else if (node->left->expression_type != sym->type) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to variable '%s'\n",
-                        get_current_filename(), node->line, sym_table[node->data.var_idx].name);
+                        get_current_filename(), node->line, sym->name);
                 fatal_abort();
             }
             break;
@@ -136,6 +147,14 @@ void type_check(ASTNode *node) {
             }
             if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
                 fprintf(stderr, "%s:%d: Type Error: 'for' loop bounds must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_ARRAY_ACCESS:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
                         get_current_filename(), node->line);
                 fatal_abort();
             }

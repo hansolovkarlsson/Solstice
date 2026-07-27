@@ -7,6 +7,7 @@
 #define MAX_STACK 100
 #define MAX_STRING_LEN 256
 #define MAX_STRINGS 256
+#define MAX_ARRAY_MEM 4096
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -25,6 +26,8 @@ typedef enum {
     TOKEN_REPEAT, TOKEN_UNTIL,
     TOKEN_STRING, TOKEN_STRING_TYPE,
     TOKEN_FOR, TOKEN_TO, TOKEN_DOWNTO,
+    TOKEN_ARRAY, TOKEN_OF, TOKEN_DOTDOT,
+    TOKEN_LBRACKET, TOKEN_RBRACKET,
     TOKEN_EOF
 } TokenType;
 
@@ -45,7 +48,11 @@ typedef struct {
 
 typedef struct {
     char name[MAX_NAME];
-    DataType type;
+    DataType type;   // element type when is_array is set, else the scalar's type
+    int is_array;
+    int array_lower; // inclusive
+    int array_upper; // inclusive
+    int array_base;  // base offset into the shared array memory region
 } Symbol;
 
 typedef enum {
@@ -71,9 +78,15 @@ typedef enum {
     OP_SCONCAT,   // Pop two indices; concatenate their string_pool[]
                   // contents, intern the result (possibly growing the
                   // pool at runtime), and push the new index.
-    OP_NEWLINE    // Print a newline. No operand, no stack interaction.
+    OP_NEWLINE,   // Print a newline. No operand, no stack interaction.
                   // writeln emits this once, after all its arguments;
                   // write never emits it.
+    OP_LOAD_IDX,  // arg = array's symbol index. Pop a runtime index; bounds-
+                  // check it against the symbol's declared [lower, upper];
+                  // push the array element's value.
+    OP_STORE_IDX  // arg = array's symbol index. Pop a value, then a runtime
+                  // index (value was pushed after the index by codegen);
+                  // bounds-check the index; store the value into the array.
 } Opcode;
 
 typedef struct {
@@ -83,7 +96,9 @@ typedef struct {
 
 typedef enum {
     NODE_COMPOUND,
-    NODE_ASSIGN,
+    NODE_ASSIGN,   // Scalar: left = value expr, right unused.
+                   // Array element (sym_table[data.var_idx].is_array):
+                   // left = index expr, right = value expr.
     NODE_UNARY_OP,
     NODE_BINARY_OP,
     NODE_NUMBER,
@@ -99,7 +114,9 @@ typedef enum {
     NODE_WHILE,
     NODE_REPEAT,
     NODE_STRING,
-    NODE_FOR
+    NODE_FOR,
+    NODE_ARRAY_ACCESS // 'arr[i]' as an expression. data.var_idx = the
+                       // array's symbol index, left = index expression.
 } NodeType;
 
 typedef struct ASTNode {
@@ -125,6 +142,7 @@ extern Symbol sym_table[MAX_SYMBOLS];
 extern int sym_count;
 extern char string_pool[MAX_STRINGS][MAX_STRING_LEN];
 extern int string_count;
+extern int array_mem_count;
 extern Token token;
 
 #endif

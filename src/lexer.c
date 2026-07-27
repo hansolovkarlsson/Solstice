@@ -114,6 +114,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "for") == 0) token.type = TOKEN_FOR;
         else if (strcasecmp(token.text, "to") == 0) token.type = TOKEN_TO;
         else if (strcasecmp(token.text, "downto") == 0) token.type = TOKEN_DOWNTO;
+        else if (strcasecmp(token.text, "array") == 0) token.type = TOKEN_ARRAY;
+        else if (strcasecmp(token.text, "of") == 0) token.type = TOKEN_OF;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }
@@ -160,9 +162,14 @@ void next_token(void) {
         case ';': token.type = TOKEN_SEMI; break;
         case ':': token.type = TOKEN_COLON; break;
         case ',': token.type = TOKEN_COMMA; break;
-        case '.': token.type = TOKEN_PERIOD; break;
+        case '.':
+            if (*src == '.') { token.type = TOKEN_DOTDOT; strcpy(token.text, ".."); src++; }
+            else { token.type = TOKEN_PERIOD; }
+            break;
         case '(': token.type = TOKEN_LPAREN; break; // <--- Add '('
         case ')': token.type = TOKEN_RPAREN; break; // <--- Add ')'
+        case '[': token.type = TOKEN_LBRACKET; break;
+        case ']': token.type = TOKEN_RBRACKET; break;
         default:  token.type = TOKEN_EOF; break;
     }
 

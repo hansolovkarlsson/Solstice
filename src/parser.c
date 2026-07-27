@@ -50,6 +50,35 @@ static void add_var(const char *name, DataType type) {
     }
     strcpy(sym_table[sym_count].name, name);
     sym_table[sym_count].type = type;
+    sym_table[sym_count].is_array = 0;
+    sym_table[sym_count].array_lower = 0;
+    sym_table[sym_count].array_upper = 0;
+    sym_table[sym_count].array_base = 0;
+    sym_count++;
+}
+
+// Same as add_var(), but for 'name: array[lower..upper] of type'. Bounds
+// must already be validated (lower <= upper) by the caller.
+static void add_array_var(const char *name, DataType elem_type, int lower, int upper) {
+    for (int i = 0; i < sym_count; i++) {
+        if (strcmp(sym_table[i].name, name) == 0) {
+            compile_error(token.line, "Duplicate variable declaration '%s'", name);
+        }
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    int size = upper - lower + 1;
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = elem_type;
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = lower;
+    sym_table[sym_count].array_upper = upper;
+    sym_table[sym_count].array_base = array_mem_count;
+    array_mem_count += size;
     sym_count++;
 }
 
@@ -71,6 +100,23 @@ static int intern_string(const char *s) {
 static void match(TokenType type) {
     if (token.type == type) next_token();
     else compile_error(token.line, "Unexpected token '%s'", token.text[0] ? token.text : "EOF");
+}
+
+// Parses a compile-time-constant integer literal, e.g. for array bounds
+// (array[1..10], array[-5..5]). Not a general expression - array sizes
+// must be known at compile time in this language.
+static int parse_int_literal(void) {
+    int sign = 1;
+    if (token.type == TOKEN_MINUS) {
+        sign = -1;
+        match(TOKEN_MINUS);
+    }
+    if (token.type != TOKEN_NUMBER) {
+        compile_error(token.line, "Expected an integer literal");
+    }
+    int val = token.value * sign;
+    match(TOKEN_NUMBER);
+    return val;
 }
 
 static ASTNode *expression(void);
@@ -110,11 +156,29 @@ static ASTNode *factor(void) {
         match(TOKEN_STRING);
         return node;
     } else if (token.type == TOKEN_IDENTIFIER) {
-        ASTNode *node = create_node(NODE_VARIABLE);
+        int line = token.line;
         int idx = find_var(token.text);
+        match(TOKEN_IDENTIFIER);
+        if (sym_table[idx].is_array) {
+            if (token.type != TOKEN_LBRACKET) {
+                compile_error(token.line, "Array '%s' must be indexed", sym_table[idx].name);
+            }
+            match(TOKEN_LBRACKET);
+            ASTNode *node = create_node(NODE_ARRAY_ACCESS);
+            node->line = line;
+            node->data.var_idx = idx;
+            node->left = expression(); // index
+            node->expression_type = sym_table[idx].type;
+            match(TOKEN_RBRACKET);
+            return node;
+        }
+        if (token.type == TOKEN_LBRACKET) {
+            compile_error(token.line, "'%s' is not an array, cannot be indexed", sym_table[idx].name);
+        }
+        ASTNode *node = create_node(NODE_VARIABLE);
+        node->line = line;
         node->data.var_idx = idx;
         node->expression_type = sym_table[idx].type;
-        match(TOKEN_IDENTIFIER);
         return node;
     }
     compile_error(token.line, "Invalid factor entry");
@@ -172,6 +236,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     sym_count = 0;
     code_idx = 0;
     string_count = 0;
+    array_mem_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -196,15 +261,38 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 match(TOKEN_IDENTIFIER);
             }
             match(TOKEN_COLON);
-            
-            DataType target_type = TYPE_UNKNOWN;
-            if (token.type == TOKEN_INTEGER) { target_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
-            else if (token.type == TOKEN_BOOLEAN) { target_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
-            else if (token.type == TOKEN_STRING_TYPE) { target_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
-            else compile_error(token.line, "Unknown primitive category");
-            
-            for (int i = 0; i < count; i++) {
-                add_var(temporary_names[i], target_type);
+
+            if (token.type == TOKEN_ARRAY) {
+                match(TOKEN_ARRAY);
+                match(TOKEN_LBRACKET);
+                int lower = parse_int_literal();
+                match(TOKEN_DOTDOT);
+                int upper = parse_int_literal();
+                match(TOKEN_RBRACKET);
+                if (upper < lower) {
+                    compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+                }
+                match(TOKEN_OF);
+
+                DataType elem_type = TYPE_UNKNOWN;
+                if (token.type == TOKEN_INTEGER) { elem_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
+                else if (token.type == TOKEN_BOOLEAN) { elem_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
+                else if (token.type == TOKEN_STRING_TYPE) { elem_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
+                else compile_error(token.line, "Unknown array element type");
+
+                for (int i = 0; i < count; i++) {
+                    add_array_var(temporary_names[i], elem_type, lower, upper);
+                }
+            } else {
+                DataType target_type = TYPE_UNKNOWN;
+                if (token.type == TOKEN_INTEGER) { target_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
+                else if (token.type == TOKEN_BOOLEAN) { target_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
+                else if (token.type == TOKEN_STRING_TYPE) { target_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
+                else compile_error(token.line, "Unknown primitive category");
+
+                for (int i = 0; i < count; i++) {
+                    add_var(temporary_names[i], target_type);
+                }
             }
             match(TOKEN_SEMI);
         }
@@ -233,10 +321,22 @@ static ASTNode *statement(void) {
 
     if (token.type == TOKEN_IDENTIFIER) {
         ASTNode *stmt = create_node(NODE_ASSIGN);
-        stmt->data.var_idx = find_var(token.text);
+        int idx = find_var(token.text);
+        stmt->data.var_idx = idx;
         match(TOKEN_IDENTIFIER);
-        match(TOKEN_ASSIGN);
-        stmt->left = expression();
+        if (sym_table[idx].is_array) {
+            if (token.type != TOKEN_LBRACKET) {
+                compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
+            }
+            match(TOKEN_LBRACKET);
+            stmt->left = expression();  // index
+            match(TOKEN_RBRACKET);
+            match(TOKEN_ASSIGN);
+            stmt->right = expression(); // value
+        } else {
+            match(TOKEN_ASSIGN);
+            stmt->left = expression();  // value
+        }
         return stmt;
     }
 

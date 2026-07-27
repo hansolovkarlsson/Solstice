@@ -29,6 +29,10 @@ static int add_temp_var(DataType type) {
     }
     snprintf(sym_table[sym_count].name, MAX_NAME, "__for_tmp%d", sym_count);
     sym_table[sym_count].type = type;
+    sym_table[sym_count].is_array = 0;
+    sym_table[sym_count].array_lower = 0;
+    sym_table[sym_count].array_upper = 0;
+    sym_table[sym_count].array_base = 0;
     return sym_count++;
 }
 
@@ -42,8 +46,14 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_ASSIGN:
-            generate_code(node->left);
-            emit(OP_STORE, node->data.var_idx);
+            if (sym_table[node->data.var_idx].is_array) {
+                generate_code(node->left);   // index
+                generate_code(node->right);  // value
+                emit(OP_STORE_IDX, node->data.var_idx);
+            } else {
+                generate_code(node->left);   // value
+                emit(OP_STORE, node->data.var_idx);
+            }
             generate_code(node->next);
             break;
 
@@ -58,6 +68,11 @@ void generate_code(ASTNode *node) {
 
         case NODE_STRING:
             emit(OP_PUSH_STR, node->data.var_idx);
+            break;
+
+        case NODE_ARRAY_ACCESS:
+            generate_code(node->left);   // index
+            emit(OP_LOAD_IDX, node->data.var_idx);
             break;
 
         case NODE_UNARY_OP:

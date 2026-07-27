@@ -86,7 +86,7 @@ static int var_used_tracker[MAX_SYMBOLS];
 static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
-    if (node->type == NODE_VARIABLE) {
+    if (node->type == NODE_VARIABLE || node->type == NODE_ARRAY_ACCESS) {
         var_used_tracker[node->data.var_idx] = 1;
     }
 
@@ -118,6 +118,11 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
             node->left = optimize_ast(node->left);
             free_ast(node->left);
             node->left = NULL;
+            if (node->right) {
+                node->right = optimize_ast(node->right);
+                free_ast(node->right);
+                node->right = NULL;
+            }
             node->next = NULL;
             free(node);
             
@@ -125,6 +130,9 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         }
         
         node->left = sweep_dead_assignments(node->left);
+        if (node->right) {
+            node->right = sweep_dead_assignments(node->right);
+        }
         return node;
     }
 
