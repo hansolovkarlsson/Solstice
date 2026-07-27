@@ -54,6 +54,7 @@ int main(int argc, char *argv[]) {
 
     printf("\n--- Phase 4: Code Generation ---\n");
     generate_code(ast);
+    emit_halt();
 
     save_bytecode(bin_path);
     printf("[Compiler] Successfully written binary payload image to %s (%d instructions, %d symbols)\n",

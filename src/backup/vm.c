@@ -31,6 +31,14 @@ static inline int vm_var_index(int idx) {
     return idx;
 }
 
+static inline int vm_str_index(int idx) {
+    if (idx < 0 || idx >= string_count) {
+        fprintf(stderr, "VM Runtime Error: String index %d out of range (0..%d)\n", idx, string_count - 1);
+        fatal_abort();
+    }
+    return idx;
+}
+
 void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     int sp = -1;
@@ -109,10 +117,36 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_PUSH_STR:
+                vm_push(&sp, instr.arg); // pool index; validated when actually dereferenced
+                break;
+
+            case OP_PRINT_STR: {
+                int idx = vm_str_index(vm_pop(&sp));
+                printf("%s\n", string_pool[idx]);
+                break;
+            }
+
+            case OP_SEQ: {
+                int b = vm_str_index(vm_pop(&sp));
+                int a = vm_str_index(vm_pop(&sp));
+                vm_push(&sp, strcmp(string_pool[a], string_pool[b]) == 0);
+                break;
+            }
+
             case OP_HALT:
                 printf("\n--- Final Runtime Execution Output Results ---\n");
                 for (int i = 0; i < sym_count; i++) {
-                    printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
+                    if (sym_table[i].type == TYPE_STRING) {
+                        int idx = vm_vars[i];
+                        if (idx >= 0 && idx < string_count) {
+                            printf("%s = %s\n", sym_table[i].name, string_pool[idx]);
+                        } else {
+                            printf("%s = <invalid string index %d>\n", sym_table[i].name, idx);
+                        }
+                    } else {
+                        printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
+                    }
                 }
                 return;
 

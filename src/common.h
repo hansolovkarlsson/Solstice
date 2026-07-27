@@ -6,7 +6,7 @@
 #define MAX_CODE 500
 #define MAX_STACK 100
 #define MAX_STRING_LEN 256
-#define MAX_STRINGS 100
+#define MAX_STRINGS 256
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -24,6 +24,7 @@ typedef enum {
     TOKEN_WHILE, TOKEN_DO,
     TOKEN_REPEAT, TOKEN_UNTIL,
     TOKEN_STRING, TOKEN_STRING_TYPE,
+    TOKEN_FOR, TOKEN_TO, TOKEN_DOWNTO,
     TOKEN_EOF
 } TokenType;
 
@@ -62,9 +63,12 @@ typedef enum {
              // Otherwise fall through to the next instruction.
     OP_PUSH_STR,  // Push a string_pool[] index (arg) onto the stack.
     OP_PRINT_STR, // Pop an index; print string_pool[index].
-    OP_SEQ        // Pop two indices; push 1 if string_pool[] contents are
+    OP_SEQ,       // Pop two indices; push 1 if string_pool[] contents are
                   // equal (strcmp), else 0. '<>' is OP_SEQ followed by
                   // OP_NOT - no separate string-not-equal opcode needed.
+    OP_SCONCAT    // Pop two indices; concatenate their string_pool[]
+                  // contents, intern the result (possibly growing the
+                  // pool at runtime), and push the new index.
 } Opcode;
 
 typedef struct {
@@ -85,7 +89,8 @@ typedef enum {
     NODE_IF,
     NODE_WHILE,
     NODE_REPEAT,
-    NODE_STRING
+    NODE_STRING,
+    NODE_FOR
 } NodeType;
 
 typedef struct ASTNode {

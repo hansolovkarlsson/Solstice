@@ -52,6 +52,31 @@ void next_token(void) {
         return;
     }
 
+    if (*src == '\'') {
+        src++; // consume opening quote
+        char *p = token.string_value;
+        char *end = token.string_value + MAX_STRING_LEN - 1;
+        while (1) {
+            if (*src == '\'' && *(src + 1) == '\'') {
+                // '' inside a string literal is an escaped literal quote
+                if (p >= end) lexer_error("String literal too long (limit is %d characters)", MAX_STRING_LEN - 1);
+                *p++ = '\'';
+                src += 2;
+            } else if (*src == '\'') {
+                src++; // consume closing quote
+                break;
+            } else if (*src == '\0' || *src == '\n') {
+                lexer_error("Unterminated string literal");
+            } else {
+                if (p >= end) lexer_error("String literal too long (limit is %d characters)", MAX_STRING_LEN - 1);
+                *p++ = *src++;
+            }
+        }
+        *p = '\0';
+        token.type = TOKEN_STRING;
+        return;
+    }
+
     if (isalpha(*src) || *src == '_') {
         char *p = token.text;
         char *end = token.text + MAX_NAME - 1;
@@ -77,6 +102,14 @@ void next_token(void) {
         else if (strcasecmp(token.text, "div") == 0) token.type = TOKEN_DIV_KW;
         else if (strcasecmp(token.text, "mod") == 0) token.type = TOKEN_MOD;
         else if (strcasecmp(token.text, "xor") == 0) token.type = TOKEN_XOR;
+        else if (strcasecmp(token.text, "if") == 0) token.type = TOKEN_IF;
+        else if (strcasecmp(token.text, "then") == 0) token.type = TOKEN_THEN;
+        else if (strcasecmp(token.text, "else") == 0) token.type = TOKEN_ELSE;
+        else if (strcasecmp(token.text, "while") == 0) token.type = TOKEN_WHILE;
+        else if (strcasecmp(token.text, "do") == 0) token.type = TOKEN_DO;
+        else if (strcasecmp(token.text, "repeat") == 0) token.type = TOKEN_REPEAT;
+        else if (strcasecmp(token.text, "until") == 0) token.type = TOKEN_UNTIL;
+        else if (strcasecmp(token.text, "string") == 0) token.type = TOKEN_STRING_TYPE;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

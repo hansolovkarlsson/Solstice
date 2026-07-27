@@ -39,6 +39,24 @@ static inline int vm_str_index(int idx) {
     return idx;
 }
 
+// Adds a runtime-computed string (concatenation result, or a line read via
+// readln) to the pool, growing string_count if needed. Same dedup as the
+// compile-time interner in parser.c, and the same hard limit (MAX_STRINGS) -
+// there's no garbage collection, so a program that concatenates in a tight
+// loop will eventually exhaust the pool and report a clear runtime error
+// rather than overflowing anything.
+static int vm_intern_string(const char *s) {
+    for (int i = 0; i < string_count; i++) {
+        if (strcmp(string_pool[i], s) == 0) return i;
+    }
+    if (string_count >= MAX_STRINGS) {
+        fprintf(stderr, "VM Runtime Error: String pool exhausted (limit is %d distinct strings)\n", MAX_STRINGS);
+        fatal_abort();
+    }
+    strcpy(string_pool[string_count], s);
+    return string_count++;
+}
+
 void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     int sp = -1;
@@ -134,9 +152,26 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_SCONCAT: {
+                int b = vm_str_index(vm_pop(&sp));
+                int a = vm_str_index(vm_pop(&sp));
+                char buf[MAX_STRING_LEN];
+                int written = snprintf(buf, sizeof(buf), "%s%s", string_pool[a], string_pool[b]);
+                if (written < 0 || (size_t)written >= sizeof(buf)) {
+                    fprintf(stderr, "VM Runtime Error: Concatenated string too long (limit is %d characters)\n",
+                            MAX_STRING_LEN - 1);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
             case OP_HALT:
                 printf("\n--- Final Runtime Execution Output Results ---\n");
                 for (int i = 0; i < sym_count; i++) {
+                    if (sym_table[i].name[0] == '_' && sym_table[i].name[1] == '_') {
+                        continue; // hidden compiler-internal variable (e.g. a for-loop's cached bound)
+                    }
                     if (sym_table[i].type == TYPE_STRING) {
                         int idx = vm_vars[i];
                         if (idx >= 0 && idx < string_count) {
@@ -157,19 +192,33 @@ void run_vm(void) {
             }
 
             case OP_READ: {
-                int input_val;
                 int idx = vm_var_index(instr.arg);
                 printf("> "); // Prompt user
-                if (scanf("%d", &input_val) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
-                    fatal_abort();
+
+                if (sym_table[idx].type == TYPE_STRING) {
+                    char line[MAX_STRING_LEN];
+                    if (!fgets(line, sizeof(line), stdin)) {
+                        fprintf(stderr, "VM Runtime Error: Invalid string input\n");
+                        fatal_abort();
+                    }
+                    size_t len = strlen(line);
+                    if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+                    vm_vars[idx] = vm_intern_string(line);
+                } else {
+                    int input_val;
+                    if (scanf("%d", &input_val) != 1) {
+                        fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
+                        fatal_abort();
+                    }
+                    int c;
+                    while ((c = getchar()) != '\n' && c != EOF) { } // flush rest of the line
+                    if (sym_table[idx].type == TYPE_BOOLEAN && input_val != 0 && input_val != 1) {
+                        fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1) for '%s', got %d\n",
+                                sym_table[idx].name, input_val);
+                        fatal_abort();
+                    }
+                    vm_vars[idx] = input_val;
                 }
-                if (sym_table[idx].type == TYPE_BOOLEAN && input_val != 0 && input_val != 1) {
-                    fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1) for '%s', got %d\n",
-                            sym_table[idx].name, input_val);
-                    fatal_abort();
-                }
-                vm_vars[idx] = input_val;
                 break;
             }
 

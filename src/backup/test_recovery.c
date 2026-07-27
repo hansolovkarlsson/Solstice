@@ -19,6 +19,7 @@ static int compile_one(const char *label, const char *source) {
     ast = optimize_ast(ast);
     ast = eliminate_dead_code(ast);
     generate_code(ast);
+    emit_halt();
     printf("[%s] compile OK (%d instructions, %d symbols)\n", label, code_idx, sym_count);
     free_ast(ast);
 

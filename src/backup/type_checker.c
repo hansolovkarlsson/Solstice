@@ -10,6 +10,7 @@ void type_check(ASTNode *node) {
     type_check(node->left);
     type_check(node->right);
     type_check(node->next);
+    type_check(node->extra);
 
     switch (node->type) {
         case NODE_ASSIGN: {
@@ -65,10 +66,15 @@ void type_check(ASTNode *node) {
                 }
                 node->expression_type = TYPE_INTEGER;
             } else {
-                // else if (node->op == TOKEN_EQ || node->op == TOKEN_LT || node->op == TOKEN_GT) {
                 // Relational operators (=, <, >, <=, >=, <>)
-                if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer operands\n", get_current_filename(), node->line);
+                if (left_t == TYPE_STRING && right_t == TYPE_STRING) {
+                    if (node->op != TOKEN_EQ && node->op != TOKEN_NEQ) {
+                        fprintf(stderr, "%s:%d: Type Error: Strings only support '=' and '<>' comparisons\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                } else if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer (or, for =/<>, string) operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
@@ -91,8 +97,36 @@ void type_check(ASTNode *node) {
                         get_current_filename(), node->line);
                 fatal_abort();
             }
+            if (sym_table[node->data.var_idx].type == TYPE_STRING) {
+                fprintf(stderr, "%s:%d: Type Error: readln does not yet support string variables\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
             break;
 
+        case NODE_IF:
+            if (node->left->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'if' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_WHILE:
+            if (node->left->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'while' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_REPEAT:
+            if (node->right->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'until' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
 
         default:
             break;

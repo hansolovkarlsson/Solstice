@@ -45,7 +45,6 @@ static const char *opcode_name(Opcode op) {
         case OP_PUSH_STR:  return "push_str";
         case OP_PRINT_STR: return "print_str";
         case OP_SEQ:       return "seq";
-        case OP_SCONCAT:   return "sconcat";
         default:       return NULL;
     }
 }

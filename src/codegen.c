@@ -15,6 +15,23 @@ static void emit(Opcode op, int arg) {
     code_idx++;
 }
 
+// Allocates a hidden, compiler-generated variable slot (not reachable from
+// user code). Used to cache a for-loop's end bound: Pascal evaluates that
+// bound once, at loop start, not on every iteration - so if the loop body
+// modifies a variable the bound expression depends on, the loop must not
+// be affected. Re-emitting the end-expression's code inside the loop
+// condition every iteration would get this wrong; caching it here doesn't.
+static int add_temp_var(DataType type) {
+    if (sym_count >= MAX_SYMBOLS) {
+        fprintf(stderr, "%s: Compile Error: Too many variables (limit is %d, including internal loop temporaries)\n",
+                get_current_filename(), MAX_SYMBOLS);
+        fatal_abort();
+    }
+    snprintf(sym_table[sym_count].name, MAX_NAME, "__for_tmp%d", sym_count);
+    sym_table[sym_count].type = type;
+    return sym_count++;
+}
+
 void generate_code(ASTNode *node) {
     if (!node) return;
 
@@ -53,7 +70,10 @@ void generate_code(ASTNode *node) {
             generate_code(node->left);
             generate_code(node->right);
             switch (node->op) {
-                case TOKEN_PLUS:  emit(OP_ADD, 0); break;
+                case TOKEN_PLUS:
+                    if (node->left->expression_type == TYPE_STRING) emit(OP_SCONCAT, 0);
+                    else emit(OP_ADD, 0);
+                    break;
                 case TOKEN_MINUS: emit(OP_SUB, 0); break;
                 case TOKEN_MUL:   emit(OP_MUL, 0); break;
                 case TOKEN_DIV:   emit(OP_DIV, 0); break;
@@ -145,6 +165,54 @@ void generate_code(ASTNode *node) {
             generate_code(node->left);        // body (statement chain)
             generate_code(node->right);       // until-condition
             emit(OP_JZ, loop_start);
+            generate_code(node->next);
+            break;
+        }
+
+        // for <var> := <start> to/downto <end> do <body>
+        //     <start>
+        //     STORE var
+        //     <end>
+        //     STORE end_tmp        ; cached once - not re-evaluated per iteration
+        //   loop_start:
+        //     LOAD var
+        //     LOAD end_tmp
+        //     LTE/GTE              ; var <= end_tmp (to) / var >= end_tmp (downto)
+        //     JZ end               ; patched below
+        //     <body>
+        //     LOAD var
+        //     PUSH 1
+        //     ADD/SUB              ; ADD for 'to', SUB for 'downto'
+        //     STORE var
+        //     JMP loop_start
+        //   end:
+        case NODE_FOR: {
+            int loop_var = node->data.var_idx;
+            int descending = (node->op == TOKEN_DOWNTO);
+
+            generate_code(node->left);         // start bound
+            emit(OP_STORE, loop_var);
+
+            int end_var = add_temp_var(TYPE_INTEGER);
+            generate_code(node->right);        // end bound, evaluated once
+            emit(OP_STORE, end_var);
+
+            int loop_start = code_idx;
+            emit(OP_LOAD, loop_var);
+            emit(OP_LOAD, end_var);
+            emit(descending ? OP_GTE : OP_LTE, 0);
+            int jz_idx = code_idx;
+            emit(OP_JZ, 0);                    // placeholder, patched below
+
+            generate_code(node->extra);        // body
+
+            emit(OP_LOAD, loop_var);
+            emit(OP_PUSH, 1);
+            emit(descending ? OP_SUB : OP_ADD, 0);
+            emit(OP_STORE, loop_var);
+            emit(OP_JMP, loop_start);
+
+            code[jz_idx].arg = code_idx;       // JZ lands here: past the loop
             generate_code(node->next);
             break;
         }

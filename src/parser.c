@@ -220,7 +220,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
 // on a malformed file, all correctly fail this check).
 static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_READLN ||
-           t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_BEGIN;
+           t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN;
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
@@ -282,6 +282,31 @@ static ASTNode *statement(void) {
         stmt->left = expression();       // condition
         match(TOKEN_DO);
         stmt->right = statement();       // body
+        return stmt;
+    }
+
+    if (token.type == TOKEN_FOR) {
+        ASTNode *stmt = create_node(NODE_FOR);
+        match(TOKEN_FOR);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "'for' expects a variable identifier");
+        }
+        stmt->data.var_idx = find_var(token.text);
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_ASSIGN);
+        stmt->left = expression();       // start bound
+        if (token.type == TOKEN_TO) {
+            match(TOKEN_TO);
+            stmt->op = TOKEN_TO;
+        } else if (token.type == TOKEN_DOWNTO) {
+            match(TOKEN_DOWNTO);
+            stmt->op = TOKEN_DOWNTO;
+        } else {
+            compile_error(token.line, "'for' expects 'to' or 'downto'");
+        }
+        stmt->right = expression();      // end bound
+        match(TOKEN_DO);
+        stmt->extra = statement();       // body
         return stmt;
     }
 

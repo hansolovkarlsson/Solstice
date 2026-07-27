@@ -143,6 +143,23 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->next, indent);
             }
             break;
+
+        case NODE_FOR:
+            printf("[For] -> Variable: %s (%s)\n", sym_table[node->data.var_idx].name,
+                   node->op == TOKEN_DOWNTO ? "downto" : "to");
+            print_indent(indent + 1);
+            printf("From:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("To:\n");
+            print_ast(node->right, indent + 2);
+            print_indent(indent + 1);
+            printf("Do:\n");
+            print_ast(node->extra, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
     }
 }
 

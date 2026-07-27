@@ -56,12 +56,15 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
+            } else if (node->op == TOKEN_PLUS && left_t == TYPE_STRING && right_t == TYPE_STRING) {
+                node->expression_type = TYPE_STRING; // string concatenation
             } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || 
                     node->op == TOKEN_MUL || node->op == TOKEN_DIV || 
                     node->op == TOKEN_DIV_KW || node->op == TOKEN_MOD) {
                 if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer operands\n", 
-                            get_current_filename(), node->line);
+                    fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer operands%s\n", 
+                            get_current_filename(), node->line,
+                            node->op == TOKEN_PLUS ? " (or, for '+', string operands)" : "");
                     fatal_abort();
                 }
                 node->expression_type = TYPE_INTEGER;
@@ -97,11 +100,6 @@ void type_check(ASTNode *node) {
                         get_current_filename(), node->line);
                 fatal_abort();
             }
-            if (sym_table[node->data.var_idx].type == TYPE_STRING) {
-                fprintf(stderr, "%s:%d: Type Error: readln does not yet support string variables\n",
-                        get_current_filename(), node->line);
-                fatal_abort();
-            }
             break;
 
         case NODE_IF:
@@ -123,6 +121,19 @@ void type_check(ASTNode *node) {
         case NODE_REPEAT:
             if (node->right->expression_type != TYPE_BOOLEAN) {
                 fprintf(stderr, "%s:%d: Type Error: 'until' condition must be boolean\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_FOR:
+            if (sym_table[node->data.var_idx].type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: 'for' loop variable must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: 'for' loop bounds must be integer\n",
                         get_current_filename(), node->line);
                 fatal_abort();
             }

@@ -95,7 +95,6 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"PUSH_STR",  OP_PUSH_STR,  OPERAND_STRING},
     {"PRINT_STR", OP_PRINT_STR, OPERAND_NONE},
     {"SEQ",       OP_SEQ,       OPERAND_NONE},
-    {"SCONCAT",   OP_SCONCAT,   OPERAND_NONE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 

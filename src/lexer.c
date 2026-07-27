@@ -110,6 +110,9 @@ void next_token(void) {
         else if (strcasecmp(token.text, "repeat") == 0) token.type = TOKEN_REPEAT;
         else if (strcasecmp(token.text, "until") == 0) token.type = TOKEN_UNTIL;
         else if (strcasecmp(token.text, "string") == 0) token.type = TOKEN_STRING_TYPE;
+        else if (strcasecmp(token.text, "for") == 0) token.type = TOKEN_FOR;
+        else if (strcasecmp(token.text, "to") == 0) token.type = TOKEN_TO;
+        else if (strcasecmp(token.text, "downto") == 0) token.type = TOKEN_DOWNTO;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }
