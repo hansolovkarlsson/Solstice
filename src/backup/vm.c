@@ -10,7 +10,7 @@ static int vm_vars[MAX_SYMBOLS];
 static inline void vm_push(int *sp, int val) {
     if (*sp >= MAX_STACK - 1) {
         fprintf(stderr, "VM Runtime Error: Stack overflow (limit is %d)\n", MAX_STACK);
-        rascal_abort();
+        fatal_abort();
     }
     vm_stack[++(*sp)] = val;
 }
@@ -18,7 +18,7 @@ static inline void vm_push(int *sp, int val) {
 static inline int vm_pop(int *sp) {
     if (*sp < 0) {
         fprintf(stderr, "VM Runtime Error: Stack underflow\n");
-        rascal_abort();
+        fatal_abort();
     }
     return vm_stack[(*sp)--];
 }
@@ -26,7 +26,7 @@ static inline int vm_pop(int *sp) {
 static inline int vm_var_index(int idx) {
     if (idx < 0 || idx >= sym_count) {
         fprintf(stderr, "VM Runtime Error: Variable index %d out of range (0..%d)\n", idx, sym_count - 1);
-        rascal_abort();
+        fatal_abort();
     }
     return idx;
 }
@@ -39,7 +39,7 @@ void run_vm(void) {
     while (1) {
         if (ip < 0 || ip >= code_idx) {
             fprintf(stderr, "VM Runtime Error: Instruction pointer (ip=%d) out of bounds.\n", ip);
-            rascal_abort();
+            fatal_abort();
         }
 
         Instruction instr = code[ip++];
@@ -67,7 +67,7 @@ void run_vm(void) {
                 int a = vm_pop(&sp);
                 if (b == 0) {
                     fprintf(stderr, "VM Runtime Error: Division by zero\n");
-                    rascal_abort();
+                    fatal_abort();
                 }
                 vm_push(&sp, a / b);
                 break;
@@ -91,7 +91,7 @@ void run_vm(void) {
                 int a = vm_pop(&sp);
                 if (b == 0) {
                     fprintf(stderr, "VM Runtime Error: Modulo by zero\n");
-                    rascal_abort();
+                    fatal_abort();
                 }
                 vm_push(&sp, a % b);
                 break;
@@ -116,12 +116,12 @@ void run_vm(void) {
                 printf("> "); // Prompt user
                 if (scanf("%d", &input_val) != 1) {
                     fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
-                    rascal_abort();
+                    fatal_abort();
                 }
                 if (sym_table[idx].type == TYPE_BOOLEAN && input_val != 0 && input_val != 1) {
                     fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1) for '%s', got %d\n",
                             sym_table[idx].name, input_val);
-                    rascal_abort();
+                    fatal_abort();
                 }
                 vm_vars[idx] = input_val;
                 break;
@@ -129,7 +129,7 @@ void run_vm(void) {
 
             default:
                 fprintf(stderr, "VM Runtime Error: Invalid opcode encountered (op=%d) at ip=%d\n", instr.op, ip - 1);
-                rascal_abort();
+                fatal_abort();
         }
     }
 }

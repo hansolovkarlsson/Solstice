@@ -22,7 +22,7 @@ $(BIN_FILES): $(PAS_FILES)
 %.bin: %.pas
 	@-rm out.log err.log
 	@echo "Compiling $< into $@"
-	@-$(PASCALC) -c $< $@ >> out.log 2>> err.log
+	@-$(PASCALC) $< $@ >> out.log 2>> err.log
 	@-cat err.log
 
 

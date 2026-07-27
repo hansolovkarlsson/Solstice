@@ -41,7 +41,7 @@ ASTNode *optimize_ast(ASTNode *node) {
             case TOKEN_DIV:   
                 if (r_val == 0) { 
                     fprintf(stderr, "%s:%d: Compile Error: Division by zero\n", get_current_filename(), node->line);
-                    rascal_abort();
+                    fatal_abort();
                 }
                 folded_val = l_val / r_val; 
                 break;
@@ -54,11 +54,11 @@ ASTNode *optimize_ast(ASTNode *node) {
             case TOKEN_GTE: folded_val = (l_val >= r_val); is_comparison = 1; break;
             case TOKEN_NEQ: folded_val = (l_val != r_val); is_comparison = 1; break;
             case TOKEN_DIV_KW:
-                if (r_val == 0) { fprintf(stderr, "Error: Constant division by zero\n"); rascal_abort(); }
+                if (r_val == 0) { fprintf(stderr, "Error: Constant division by zero\n"); fatal_abort(); }
                 folded_val = l_val / r_val;
                 break;
             case TOKEN_MOD:
-                if (r_val == 0) { fprintf(stderr, "Error: Constant modulo by zero\n"); rascal_abort(); }
+                if (r_val == 0) { fprintf(stderr, "Error: Constant modulo by zero\n"); fatal_abort(); }
                 folded_val = l_val % r_val;
                 break;
             case TOKEN_XOR:

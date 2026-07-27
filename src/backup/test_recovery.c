@@ -1,5 +1,5 @@
 // Simulates an embedding host (a REPL, a GUI "Compile" button, etc.) that
-// calls into the Pascal-for-Rascal compiler repeatedly within a single
+// calls into the Pascal compiler repeatedly within a single
 // process. Before this fix, any fatal error anywhere in the pipeline called
 // exit(1) directly and would have taken the whole host process down with it.
 #include <stdio.h>
@@ -8,11 +8,11 @@
 #include "error.h"
 
 static int compile_one(const char *label, const char *source) {
-    if (setjmp(rascal_error_env)) {
+    if (setjmp(fatal_error_env)) {
         printf("[%s] compile FAILED (recovered - process still alive)\n", label);
         return 0;
     }
-    rascal_error_active = 1;
+    fatal_error_active = 1;
 
     ASTNode *ast = parse_ast(source, label);
     type_check(ast);
@@ -22,7 +22,7 @@ static int compile_one(const char *label, const char *source) {
     printf("[%s] compile OK (%d instructions, %d symbols)\n", label, code_idx, sym_count);
     free_ast(ast);
 
-    rascal_error_active = 0;
+    fatal_error_active = 0;
     return 1;
 }
 

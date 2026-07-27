@@ -8,7 +8,7 @@ static void emit(Opcode op, int arg) {
     if (code_idx >= MAX_CODE) {
         fprintf(stderr, "%s: Compile Error: Program exceeds maximum bytecode size (limit is %d instructions)\n",
                 get_current_filename(), MAX_CODE);
-        rascal_abort();
+        fatal_abort();
     }
     code[code_idx].op = op;
     code[code_idx].arg = arg;

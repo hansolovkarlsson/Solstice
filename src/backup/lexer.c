@@ -19,7 +19,7 @@ static void lexer_error(const char *fmt, ...) {
     vfprintf(stderr, fmt, args);
     va_end(args);
     fprintf(stderr, "\n");
-    rascal_abort();
+    fatal_abort();
 }
 
 void init_lexer(const char *source) {
