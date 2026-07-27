@@ -1,0 +1,10 @@
+#ifndef LEXER_H
+#define LEXER_H
+
+#include "common.h"
+
+void init_lexer(const char *source);
+void next_token(void);
+
+#endif
+
