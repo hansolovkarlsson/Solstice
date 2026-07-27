@@ -1,0 +1,31 @@
+.var first string
+.var last string
+.var full string
+.var greeting string
+
+    push_str "Hello" ; 0000
+    store first ; 0001
+    push_str "World" ; 0002
+    store last ; 0003
+    load first ; 0004
+    push_str ", " ; 0005
+    sconcat ; 0006
+    load last ; 0007
+    sconcat ; 0008
+    push_str "!" ; 0009
+    sconcat ; 0010
+    store full ; 0011
+    load full ; 0012
+    print_str ; 0013
+    push_str "Hi" ; 0014
+    store greeting ; 0015
+    load greeting ; 0016
+    push_str "!" ; 0017
+    sconcat ; 0018
+    push_str "Hi!" ; 0019
+    seq ; 0020
+    jz L24 ; 0021
+    push_str "concat comparison works" ; 0022
+    print_str ; 0023
+L24:
+    halt ; 0024
