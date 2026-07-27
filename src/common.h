@@ -8,6 +8,7 @@
 #define MAX_STRING_LEN 256
 #define MAX_STRINGS 256
 #define MAX_ARRAY_MEM 4096
+#define MAX_CALL_DEPTH 256
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -93,11 +94,20 @@ typedef enum {
     OP_STORE_IDX, // arg = array's symbol index. Pop a value, then a runtime
                   // index (value was pushed after the index by codegen);
                   // bounds-check the index; store the value into the array.
-    OP_SCMP       // Pop two indices; push -1, 0, or 1 for a < b, a == b,
+    OP_SCMP,      // Pop two indices; push -1, 0, or 1 for a < b, a == b,
                   // a > b (lexicographic, via strcmp, normalized to a
                   // fixed sign). String '<'/'>'/'<='/'>=' compile as
                   // OP_SCMP followed by PUSH 0 and the matching integer
                   // LT/GT/LTE/GTE - no separate string-ordering opcodes.
+    OP_CALL,      // arg = absolute target instruction index. Push the
+                  // return address (the instruction after this one) onto
+                  // a separate call stack, then jump to arg. Recursion-safe:
+                  // each call gets its own return address on that stack,
+                  // not a single shared slot.
+    OP_RET        // Pop the call stack; jump to the popped address. A
+                  // runtime error (not a crash) if the call stack is
+                  // empty - e.g. bytecode that reaches RET without a
+                  // matching CALL.
 } Opcode;
 
 typedef struct {

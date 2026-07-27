@@ -18,7 +18,7 @@
 //     LOAD/STORE/READ <variable name>    must have a matching .var
 //     LOAD_IDX/STORE_IDX <array name>    must have a matching .array; the
 //                                        runtime index comes off the stack
-//     JMP/JZ <label name>                may be a forward reference
+//     JMP/JZ/CALL <label name>           may be a forward reference
 //     PUSH_STR "<text>"                  interned into the string pool
 //     everything else                    no operand
 //
@@ -103,6 +103,8 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"HALT",      OP_HALT,      OPERAND_NONE},
     {"JMP",       OP_JMP,       OPERAND_LABEL},
     {"JZ",        OP_JZ,        OPERAND_LABEL},
+    {"CALL",      OP_CALL,      OPERAND_LABEL},
+    {"RET",       OP_RET,       OPERAND_NONE},
     {"PUSH_STR",  OP_PUSH_STR,  OPERAND_STRING},
     {"PRINT_STR", OP_PRINT_STR, OPERAND_NONE},
     {"SEQ",       OP_SEQ,       OPERAND_NONE},

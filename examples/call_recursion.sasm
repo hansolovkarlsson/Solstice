@@ -1,0 +1,20 @@
+.var n integer
+    push 5
+    store n
+    call countdown
+    halt
+countdown:
+    load n
+    print
+    newline
+    load n
+    push 0
+    gt
+    jz done
+    load n
+    push 1
+    sub
+    store n
+    call countdown
+done:
+    ret

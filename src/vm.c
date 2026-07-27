@@ -7,6 +7,11 @@
 static int vm_stack[MAX_STACK];
 static int vm_vars[MAX_SYMBOLS];
 static int vm_array_mem[MAX_ARRAY_MEM];
+static int vm_call_stack[MAX_CALL_DEPTH]; // return addresses only - kept
+                                           // separate from vm_stack so a
+                                           // procedure's operand-stack use
+                                           // can never clobber a return
+                                           // address or vice versa.
 
 static inline void vm_push(int *sp, int val) {
     if (*sp >= MAX_STACK - 1) {
@@ -22,6 +27,23 @@ static inline int vm_pop(int *sp) {
         fatal_abort();
     }
     return vm_stack[(*sp)--];
+}
+
+static inline void vm_call_push(int *call_sp, int return_addr) {
+    if (*call_sp >= MAX_CALL_DEPTH - 1) {
+        fprintf(stderr, "VM Runtime Error: Call stack overflow (limit is %d) - possible infinite recursion\n",
+                MAX_CALL_DEPTH);
+        fatal_abort();
+    }
+    vm_call_stack[++(*call_sp)] = return_addr;
+}
+
+static inline int vm_call_pop(int *call_sp) {
+    if (*call_sp < 0) {
+        fprintf(stderr, "VM Runtime Error: 'ret' with no matching 'call' (call stack empty)\n");
+        fatal_abort();
+    }
+    return vm_call_stack[(*call_sp)--];
 }
 
 static inline int vm_var_index(int idx) {
@@ -102,6 +124,7 @@ void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
     int sp = -1;
+    int call_sp = -1;
     int ip = 0;
 
     while (1) {
@@ -198,6 +221,15 @@ void run_vm(void) {
                 }
                 break;
             }
+
+            case OP_CALL:
+                vm_call_push(&call_sp, ip); // ip already points past this CALL
+                ip = instr.arg;
+                break;
+
+            case OP_RET:
+                ip = vm_call_pop(&call_sp);
+                break;
 
             case OP_PUSH_STR:
                 vm_push(&sp, instr.arg); // pool index; validated when actually dereferenced

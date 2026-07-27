@@ -1,0 +1,11 @@
+	push 1
+	call p
+	push 2
+	call p
+	halt
+
+p:
+	print
+	newline
+	ret
+

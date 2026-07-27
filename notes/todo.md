@@ -1,5 +1,9 @@
 # To Do
 
+More stack operations, like dup, drop, over, rot, swap, etc
+
+Later also add macros and other cool things for assembler
+
 Manual for Pascal, SolVM, Solas, Desole etc
 All data types
 Functions
@@ -20,11 +24,18 @@ Need static variables
 
 Compile time datatype check, like char_test.pas, shouldn't compile
 
-Future additions:
+Could add Token, Rule, Syntax, etc as functionality to make it built-in compiler support
+
+Then the name change to Phoenix instead.
+
+Assert functions
+Error, Warning, built-in functions as well
+Try-Catch-Retry or something similar
+
+
 BASIC compiler to SVM. [.bas]
 C compiler to SVM. [.c .h]
 Assembler. [.asm, .inc]
-Disassembler
 Include, import
 Object oriented. Classes and objects. Early binding only probably
 Linker [.obj]
