@@ -219,7 +219,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
 // statement_list() to know when to stop (hitting END/ELSE/UNTIL, or EOF
 // on a malformed file, all correctly fail this check).
 static int is_statement_start(TokenType t) {
-    return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_READLN ||
+    return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN;
 }
 
@@ -240,12 +240,27 @@ static ASTNode *statement(void) {
         return stmt;
     }
 
-    if (token.type == TOKEN_WRITELN) {
-        match(TOKEN_WRITELN);
-        match(TOKEN_LPAREN);
+    if (token.type == TOKEN_WRITELN || token.type == TOKEN_WRITE) {
+        TokenType kind = token.type;
+        match(kind);
         ASTNode *stmt = create_node(NODE_WRITELN);
-        stmt->left = expression();
-        match(TOKEN_RPAREN);
+        stmt->op = kind; // TOKEN_WRITE (no trailing newline) or TOKEN_WRITELN
+        stmt->left = NULL;
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            if (token.type != TOKEN_RPAREN) {
+                ASTNode *arg_head = expression();
+                ASTNode *arg_tail = arg_head;
+                while (token.type == TOKEN_COMMA) {
+                    match(TOKEN_COMMA);
+                    ASTNode *next_arg = expression();
+                    arg_tail->next = next_arg;
+                    arg_tail = next_arg;
+                }
+                stmt->left = arg_head;
+            }
+            match(TOKEN_RPAREN);
+        }
         return stmt;
     }
 

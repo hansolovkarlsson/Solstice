@@ -46,6 +46,7 @@ static const char *opcode_name(Opcode op) {
         case OP_PRINT_STR: return "print_str";
         case OP_SEQ:       return "seq";
         case OP_SCONCAT:   return "sconcat";
+        case OP_NEWLINE:   return "newline";
         default:       return NULL;
     }
 }
@@ -141,8 +142,20 @@ static void disassemble(FILE *out) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 2 && argc != 3) {
-        printf("Usage: %s <input.bin> [output.sasm]\n", argv[0]);
+    const char *positional[2];
+    int npos = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0) {
+            verbose_mode = 1;
+        } else if (npos < 2) {
+            positional[npos++] = argv[i];
+        } else {
+            npos++; // trigger usage error below
+        }
+    }
+
+    if (npos != 1 && npos != 2) {
+        printf("Usage: %s [-v] <input.bin> [output.sasm]\n", argv[0]);
         return 1;
     }
 
@@ -152,12 +165,12 @@ int main(int argc, char *argv[]) {
     }
     fatal_error_active = 1;
 
-    const char *bin_path = argv[1];
+    const char *bin_path = positional[0];
     load_bytecode(bin_path);
 
     FILE *out = stdout;
-    if (argc == 3) {
-        out = fopen(argv[2], "w");
+    if (npos == 2) {
+        out = fopen(positional[1], "w");
         if (!out) { perror("Failed to open output file"); fatal_abort(); }
     }
 
@@ -165,8 +178,10 @@ int main(int argc, char *argv[]) {
 
     if (out != stdout) {
         fclose(out);
-        fprintf(stderr, "[Disassembler] Wrote %s (%d instructions, %d symbols, %d strings)\n",
-                argv[2], code_idx, sym_count, string_count);
+        if (verbose_mode) {
+            fprintf(stderr, "[Disassembler] Wrote %s (%d instructions, %d symbols, %d strings)\n",
+                    positional[1], code_idx, sym_count, string_count);
+        }
     }
 
     fatal_error_active = 0;

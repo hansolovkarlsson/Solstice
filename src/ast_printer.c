@@ -50,16 +50,19 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
-        case NODE_WRITELN:
-            printf("[WriteLn]\n");
-            print_indent(indent + 1);
-            printf("Expression:\n");
-            print_ast(node->left, indent + 2);
+        case NODE_WRITELN: {
+            printf("[%s]\n", node->op == TOKEN_WRITE ? "Write" : "WriteLn");
+            int arg_num = 1;
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                print_indent(indent + 1);
+                printf("Arg %d:\n", arg_num++);
+                print_ast(arg, indent + 2);
+            }
             if (node->next) {
                 print_ast(node->next, indent);
             }
             break;
-
+        }
         case NODE_READLN:
             printf("[ReadLn] -> Target Variable: %s\n", sym_table[node->data.var_idx].name);
             if (node->next) {

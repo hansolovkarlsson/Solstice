@@ -15,7 +15,7 @@ all: $(BIN_FILES)
 
 # Cleanup
 clean:
-	-rm -f $(BIN_FILES)
+	-rm -f $(BIN_FILES) *.disasm
 
 
 $(BIN_FILES): $(PAS_FILES)

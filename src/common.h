@@ -19,7 +19,7 @@ typedef enum {
     TOKEN_DIV_KW, TOKEN_MOD, TOKEN_XOR,
     TOKEN_SEMI, TOKEN_COLON, TOKEN_COMMA, TOKEN_PERIOD,
     TOKEN_LPAREN, TOKEN_RPAREN,
-    TOKEN_WRITELN, TOKEN_READLN,
+    TOKEN_WRITELN, TOKEN_WRITE, TOKEN_READLN,
     TOKEN_IF, TOKEN_THEN, TOKEN_ELSE,
     TOKEN_WHILE, TOKEN_DO,
     TOKEN_REPEAT, TOKEN_UNTIL,
@@ -56,19 +56,24 @@ typedef enum {
     OP_LTE, OP_GTE, OP_NEQ,
     OP_NEG,
     OP_MOD, OP_XOR,
-    OP_PRINT, OP_READ,
+    OP_PRINT,     // Pop a value; print it with NO trailing newline.
+    OP_READ,
     OP_HALT,
     OP_JMP,  // Unconditional jump. arg = absolute target instruction index.
     OP_JZ,   // Pop the stack; if the value is zero (false), jump to arg.
              // Otherwise fall through to the next instruction.
     OP_PUSH_STR,  // Push a string_pool[] index (arg) onto the stack.
-    OP_PRINT_STR, // Pop an index; print string_pool[index].
+    OP_PRINT_STR, // Pop an index; print string_pool[index] with NO
+                  // trailing newline.
     OP_SEQ,       // Pop two indices; push 1 if string_pool[] contents are
                   // equal (strcmp), else 0. '<>' is OP_SEQ followed by
                   // OP_NOT - no separate string-not-equal opcode needed.
-    OP_SCONCAT    // Pop two indices; concatenate their string_pool[]
+    OP_SCONCAT,   // Pop two indices; concatenate their string_pool[]
                   // contents, intern the result (possibly growing the
                   // pool at runtime), and push the new index.
+    OP_NEWLINE    // Print a newline. No operand, no stack interaction.
+                  // writeln emits this once, after all its arguments;
+                  // write never emits it.
 } Opcode;
 
 typedef struct {
@@ -84,7 +89,11 @@ typedef enum {
     NODE_NUMBER,
     NODE_BOOLEAN,
     NODE_VARIABLE,
-    NODE_WRITELN,
+    NODE_WRITELN,  // Also covers 'write' - node->op is TOKEN_WRITE or
+                   // TOKEN_WRITELN (only the latter appends a newline).
+                   // node->left is the head of the argument list, chained
+                   // via each argument's own ->next (same technique as a
+                   // statement list) - NULL means zero arguments.
     NODE_READLN,
     NODE_IF,
     NODE_WHILE,

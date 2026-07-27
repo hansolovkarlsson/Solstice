@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "compiler.h"
 #include "bytecode.h"
 #include "error.h"
@@ -20,8 +21,20 @@ static char *read_file(const char *path) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("Usage: %s <source.pas> <output.bin>\n", argv[0]);
+    const char *positional[2];
+    int npos = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0) {
+            verbose_mode = 1;
+        } else if (npos < 2) {
+            positional[npos++] = argv[i];
+        } else {
+            npos++; // trigger the usage error below
+        }
+    }
+
+    if (npos != 2) {
+        printf("Usage: %s [-v] <source.pas> <output.bin>\n", argv[0]);
         return 1;
     }
 
@@ -35,30 +48,34 @@ int main(int argc, char *argv[]) {
     }
     fatal_error_active = 1;
 
-    const char *source_path = argv[1];
-    const char *bin_path = argv[2];
+    const char *source_path = positional[0];
+    const char *bin_path = positional[1];
     char *source = read_file(source_path);
 
-    printf("\n--- Phase 1: Parsing AST ---\n");
+    if (verbose_mode) printf("\n--- Phase 1: Parsing AST ---\n");
     ASTNode *ast = parse_ast(source, source_path);
 
-    printf("\n--- Phase 2: Type Checking ---\n");
+    if (verbose_mode) printf("\n--- Phase 2: Type Checking ---\n");
     type_check(ast);
 
-    printf("\n--- Phase 3: Optimizing AST ---\n");
+    if (verbose_mode) printf("\n--- Phase 3: Optimizing AST ---\n");
     ast = optimize_ast(ast);
     ast = eliminate_dead_code(ast);
 
-    printf("\n--- Abstract Syntax Tree Visualization ---\n");
-    print_ast(ast, 0);
+    if (verbose_mode) {
+        printf("\n--- Abstract Syntax Tree Visualization ---\n");
+        print_ast(ast, 0);
+    }
 
-    printf("\n--- Phase 4: Code Generation ---\n");
+    if (verbose_mode) printf("\n--- Phase 4: Code Generation ---\n");
     generate_code(ast);
     emit_halt();
 
     save_bytecode(bin_path);
-    printf("[Compiler] Successfully written binary payload image to %s (%d instructions, %d symbols)\n",
-           bin_path, code_idx, sym_count);
+    if (verbose_mode) {
+        printf("[Compiler] Successfully written binary payload image to %s (%d instructions, %d symbols)\n",
+               bin_path, code_idx, sym_count);
+    }
 
     free_ast(ast);
     free(source);

@@ -86,10 +86,12 @@ void type_check(ASTNode *node) {
         }
 
        case NODE_WRITELN:
-            if (node->left->expression_type == TYPE_UNKNOWN) {
-                fprintf(stderr, "%s:%d: Type Error: Cannot print invalid expression\n",
-                        get_current_filename(), node->line);
-                fatal_abort();
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                if (arg->expression_type == TYPE_UNKNOWN) {
+                    fprintf(stderr, "%s:%d: Type Error: Cannot print invalid expression\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
             }
             break;
 

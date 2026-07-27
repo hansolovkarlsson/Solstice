@@ -99,9 +99,12 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_WRITELN:
-            generate_code(node->left); // Evaluates expression onto VM stack
-            if (node->left->expression_type == TYPE_STRING) emit(OP_PRINT_STR, 0);
-            else emit(OP_PRINT, 0);
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                generate_code(arg);
+                if (arg->expression_type == TYPE_STRING) emit(OP_PRINT_STR, 0);
+                else emit(OP_PRINT, 0);
+            }
+            if (node->op == TOKEN_WRITELN) emit(OP_NEWLINE, 0);
             generate_code(node->next);
             break;
 

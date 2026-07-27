@@ -69,7 +69,7 @@ ASTNode *optimize_ast(ASTNode *node) {
             default: return node;
         }
 
-        printf("[Optimization] Folded constants: %d and %d\n", l_val, r_val);
+        if (verbose_mode) printf("[Optimization] Folded constants: %d and %d\n", l_val, r_val);
         free_ast(node->left);
         free_ast(node->right);
         
@@ -109,8 +109,10 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         node->next = sweep_dead_assignments(node->next);
 
         if (!var_used_tracker[var_idx]) {
-            printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n", 
-                   sym_table[var_idx].name);
+            if (verbose_mode) {
+                printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
+                       sym_table[var_idx].name);
+            }
             
             ASTNode *next_cached = node->next;
             node->left = optimize_ast(node->left);

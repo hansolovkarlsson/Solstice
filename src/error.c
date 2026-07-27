@@ -3,6 +3,7 @@
 
 jmp_buf fatal_error_env;
 int fatal_error_active = 0;
+int verbose_mode = 0;
 
 void fatal_abort(void) {
     if (fatal_error_active) {

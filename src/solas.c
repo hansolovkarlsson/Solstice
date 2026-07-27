@@ -21,6 +21,11 @@
 //
 // .var types: integer, boolean, string
 //
+// Note: PRINT and PRINT_STR do NOT print a trailing newline - use NEWLINE
+// explicitly (this is what write/writeln in the Pascal compiler compile
+// down to: one PRINT/PRINT_STR per argument, then one NEWLINE only for
+// writeln).
+//
 // Example (countdown loop):
 //
 //     .var i integer
@@ -96,6 +101,7 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"PRINT_STR", OP_PRINT_STR, OPERAND_NONE},
     {"SEQ",       OP_SEQ,       OPERAND_NONE},
     {"SCONCAT",   OP_SCONCAT,   OPERAND_NONE},
+    {"NEWLINE",   OP_NEWLINE,   OPERAND_NONE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
@@ -365,8 +371,20 @@ static char *read_file(const char *path) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("Usage: %s <input.sasm> <output.bin>\n", argv[0]);
+    const char *positional[2];
+    int npos = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0) {
+            verbose_mode = 1;
+        } else if (npos < 2) {
+            positional[npos++] = argv[i];
+        } else {
+            npos++; // trigger usage error below
+        }
+    }
+
+    if (npos != 2) {
+        printf("Usage: %s [-v] <input.sasm> <output.bin>\n", argv[0]);
         return 1;
     }
 
@@ -376,14 +394,16 @@ int main(int argc, char *argv[]) {
     }
     fatal_error_active = 1;
 
-    const char *source_path = argv[1];
-    const char *bin_path = argv[2];
+    const char *source_path = positional[0];
+    const char *bin_path = positional[1];
     char *source = read_file(source_path);
 
     assemble(source, source_path);
     save_bytecode(bin_path);
-    printf("[Assembler] Successfully written binary payload image to %s (%d instructions, %d symbols, %d strings)\n",
-           bin_path, code_idx, sym_count, string_count);
+    if (verbose_mode) {
+        printf("[Assembler] Successfully written binary payload image to %s (%d instructions, %d symbols, %d strings)\n",
+               bin_path, code_idx, sym_count, string_count);
+    }
 
     free(source);
     fatal_error_active = 0;

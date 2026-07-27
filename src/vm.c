@@ -141,7 +141,7 @@ void run_vm(void) {
 
             case OP_PRINT_STR: {
                 int idx = vm_str_index(vm_pop(&sp));
-                printf("%s\n", string_pool[idx]);
+                printf("%s", string_pool[idx]);
                 break;
             }
 
@@ -167,29 +167,35 @@ void run_vm(void) {
             }
 
             case OP_HALT:
-                printf("\n--- Final Runtime Execution Output Results ---\n");
-                for (int i = 0; i < sym_count; i++) {
-                    if (sym_table[i].name[0] == '_' && sym_table[i].name[1] == '_') {
-                        continue; // hidden compiler-internal variable (e.g. a for-loop's cached bound)
-                    }
-                    if (sym_table[i].type == TYPE_STRING) {
-                        int idx = vm_vars[i];
-                        if (idx >= 0 && idx < string_count) {
-                            printf("%s = %s\n", sym_table[i].name, string_pool[idx]);
-                        } else {
-                            printf("%s = <invalid string index %d>\n", sym_table[i].name, idx);
+                if (verbose_mode) {
+                    printf("\n--- Final Runtime Execution Output Results ---\n");
+                    for (int i = 0; i < sym_count; i++) {
+                        if (sym_table[i].name[0] == '_' && sym_table[i].name[1] == '_') {
+                            continue; // hidden compiler-internal variable (e.g. a for-loop's cached bound)
                         }
-                    } else {
-                        printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
+                        if (sym_table[i].type == TYPE_STRING) {
+                            int idx = vm_vars[i];
+                            if (idx >= 0 && idx < string_count) {
+                                printf("%s = %s\n", sym_table[i].name, string_pool[idx]);
+                            } else {
+                                printf("%s = <invalid string index %d>\n", sym_table[i].name, idx);
+                            }
+                        } else {
+                            printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
+                        }
                     }
                 }
                 return;
 
             case OP_PRINT: {
                 int val = vm_pop(&sp);
-                printf("%d\n", val);
+                printf("%d", val);
                 break;
             }
+
+            case OP_NEWLINE:
+                printf("\n");
+                break;
 
             case OP_READ: {
                 int idx = vm_var_index(instr.arg);

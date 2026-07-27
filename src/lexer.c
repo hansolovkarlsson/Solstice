@@ -95,6 +95,7 @@ void next_token(void) {
         else if (strcasecmp(token.text, "true") == 0) { token.type = TOKEN_TRUE; token.value = 1; }
         else if (strcasecmp(token.text, "false") == 0) { token.type = TOKEN_FALSE; token.value = 0; }
         else if (strcasecmp(token.text, "writeln") == 0) token.type = TOKEN_WRITELN;
+        else if (strcasecmp(token.text, "write") == 0) token.type = TOKEN_WRITE;
         else if (strcasecmp(token.text, "readln") == 0) token.type = TOKEN_READLN;
         else if (strcasecmp(token.text, "and") == 0) token.type = TOKEN_AND;
         else if (strcasecmp(token.text, "or") == 0) token.type = TOKEN_OR;
