@@ -25,12 +25,12 @@ static void compile_error(int line, const char *fmt, ...) {
     vfprintf(stderr, fmt, args);
     va_end(args);
     fprintf(stderr, "\n");
-    fatal_abort();
+    rascal_abort();
 }
 
 ASTNode *create_node(NodeType type) {
     ASTNode *node = calloc(1, sizeof(ASTNode));
-    if (!node) { fprintf(stderr, "Memory failure\n"); fatal_abort(); }
+    if (!node) { fprintf(stderr, "Memory failure\n"); rascal_abort(); }
     node->type = type;
     node->expression_type = TYPE_UNKNOWN;
     node->line = token.line;

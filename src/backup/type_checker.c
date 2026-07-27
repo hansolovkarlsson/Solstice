@@ -17,7 +17,7 @@ void type_check(ASTNode *node) {
             if (node->left->expression_type != target_type) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to variable '%s'\n",
                         get_current_filename(), node->line, sym_table[node->data.var_idx].name);
-                fatal_abort();
+                rascal_abort();
             }
             break;
         }
@@ -26,13 +26,13 @@ void type_check(ASTNode *node) {
             if (node->op == TOKEN_MINUS) {
                 if (node->left->expression_type != TYPE_INTEGER) {
                     fprintf(stderr, "%s:%d: Type Error: Unary minus requires integer\n", get_current_filename(), node->line);
-                    fatal_abort();
+                    rascal_abort();
                 }
                 node->expression_type = TYPE_INTEGER;
             } else if (node->op == TOKEN_NOT) {
                 if (node->left->expression_type != TYPE_BOOLEAN) {
                     fprintf(stderr, "%s:%d: Type Error: 'not' requires boolean\n", get_current_filename(), node->line);
-                    fatal_abort();
+                    rascal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
             }
@@ -45,14 +45,14 @@ void type_check(ASTNode *node) {
             if (left_t != right_t) {
                 fprintf(stderr, "%s:%d: Type Error: Mismatched operand types in binary operation\n",
                         get_current_filename(), node->line);
-                fatal_abort();
+                rascal_abort();
             }
 
             if (node->op == TOKEN_AND || node->op == TOKEN_OR || node->op == TOKEN_XOR) {
                 if (left_t != TYPE_BOOLEAN || right_t != TYPE_BOOLEAN) {
                     fprintf(stderr, "%s:%d: Type Error: Logical operators (and, or, xor) require boolean operands\n", 
                             get_current_filename(), node->line);
-                    fatal_abort();
+                    rascal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
             } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || 
@@ -61,7 +61,7 @@ void type_check(ASTNode *node) {
                 if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
                     fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer operands\n", 
                             get_current_filename(), node->line);
-                    fatal_abort();
+                    rascal_abort();
                 }
                 node->expression_type = TYPE_INTEGER;
             } else {
@@ -69,7 +69,7 @@ void type_check(ASTNode *node) {
                 // Relational operators (=, <, >, <=, >=, <>)
                 if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
                     fprintf(stderr, "%s:%d: Type Error: Comparisons require integer operands\n", get_current_filename(), node->line);
-                    fatal_abort();
+                    rascal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;
             }
@@ -80,7 +80,7 @@ void type_check(ASTNode *node) {
             if (node->left->expression_type == TYPE_UNKNOWN) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot print invalid expression\n",
                         get_current_filename(), node->line);
-                fatal_abort();
+                rascal_abort();
             }
             break;
 
@@ -89,7 +89,7 @@ void type_check(ASTNode *node) {
             if (node->data.var_idx < 0 || node->data.var_idx >= sym_count) {
                 fprintf(stderr, "%s:%d: Type Error: Invalid read target\n",
                         get_current_filename(), node->line);
-                fatal_abort();
+                rascal_abort();
             }
             break;
 

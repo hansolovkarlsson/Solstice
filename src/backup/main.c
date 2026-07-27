@@ -8,13 +8,13 @@
 
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
-    if (!f) { perror("Failed to open source file"); fatal_abort(); }
+    if (!f) { perror("Failed to open source file"); rascal_abort(); }
     fseek(f, 0, SEEK_END);
     long length = ftell(f);
     fseek(f, 0, SEEK_SET);
 
     char *buffer = malloc(length + 1);
-    if (!buffer) { fprintf(stderr, "Allocation failure\n"); fatal_abort(); }
+    if (!buffer) { fprintf(stderr, "Allocation failure\n"); rascal_abort(); }
     fread(buffer, 1, length, f);
     buffer[length] = '\0';
     fclose(f);
@@ -32,13 +32,13 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[1], "-c") == 0) {
         // Establishes the recovery point every fatal error in the compile
         // pipeline (lexer, parser, type checker, optimizer, codegen,
-        // bytecode writer) unwinds back to via fatal_abort(), instead of
+        // bytecode writer) unwinds back to via rascal_abort(), instead of
         // calling exit() from deep inside library code.
-        if (setjmp(fatal_error_env)) {
+        if (setjmp(rascal_error_env)) {
             fprintf(stderr, "Compilation failed.\n");
             return 1;
         }
-        fatal_error_active = 1;
+        rascal_error_active = 1;
 
         const char *source_path = argv[2];
         const char *bin_path = argv[3];
@@ -66,14 +66,14 @@ int main(int argc, char *argv[]) {
 
         free_ast(ast);
         free(source);
-        fatal_error_active = 0;
+        rascal_error_active = 0;
     } else if (strcmp(argv[1], "-r") == 0) {
         // Same pattern for the load+execute pipeline (bytecode loader, VM).
-        if (setjmp(fatal_error_env)) {
+        if (setjmp(rascal_error_env)) {
             fprintf(stderr, "Execution failed.\n");
             return 1;
         }
-        fatal_error_active = 1;
+        rascal_error_active = 1;
 
         const char *bin_path = argv[2];
 
@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
 
         printf("\n--- Step 2: Virtual Machine Execution ---\n");
         run_vm();
-        fatal_error_active = 0;
+        rascal_error_active = 0;
     } else {
         fprintf(stderr, "Unknown flag '%s'\n", argv[1]);
         return 1;
