@@ -45,7 +45,7 @@ y := 2; // this too, to end of line
 | Type | Keyword | Literal examples | Notes |
 |---|---|---|---|
 | Integer | `integer` | `42`, `-7`, `0` | Standard C `int` range |
-| Boolean | `boolean` | `true`, `false` | |
+| Boolean | `boolean` | `true`, `false` | `write`/`writeln` print it as `TRUE`/`FALSE` |
 | String | `string` | `'hello'`, `'it''s here'` | Doubled `''` is an escaped literal quote |
 | Char | `char` | `'a'`, `'!'`, `'x'` | See [Char](#char) below - a single-quoted literal of length exactly 1 |
 | Array | `array[lower..upper] of T` | — | `T` is `integer`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
@@ -103,13 +103,14 @@ produce garbage.
 
 | Operator | Meaning | Works on |
 |---|---|---|
-| `=` | Equal | integer, string, char |
-| `<>` | Not equal | integer, string, char |
-| `<`, `>`, `<=`, `>=` | Ordering | integer, string, char |
+| `=` | Equal | integer, boolean, string, char |
+| `<>` | Not equal | integer, boolean, string, char |
+| `<`, `>`, `<=`, `>=` | Ordering | integer, boolean, string, char |
 
 String/char equality compares the actual characters, not identity.
 String/char ordering is lexicographic (character-by-character, like
-`strcmp`) — e.g. `'apple' < 'banana'` is `true`.
+`strcmp`) — e.g. `'apple' < 'banana'` is `true`. Boolean is ordinal
+(`false < true`), matching standard Pascal.
 
 ### Logical (boolean operands)
 

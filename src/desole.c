@@ -38,6 +38,7 @@ static const char *opcode_name(Opcode op) {
         case OP_MOD:   return "mod";
         case OP_XOR:   return "xor";
         case OP_PRINT: return "print";
+        case OP_PRINT_BOOL: return "print_bool";
         case OP_READ:  return "read";
         case OP_HALT:  return "halt";
         case OP_JMP:   return "jmp";

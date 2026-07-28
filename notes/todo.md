@@ -4,6 +4,9 @@ Would like some built-in functions to:
 dump current stack
 dump current list of symbols
 
+constants
+
+
 
 More stack operations, like dup, drop, over, rot, swap, etc
 

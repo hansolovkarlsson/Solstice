@@ -91,10 +91,16 @@ void type_check(ASTNode *node) {
                 }
                 node->expression_type = TYPE_INTEGER;
             } else {
-                // Relational operators (=, <, >, <=, >=, <>)
-                if (!(is_string_type(left_t) && is_string_type(right_t))
+                // Relational operators (=, <, >, <=, >=, <>). Boolean is
+                // ordinal in Pascal (false < true), so all six are valid
+                // between two booleans too - represented as a plain 0/1
+                // int at the VM level, exactly like integer, so the
+                // existing integer comparison opcodes already handle this
+                // correctly; no codegen changes needed for this case.
+                int both_bool = (left_t == TYPE_BOOLEAN && right_t == TYPE_BOOLEAN);
+                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool
                     && (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER)) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, string, or char operands\n", get_current_filename(), node->line);
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, boolean, string, or char operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 node->expression_type = TYPE_BOOLEAN;

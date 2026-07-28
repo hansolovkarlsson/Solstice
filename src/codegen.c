@@ -235,6 +235,7 @@ void generate_code(ASTNode *node) {
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg);
                 if (is_string_type(arg->expression_type)) emit(OP_PRINT_STR, 0);
+                else if (arg->expression_type == TYPE_BOOLEAN) emit(OP_PRINT_BOOL, 0);
                 else emit(OP_PRINT, 0);
             }
             if (node->op == TOKEN_WRITELN) emit(OP_NEWLINE, 0);

@@ -77,6 +77,9 @@ typedef enum {
     OP_NEG,
     OP_MOD, OP_XOR,
     OP_PRINT,     // Pop a value; print it with NO trailing newline.
+    OP_PRINT_BOOL, // Pop a value; print "TRUE" (nonzero) or "FALSE" (zero)
+                  // with NO trailing newline - standard Pascal prints
+                  // booleans as words, not as the underlying 0/1.
     OP_READ,
     OP_HALT,
     OP_JMP,  // Unconditional jump. arg = absolute target instruction index.

@@ -81,6 +81,8 @@ corruption.
 | `STORE` | Pop a value; store into `vm_vars[arg]`. |
 | `LOAD_IDX` | Pop a runtime index; bounds-check against `arg`'s (an array symbol's) declared range; push the element. |
 | `STORE_IDX` | Pop a value, then a runtime index (value was pushed *after* the index by codegen); bounds-check; store the element. |
+| `LOAD_IDX_DYN` | Same as `LOAD_IDX`, but *which* array is also popped from the stack instead of coming from `arg` - needed for array parameters, since different calls can pass different arrays. Pop a runtime index, then a runtime array reference (a symbol index); bounds-check; push the element. |
+| `STORE_IDX_DYN` | Same as `STORE_IDX`, but *which* array is also popped from the stack. Pop a value, then a runtime index, then a runtime array reference; bounds-check; store. |
 
 ### Arithmetic (integer)
 
@@ -114,6 +116,7 @@ corruption.
 | Opcode | Effect |
 |---|---|
 | `PRINT` | Pop a value; print it as an integer — **no trailing newline**. |
+| `PRINT_BOOL` | Pop a value; print `TRUE` (nonzero) or `FALSE` (zero) — **no trailing newline**. |
 | `NEWLINE` | Print `\n`. No stack interaction. `writeln` emits exactly one of these, after all its arguments; `write` never does. |
 | `READ` | Prompt (`> `) and read from stdin into `vm_vars[arg]`. Behavior depends on the variable's declared type: integer reads with `scanf("%d")`; boolean does the same but aborts unless the value is `0` or `1`; string reads a full line via `fgets`. Either integer/boolean path flushes the rest of the input line afterward, so a following string `READ` isn't handed a stray empty line. |
 

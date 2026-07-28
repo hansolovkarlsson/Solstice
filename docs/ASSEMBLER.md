@@ -64,9 +64,10 @@ then one `NEWLINE` only for `writeln`.
 
 `PUSH`, `LOAD`, `STORE`, `READ`, `ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`,
 `GT`, `AND`, `OR`, `NOT`, `LTE`, `GTE`, `NEQ`, `NEG`, `MOD`, `XOR`,
-`PRINT`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`, `SEQ`, `SCMP`,
-`SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`, `CALL`, `RET`, `ENTER`,
-`LOAD_LOCAL`, `STORE_LOCAL`, `POP`. See
+`PRINT`, `PRINT_BOOL`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`,
+`SEQ`, `SCMP`, `SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`,
+`LOAD_IDX_DYN`, `STORE_IDX_DYN`, `CALL`, `RET`, `ENTER`, `LOAD_LOCAL`,
+`STORE_LOCAL`, `POP`. See
 [docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does,
 and [Procedures](BYTECODE.md#procedures-call-ret-and-stack-frames) for
 the calling convention and a worked recursive example.

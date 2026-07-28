@@ -384,6 +384,8 @@ void run_vm(void) {
                                 if (is_string_type(sym_table[i].type)) {
                                     if (elem >= 0 && elem < string_count) printf("%s", string_pool[elem]);
                                     else printf("<invalid string index %d>", elem);
+                                } else if (sym_table[i].type == TYPE_BOOLEAN) {
+                                    printf("%s", elem ? "TRUE" : "FALSE");
                                 } else {
                                     printf("%d", elem);
                                 }
@@ -396,6 +398,8 @@ void run_vm(void) {
                             } else {
                                 printf("%s = <invalid string index %d>\n", sym_table[i].name, idx);
                             }
+                        } else if (sym_table[i].type == TYPE_BOOLEAN) {
+                            printf("%s = %s\n", sym_table[i].name, vm_vars[i] ? "TRUE" : "FALSE");
                         } else {
                             printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
                         }
@@ -406,6 +410,12 @@ void run_vm(void) {
             case OP_PRINT: {
                 int val = vm_pop(&sp);
                 printf("%d", val);
+                break;
+            }
+
+            case OP_PRINT_BOOL: {
+                int val = vm_pop(&sp);
+                printf("%s", val ? "TRUE" : "FALSE");
                 break;
             }
 
