@@ -166,6 +166,28 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_REF_ARRAY_ACCESS:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_REF_ARRAY_ASSIGN:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (!(is_string_type(node->right->expression_type) && is_string_type(node->expression_type))
+                && node->right->expression_type != node->expression_type) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to array element\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_LOCAL_ASSIGN:
             if (!(is_string_type(node->left->expression_type) && is_string_type(node->expression_type))
                 && node->left->expression_type != node->expression_type) {

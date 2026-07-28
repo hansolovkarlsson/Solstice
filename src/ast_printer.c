@@ -223,6 +223,30 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->next, indent);
             }
             break;
+
+        case NODE_REF_ARRAY_ACCESS:
+            printf("[Array-Ref Access] -> param slot %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            break;
+
+        case NODE_REF_ARRAY_ASSIGN:
+            printf("[Array-Ref Assignment] -> param slot %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_ARRAY_REF:
+            printf("[Array Ref] -> sym_table index %d\n", node->data.var_idx);
+            break;
     }
 }
 

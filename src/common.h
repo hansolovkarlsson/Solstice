@@ -126,12 +126,23 @@ typedef enum {
                     // frame pointer. Push its value.
     OP_STORE_LOCAL, // arg = local slot index, relative to the current
                     // frame pointer. Pop a value; store it there.
-    OP_POP          // Pop a value and discard it. Used when a function is
+    OP_POP,          // Pop a value and discard it. Used when a function is
                      // called as a statement rather than as part of an
                      // expression - its return value is still pushed like
                      // any function's, but nothing consumes it, so this
                      // discards it explicitly rather than leaving the
                      // operand stack unbalanced for whatever comes next.
+    OP_LOAD_IDX_DYN,  // Pop a runtime index, then a runtime array
+                      // reference (a sym_table[] index - arrived via
+                      // LOAD_LOCAL of an array-reference parameter).
+                      // Same bounds-checked lookup as OP_LOAD_IDX, but
+                      // "which array" is read from the stack instead of
+                      // baked into the instruction - needed for array
+                      // parameters, since different calls can pass
+                      // different arrays.
+    OP_STORE_IDX_DYN  // Pop a value, then a runtime index, then a runtime
+                      // array reference. Same as OP_STORE_IDX, but "which
+                      // array" comes from the stack.
 } Opcode;
 
 typedef struct {
@@ -174,13 +185,34 @@ typedef enum {
                // return value stays on the stack for the caller.
     NODE_LOCAL_VAR,    // A parameter/local read, as an expression.
                        // data.var_idx = frame-relative slot index.
-    NODE_LOCAL_ASSIGN  // A parameter/local write. left = value expr.
+    NODE_LOCAL_ASSIGN, // A parameter/local write. left = value expr.
                        // data.var_idx = slot index. expression_type is
                        // (re)used here to hold the target's declared
                        // type, set at parse time - locals aren't in
                        // sym_table, so unlike NODE_ASSIGN there's no
                        // table for the type checker to look the type up
                        // in later.
+    NODE_REF_ARRAY_ACCESS, // 'arr[i]' where arr is a by-reference array
+                       // parameter. data.var_idx = the PARAMETER's local
+                       // slot (holding a runtime sym_table[] index - not
+                       // the array's index directly, unlike
+                       // NODE_ARRAY_ACCESS). left = index expression.
+    NODE_REF_ARRAY_ASSIGN, // 'arr[i] := val' for a by-reference array
+                       // parameter. data.var_idx = the parameter's local
+                       // slot. left = index expr, right = value expr.
+    NODE_ARRAY_REF     // Pushes a global (or mangled-local, which is just
+                       // a hidden global) array's sym_table[] index as a
+                       // compile-time-known literal - used when passing
+                       // such an array as an argument to an array-
+                       // reference parameter. data.var_idx = the array's
+                       // sym_table[] index. Codegen-identical to
+                       // NODE_NUMBER (a plain PUSH), but kept as its own
+                       // type so dead-code elimination's usage tracking
+                       // recognizes this as a genuine use of that array -
+                       // a NODE_NUMBER would look like an arbitrary
+                       // literal to it, and the array's own assignments
+                       // would then look unused and get eliminated, even
+                       // though this is the only place they're ever read.
 } NodeType;
 
 typedef struct ASTNode {
@@ -220,6 +252,11 @@ typedef struct {
                                     // definition - which doesn't re-list
                                     // parameters - can still resolve them
                                     // by name inside its body
+    int param_is_array_ref[MAX_PARAMS]; // 1 if this parameter is an array
+                                    // (always by reference - see parser.c)
+    int param_array_lower[MAX_PARAMS];  // only meaningful if the above is
+    int param_array_upper[MAX_PARAMS];  // set: the bounds any argument
+                                    // passed here must exactly match
     int is_forward;                // 1 while forward-declared but not yet
                                     // completed; 0 once a real body exists
                                     // (or if it was never forward at all)

@@ -176,6 +176,10 @@ void generate_code(ASTNode *node) {
             emit(OP_PUSH, node->data.num_value);
             break;
 
+        case NODE_ARRAY_REF:
+            emit(OP_PUSH, node->data.var_idx);
+            break;
+
         case NODE_VARIABLE:
             emit(OP_LOAD, node->data.var_idx);
             break;
@@ -398,6 +402,20 @@ void generate_code(ASTNode *node) {
         case NODE_LOCAL_ASSIGN:
             generate_code(node->left);
             emit(OP_STORE_LOCAL, node->data.var_idx);
+            generate_code(node->next);
+            break;
+
+        case NODE_REF_ARRAY_ACCESS:
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference (sym_table index)
+            generate_code(node->left);               // the runtime index
+            emit(OP_LOAD_IDX_DYN, 0);
+            break;
+
+        case NODE_REF_ARRAY_ASSIGN:
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference
+            generate_code(node->left);               // the runtime index
+            generate_code(node->right);               // the value
+            emit(OP_STORE_IDX_DYN, 0);
             generate_code(node->next);
             break;
     }

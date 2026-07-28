@@ -56,6 +56,8 @@ static const char *opcode_name(Opcode op) {
         case OP_NEWLINE:   return "newline";
         case OP_LOAD_IDX:  return "load_idx";
         case OP_STORE_IDX: return "store_idx";
+        case OP_LOAD_IDX_DYN:  return "load_idx_dyn";
+        case OP_STORE_IDX_DYN: return "store_idx_dyn";
         default:       return NULL;
     }
 }

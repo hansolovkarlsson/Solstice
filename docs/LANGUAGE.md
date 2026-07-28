@@ -384,8 +384,12 @@ end.
 - **Local variables** use an ordinary `var` section, placed after the
   parameter list and before `begin`:
   `procedure foo(x: integer); var temp: integer; begin ... end;`
-- **Parameters and locals are scalar only this increment** — `integer`,
-  `boolean`, `string`, `char`. No array parameters or array locals yet.
+- **Scalar parameters and locals** (`integer`, `boolean`, `string`,
+  `char`) are passed/stored by value — modifying one inside the procedure
+  never affects the caller. **Array parameters and array locals** also
+  work now, with different semantics — see
+  [Array parameters and local arrays](#array-parameters-and-local-arrays)
+  below.
 - **Recursion works, with correct per-call isolation.** Each call gets
   its own private copy of every parameter and local — the worked example
   above only computes the right sum because of this (each recursive
@@ -493,6 +497,75 @@ end.
 - A function's return type is checked at every call site used as an
   expression, the same way argument types are checked.
 
+## Array parameters and local arrays
+
+```pascal
+program Example;
+var
+    scores: array[1..5] of integer;
+    i, total: integer;
+
+function sumOf(arr: array[1..5] of integer): integer;
+var
+    k, s: integer;
+begin
+    s := 0;
+    k := 1;
+    while k <= 5 do begin
+        s := s + arr[k];
+        k := k + 1;
+    end;
+    sumOf := s;
+end;
+
+begin
+    for i := 1 to 5 do
+        scores[i] := i * 10;
+    total := sumOf(scores);
+    writeln('total = ', total);   { 150 }
+end.
+```
+
+### Array parameters
+
+- Declared the same way as a scalar parameter, just with an array type:
+  `procedure foo(arr: array[1..5] of integer);`.
+- **Always by reference** — there's no by-value array parameter. Reading
+  or writing `arr` inside the procedure reads or writes the *same*
+  underlying array the caller passed; there's no copying.
+- **The argument must be a bare array name**, not an expression, an
+  array element, or an array-typed local temporary computed on the fly
+  — `sumOf(scores)`, not `sumOf(scores[1])` or anything else. This can be
+  the caller's own global array, the caller's own local array (see
+  below), or the caller's own array parameter (passed straight through,
+  common for utility procedures that forward an array to a helper).
+- **The argument's declared bounds and element type must exactly match**
+  the parameter's — passing `array[1..10] of integer` where
+  `array[1..5] of integer` is expected is a compile-time error, even
+  though both are integer arrays. There's no automatic resizing or
+  conversion.
+- A procedure/function can have any mix of scalar and array parameters,
+  in any order.
+
+### Local arrays
+
+- Declared in a procedure's `var` section exactly like a global array:
+  `var data: array[1..5] of integer;`.
+- **Not per-call isolated, unlike scalar locals.** A local array is
+  allocated once for the whole program and shared across every call to
+  that procedure, including recursive ones. If a recursive procedure
+  needs each call to have its own independent array, this doesn't
+  provide that — only scalar locals and parameters do. In practice this
+  matters only for recursive procedures that use a local array; a
+  non-recursive procedure's local array behaves exactly as you'd expect.
+- A runtime error for a local array (like an out-of-range index) reports
+  a compiler-generated internal name rather than the name used in
+  source, since that mapping only exists at compile time — the error
+  still correctly identifies *that* something went out of range, just
+  not by your own chosen name.
+- A local array can itself be passed as an array-reference argument to
+  another call, exactly like a global array can.
+
 ## Errors
 
 Every compile error reports as `file:line: Compile Error: message` (or
@@ -505,8 +578,6 @@ a crash.
 
 ## What's not implemented
 
-- Array parameters/locals — see [Procedures](#procedures) and
-  [Functions](#functions) above for what does exist today
 - Multi-dimensional arrays
 - `real`/floating-point numbers
 - `ord`/`chr` (now that user-defined functions exist, these could

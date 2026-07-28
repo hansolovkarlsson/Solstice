@@ -115,10 +115,11 @@ Working: `if`/`while`/`repeat`/`for` (with `break`/`continue`),
 comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
 elimination and constant folding, and procedures and functions with
-by-value scalar parameters and local variables — including correct
-per-call isolation under recursion and mutual recursion via `forward`
-declarations (see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedures) and
-[docs/LANGUAGE.md](docs/LANGUAGE.md#functions)).
+by-value scalar parameters, local variables, by-reference array
+parameters, and local arrays — including correct per-call isolation for
+scalars under recursion and mutual recursion via `forward` declarations
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedures),
+[docs/LANGUAGE.md](docs/LANGUAGE.md#functions), and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-parameters-and-local-arrays)).
 
-Not yet implemented: array parameters/locals. Also missing:
-multi-dimensional arrays.
+Not yet implemented: multi-dimensional arrays.

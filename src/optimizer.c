@@ -86,7 +86,7 @@ static int var_used_tracker[MAX_SYMBOLS];
 static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
-    if (node->type == NODE_VARIABLE || node->type == NODE_ARRAY_ACCESS) {
+    if (node->type == NODE_VARIABLE || node->type == NODE_ARRAY_ACCESS || node->type == NODE_ARRAY_REF) {
         var_used_tracker[node->data.var_idx] = 1;
     }
 

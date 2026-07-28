@@ -22,7 +22,16 @@ static int loop_depth = 0;
 #define MAX_LOCALS 32
 typedef struct {
     char name[MAX_NAME];
-    DataType type;
+    DataType type;      // scalar type, or array ELEMENT type if is_array/is_array_ref
+    int is_array;
+    int array_sym_idx;  // only meaningful if is_array: the mangled,
+                        // hidden sym_table[] index this local array's
+                        // data actually lives at (see add_local_array)
+    int is_array_ref;   // a by-reference array PARAMETER - the local
+                        // slot holds a runtime sym_table[] index, not
+                        // the array's data directly
+    int array_lower;    // only meaningful if is_array_ref: the declared
+    int array_upper;    // bounds an argument passed here must match
 } LocalSymbol;
 static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
@@ -168,6 +177,51 @@ static int add_local(const char *name, DataType type) {
     }
     strcpy(current_locals[current_local_count].name, name);
     current_locals[current_local_count].type = type;
+    current_locals[current_local_count].is_array = 0;
+    current_locals[current_local_count].array_sym_idx = 0;
+    current_locals[current_local_count].is_array_ref = 0;
+    current_locals[current_local_count].array_lower = 0;
+    current_locals[current_local_count].array_upper = 0;
+    return current_local_count++;
+}
+
+// Registers a by-reference array parameter. Just an ordinary local slot
+// (it holds a runtime sym_table[] index - see parse_array_ref_argument
+// and generate_code's NODE_REF_ARRAY_ACCESS/ASSIGN cases), plus the
+// declared bounds every call site's argument must exactly match.
+static int add_local_array_ref(const char *name, DataType elem_type, int lower, int upper) {
+    int idx = add_local(name, elem_type);
+    current_locals[idx].is_array_ref = 1;
+    current_locals[idx].array_lower = lower;
+    current_locals[idx].array_upper = upper;
+    return idx;
+}
+
+// Registers a procedure-local array ('var arr: array[lo..hi] of T;'
+// inside a procedure body). Reuses the exact same global sym_table[] /
+// vm_array_mem[] machinery an ordinary top-level array uses - not the
+// per-call frame stack scalar locals use - under a hidden, mangled name
+// (so two different procedures can each have their own 'temp' array
+// without colliding). The practical consequence: unlike a scalar local,
+// this array is allocated ONCE for the whole program and SHARED across
+// every call to this procedure, including recursive ones - it does not
+// get fresh, isolated storage per call.
+static int add_local_array(const char *name, DataType elem_type, int lower, int upper) {
+    if (find_local(name) != -1) {
+        compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
+    }
+    if (current_local_count >= MAX_LOCALS) {
+        compile_error(token.line, "Too many parameters/local variables (limit is %d)", MAX_LOCALS);
+    }
+    char mangled[MAX_NAME];
+    snprintf(mangled, MAX_NAME, "__local_arr%d", sym_count);
+    int array_sym_idx = sym_count; // add_array_var() is about to append here
+    add_array_var(mangled, elem_type, lower, upper);
+
+    strcpy(current_locals[current_local_count].name, name);
+    current_locals[current_local_count].type = elem_type;
+    current_locals[current_local_count].is_array = 1;
+    current_locals[current_local_count].array_sym_idx = array_sym_idx;
     return current_local_count++;
 }
 
@@ -215,22 +269,27 @@ static DataType parse_scalar_type(void) {
     if (token.type == TOKEN_BOOLEAN) { match(TOKEN_BOOLEAN); return TYPE_BOOLEAN; }
     if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
     if (token.type == TOKEN_CHAR_TYPE) { match(TOKEN_CHAR_TYPE); return TYPE_CHAR; }
-    compile_error(token.line, "Unknown type (arrays are not supported for parameters or local variables)");
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', or 'char')");
     return TYPE_UNKNOWN;
 }
 
-// Parses 'name {, name} : scalar-type' - the shared inner syntax of a
-// parameter group and a procedure-local var declaration line.
+// Parses 'name {, name} : scalar-type' or 'name {, name} : array[lo..hi]
+// of scalar-type' - the shared inner syntax of a parameter group and a
+// procedure-local var declaration line.
 #define MAX_GROUP_NAMES 16
 typedef struct {
     char names[MAX_GROUP_NAMES][MAX_NAME];
     int count;
-    DataType type;
+    DataType type;   // scalar type, or array ELEMENT type if is_array
+    int is_array;
+    int array_lower;
+    int array_upper;
 } NameGroup;
 
 static NameGroup parse_name_group(void) {
     NameGroup g;
     g.count = 0;
+    g.is_array = 0;
     if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
     strcpy(g.names[g.count++], token.text);
     match(TOKEN_IDENTIFIER);
@@ -244,7 +303,22 @@ static NameGroup parse_name_group(void) {
         match(TOKEN_IDENTIFIER);
     }
     match(TOKEN_COLON);
-    g.type = parse_scalar_type();
+    if (token.type == TOKEN_ARRAY) {
+        match(TOKEN_ARRAY);
+        match(TOKEN_LBRACKET);
+        g.array_lower = parse_int_literal();
+        match(TOKEN_DOTDOT);
+        g.array_upper = parse_int_literal();
+        match(TOKEN_RBRACKET);
+        if (g.array_upper < g.array_lower) {
+            compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", g.array_upper, g.array_lower);
+        }
+        match(TOKEN_OF);
+        g.type = parse_scalar_type();
+        g.is_array = 1;
+    } else {
+        g.type = parse_scalar_type();
+    }
     return g;
 }
 
@@ -261,21 +335,92 @@ static void subroutine_declaration(int is_function_decl);
 // param_count, erroring immediately (with proc_idx's own name in the
 // message) on a mismatch. Returns the head of the argument list (chained
 // via each argument's own ->next), or NULL if there are none.
+// Parses a bare array name as an argument for an array-reference
+// parameter (param_index into proc_idx's declared parameter list).
+// Validates the array's bounds and element type exactly match the
+// parameter's declared ones, then builds a node supplying that array's
+// sym_table[] index as the argument's runtime value - either a compile-
+// time constant (a global array, or the caller's own var-declared local
+// array both have one fixed sym_table[] slot for their whole lifetime)
+// or the caller's own array-reference parameter's current value (which
+// DOES vary per call, exactly like any other parameter - the caller may
+// itself just be forwarding an array it received).
+static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected an array name for parameter %d of '%s'",
+                       param_index + 1, proc_table[proc_idx].name);
+    }
+    char arg_name[MAX_NAME];
+    int arg_line = token.line;
+    strcpy(arg_name, token.text);
+    match(TOKEN_IDENTIFIER);
+
+    DataType expected_elem = proc_table[proc_idx].param_types[param_index];
+    int expected_lower = proc_table[proc_idx].param_array_lower[param_index];
+    int expected_upper = proc_table[proc_idx].param_array_upper[param_index];
+
+    int local_idx = find_local(arg_name);
+    if (local_idx != -1 && (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref)) {
+        DataType actual_elem;
+        int actual_lower, actual_upper;
+        if (current_locals[local_idx].is_array) {
+            int s = current_locals[local_idx].array_sym_idx;
+            actual_elem = sym_table[s].type;
+            actual_lower = sym_table[s].array_lower;
+            actual_upper = sym_table[s].array_upper;
+        } else {
+            actual_elem = current_locals[local_idx].type;
+            actual_lower = current_locals[local_idx].array_lower;
+            actual_upper = current_locals[local_idx].array_upper;
+        }
+        if (actual_elem != expected_elem || actual_lower != expected_lower || actual_upper != expected_upper) {
+            compile_error(arg_line, "Array argument '%s' does not match parameter %d of '%s' (declared bounds/type)",
+                           arg_name, param_index + 1, proc_table[proc_idx].name);
+        }
+        ASTNode *node;
+        if (current_locals[local_idx].is_array) {
+            node = create_node(NODE_ARRAY_REF); // compile-time-known sym_table index
+            node->data.var_idx = current_locals[local_idx].array_sym_idx;
+        } else {
+            node = create_node(NODE_LOCAL_VAR); // the caller's own array-ref param's runtime value
+            node->data.var_idx = local_idx;
+        }
+        node->expression_type = expected_elem;
+        return node;
+    }
+
+    int global_idx = find_var(arg_name);
+    if (!sym_table[global_idx].is_array) {
+        compile_error(arg_line, "'%s' is not an array", arg_name);
+    }
+    if (sym_table[global_idx].type != expected_elem ||
+        sym_table[global_idx].array_lower != expected_lower ||
+        sym_table[global_idx].array_upper != expected_upper) {
+        compile_error(arg_line, "Array argument '%s' does not match parameter %d of '%s' (declared bounds/type)",
+                       arg_name, param_index + 1, proc_table[proc_idx].name);
+    }
+    ASTNode *node = create_node(NODE_ARRAY_REF);
+    node->data.var_idx = global_idx;
+    node->expression_type = expected_elem;
+    return node;
+}
+
 static ASTNode *parse_call_arguments(int proc_idx) {
     ASTNode *arg_head = NULL;
+    ASTNode *arg_tail = NULL;
     int arg_count = 0;
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
-            arg_head = expression();
-            arg_count++;
-            ASTNode *arg_tail = arg_head;
-            while (token.type == TOKEN_COMMA) {
-                match(TOKEN_COMMA);
-                ASTNode *next_arg = expression();
+            while (1) {
+                ASTNode *arg = (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_array_ref[arg_count])
+                    ? parse_array_ref_argument(proc_idx, arg_count)
+                    : expression();
                 arg_count++;
-                arg_tail->next = next_arg;
-                arg_tail = next_arg;
+                if (!arg_head) arg_head = arg; else arg_tail->next = arg;
+                arg_tail = arg;
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
             }
         }
         match(TOKEN_RPAREN);
@@ -323,6 +468,35 @@ static ASTNode *factor(void) {
 
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_array) {
+                match(TOKEN_IDENTIFIER);
+                int arr_sym_idx = current_locals[local_idx].array_sym_idx;
+                if (token.type != TOKEN_LBRACKET) {
+                    compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
+                }
+                match(TOKEN_LBRACKET);
+                ASTNode *node = create_node(NODE_ARRAY_ACCESS);
+                node->line = line;
+                node->data.var_idx = arr_sym_idx;
+                node->left = expression(); // index
+                node->expression_type = sym_table[arr_sym_idx].type;
+                match(TOKEN_RBRACKET);
+                return node;
+            }
+            if (current_locals[local_idx].is_array_ref) {
+                match(TOKEN_IDENTIFIER);
+                if (token.type != TOKEN_LBRACKET) {
+                    compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
+                }
+                match(TOKEN_LBRACKET);
+                ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS);
+                node->line = line;
+                node->data.var_idx = local_idx; // the parameter's OWN slot, holding a runtime sym_table index
+                node->left = expression(); // index
+                node->expression_type = current_locals[local_idx].type;
+                match(TOKEN_RBRACKET);
+                return node;
+            }
             match(TOKEN_IDENTIFIER);
             ASTNode *node = create_node(NODE_LOCAL_VAR);
             node->line = line;
@@ -571,7 +745,12 @@ static void subroutine_declaration(int is_function_decl) {
         // completing body can reference them by name even though they
         // aren't re-listed here.
         for (int i = 0; i < proc_table[proc_idx].param_count; i++) {
-            add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
+            if (proc_table[proc_idx].param_is_array_ref[i]) {
+                add_local_array_ref(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i],
+                                     proc_table[proc_idx].param_array_lower[i], proc_table[proc_idx].param_array_upper[i]);
+            } else {
+                add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
+            }
         }
         if (is_function_decl && token.type == TOKEN_COLON) {
             compile_error(decl_line, "'%s' was already forward-declared with its return type - omit it here", name);
@@ -580,6 +759,9 @@ static void subroutine_declaration(int is_function_decl) {
         int param_count = 0;
         DataType param_types[MAX_PARAMS];
         char param_names[MAX_PARAMS][MAX_NAME];
+        int param_is_array_ref[MAX_PARAMS];
+        int param_array_lower[MAX_PARAMS];
+        int param_array_upper[MAX_PARAMS];
 
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
@@ -590,9 +772,16 @@ static void subroutine_declaration(int is_function_decl) {
                         if (param_count >= MAX_PARAMS) {
                             compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
                         }
-                        add_local(g.names[i], g.type);
+                        if (g.is_array) {
+                            add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper);
+                        } else {
+                            add_local(g.names[i], g.type);
+                        }
                         strcpy(param_names[param_count], g.names[i]);
                         param_types[param_count] = g.type;
+                        param_is_array_ref[param_count] = g.is_array;
+                        param_array_lower[param_count] = g.array_lower;
+                        param_array_upper[param_count] = g.array_upper;
                         param_count++;
                     }
                     if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -610,6 +799,9 @@ static void subroutine_declaration(int is_function_decl) {
         for (int i = 0; i < param_count; i++) {
             proc_table[proc_idx].param_types[i] = param_types[i];
             strcpy(proc_table[proc_idx].param_names[i], param_names[i]);
+            proc_table[proc_idx].param_is_array_ref[i] = param_is_array_ref[i];
+            proc_table[proc_idx].param_array_lower[i] = param_array_lower[i];
+            proc_table[proc_idx].param_array_upper[i] = param_array_upper[i];
         }
 
         proc_table[proc_idx].is_function = is_function_decl;
@@ -635,7 +827,11 @@ static void subroutine_declaration(int is_function_decl) {
         while (token.type == TOKEN_IDENTIFIER) {
             NameGroup g = parse_name_group();
             for (int i = 0; i < g.count; i++) {
-                add_local(g.names[i], g.type);
+                if (g.is_array) {
+                    add_local_array(g.names[i], g.type, g.array_lower, g.array_upper);
+                } else {
+                    add_local(g.names[i], g.type);
+                }
             }
             match(TOKEN_SEMI);
         }
@@ -697,6 +893,36 @@ static ASTNode *statement(void) {
 
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_array) {
+                int arr_sym_idx = current_locals[local_idx].array_sym_idx;
+                match(TOKEN_IDENTIFIER);
+                if (token.type != TOKEN_LBRACKET) {
+                    compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                }
+                ASTNode *stmt = create_node(NODE_ASSIGN);
+                stmt->data.var_idx = arr_sym_idx;
+                match(TOKEN_LBRACKET);
+                stmt->left = expression();  // index
+                match(TOKEN_RBRACKET);
+                match(TOKEN_ASSIGN);
+                stmt->right = expression(); // value
+                return stmt;
+            }
+            if (current_locals[local_idx].is_array_ref) {
+                match(TOKEN_IDENTIFIER);
+                if (token.type != TOKEN_LBRACKET) {
+                    compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                }
+                ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN);
+                stmt->data.var_idx = local_idx; // the parameter's OWN slot, holding a runtime sym_table index
+                stmt->expression_type = current_locals[local_idx].type; // element type, for the type checker
+                match(TOKEN_LBRACKET);
+                stmt->left = expression();  // index
+                match(TOKEN_RBRACKET);
+                match(TOKEN_ASSIGN);
+                stmt->right = expression(); // value
+                return stmt;
+            }
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
             stmt->data.var_idx = local_idx;
             stmt->expression_type = current_locals[local_idx].type; // target type, for the type checker
