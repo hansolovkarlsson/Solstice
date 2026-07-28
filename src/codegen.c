@@ -343,7 +343,20 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_CALL:
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                generate_code(arg);
+            }
             emit(OP_CALL, proc_table[node->data.var_idx].entry_address);
+            generate_code(node->next);
+            break;
+
+        case NODE_LOCAL_VAR:
+            emit(OP_LOAD_LOCAL, node->data.var_idx);
+            break;
+
+        case NODE_LOCAL_ASSIGN:
+            generate_code(node->left);
+            emit(OP_STORE_LOCAL, node->data.var_idx);
             generate_code(node->next);
             break;
     }
@@ -354,11 +367,11 @@ void generate_code(ASTNode *node) {
 //
 //     JMP main_start        ; only emitted if there's at least one procedure
 //   proc0:
+//     ENTER local_count     ; only if proc0 has any locals/parameters
+//     STORE_LOCAL k, ..., 0 ; unpack parameters off the operand stack
 //     <proc0 body>
 //     RET
 //   proc1:
-//     <proc1 body>
-//     RET
 //     ...
 //   main_start:
 //     <main body>
@@ -378,6 +391,15 @@ void generate_program(ASTNode *main_body) {
 
         for (int i = 0; i < proc_count; i++) {
             proc_table[i].entry_address = code_idx;
+            if (proc_table[i].local_count > 0) {
+                emit(OP_ENTER, proc_table[i].local_count);
+            }
+            // Caller pushed arguments left-to-right, so the last one is
+            // on top of the operand stack - pop into the last parameter
+            // slot first, working backwards to slot 0.
+            for (int p = proc_table[i].param_count - 1; p >= 0; p--) {
+                emit(OP_STORE_LOCAL, p);
+            }
             generate_code(proc_table[i].body);
             emit(OP_RET, 0);
         }

@@ -11,6 +11,7 @@
 #define MAX_CALL_DEPTH 256
 #define MAX_FRAME_STACK 4096
 #define MAX_PROCEDURES 50
+#define MAX_PARAMS 8
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -155,10 +156,19 @@ typedef enum {
                        // array's symbol index, left = index expression.
     NODE_BREAK,
     NODE_CONTINUE,
-    NODE_CALL // Procedure call statement. data.var_idx = proc_table
-              // index. left is reserved for an argument list (a future
-              // increment, once procedures take parameters) - always
-              // NULL for now.
+    NODE_CALL, // Procedure call statement. data.var_idx = proc_table
+               // index. left is the head of the argument list, chained
+               // via each argument's own ->next (same technique as
+               // write/writeln's argument list).
+    NODE_LOCAL_VAR,    // A parameter/local read, as an expression.
+                       // data.var_idx = frame-relative slot index.
+    NODE_LOCAL_ASSIGN  // A parameter/local write. left = value expr.
+                       // data.var_idx = slot index. expression_type is
+                       // (re)used here to hold the target's declared
+                       // type, set at parse time - locals aren't in
+                       // sym_table, so unlike NODE_ASSIGN there's no
+                       // table for the type checker to look the type up
+                       // in later.
 } NodeType;
 
 typedef struct ASTNode {
@@ -186,6 +196,11 @@ typedef struct ASTNode {
 typedef struct {
     char name[MAX_NAME];
     int entry_address;
+    int param_count;
+    int local_count;               // total slots ENTER reserves - params
+                                    // occupy 0..param_count-1, additional
+                                    // locals continue from there
+    DataType param_types[MAX_PARAMS];
     struct ASTNode *body;
 } ProcSymbol;
 

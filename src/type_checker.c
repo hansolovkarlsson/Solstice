@@ -166,6 +166,33 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_LOCAL_ASSIGN:
+            if (!(is_string_type(node->left->expression_type) && is_string_type(node->expression_type))
+                && node->left->expression_type != node->expression_type) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to local variable\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_CALL: {
+            // Argument count is already guaranteed correct by the parser
+            // (it errors immediately at the call site if it doesn't match
+            // proc_table[...].param_count), so this only needs to check types.
+            ProcSymbol *proc = &proc_table[node->data.var_idx];
+            int i = 0;
+            for (ASTNode *arg = node->left; arg; arg = arg->next, i++) {
+                DataType expected = proc->param_types[i];
+                DataType actual = arg->expression_type;
+                if (!(is_string_type(expected) && is_string_type(actual)) && expected != actual) {
+                    fprintf(stderr, "%s:%d: Type Error: Argument %d to procedure '%s' has the wrong type\n",
+                            get_current_filename(), node->line, i + 1, proc->name);
+                    fatal_abort();
+                }
+            }
+            break;
+        }
+
         default:
             break;
     }

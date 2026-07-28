@@ -352,37 +352,67 @@ var
 ```pascal
 program Example;
 var
-    x: integer;
+    total: integer;
 
-procedure greet;
+procedure sumTo(n: integer);
+var
+    partial: integer;
 begin
-    writeln('Hello, x = ', x);
+    if n = 0 then
+        partial := 0
+    else begin
+        sumTo(n - 1);
+        partial := n + total;
+    end;
+    total := partial;
 end;
 
 begin
-    x := 42;
-    greet;
-    greet();   { equivalent - empty parens are accepted too }
+    sumTo(5);
+    writeln('sum 1..5 = ', total);   { 15 }
 end.
 ```
 
 - Procedures are declared after the `var` section and before the main
-  `begin...end.` body, each as `procedure name; <compound-statement>;`.
-- **No parameters and no return value yet** — a procedure body reads and
-  writes the program's global variables, exactly like the main body does.
-  There's no such thing as a procedure-local variable yet either
-  (parameters and locals are planned together, since they share the same
-  underlying mechanism).
-- **Recursion works.** A procedure can call itself.
-- **A procedure can call any procedure declared earlier**, but not one
-  declared later in the file — there's no `forward` declaration yet, so
-  mutual recursion (A calls B, B calls A) isn't possible. This is a
-  standard Pascal restriction in the absence of `forward`, not a
-  shortcut specific to this compiler.
+  `begin...end.` body:
+  `procedure name [(params)] ; [var locals;] <compound-statement>;`
+- **Parameters** are declared like `var`, but parenthesized and
+  semicolon-separated between groups:
+  `procedure foo(a, b: integer; flag: boolean);`. Passed by value —
+  modifying a parameter inside the procedure never affects the caller's
+  argument.
+- **Local variables** use an ordinary `var` section, placed after the
+  parameter list and before `begin`:
+  `procedure foo(x: integer); var temp: integer; begin ... end;`
+- **Parameters and locals are scalar only this increment** — `integer`,
+  `boolean`, `string`, `char`. No array parameters or array locals yet.
+- **Recursion works, with correct per-call isolation.** Each call gets
+  its own private copy of every parameter and local — the worked example
+  above only computes the right sum because of this (each recursive
+  call's `n` and `partial` survive the nested call underneath it
+  untouched).
+- **A local shadows an outer name of the same type** — a parameter or
+  local variable with the same name as a global variable (or even a
+  procedure) takes priority inside that procedure's body, standard Pascal
+  lexical scoping. The global is simply inaccessible by that name from
+  inside the procedure; nothing about the global itself changes.
+- **A procedure can call any procedure declared earlier** (or itself),
+  but not one declared later in the file — there's no `forward`
+  declaration yet, so mutual recursion (A calls B, B calls A) isn't
+  possible.
+- Not yet supported, with a clear compile error if attempted:
+  `readln` into a parameter or local variable, and using one as a `for`
+  loop's counter. Both work fine as ordinary expressions/assignments —
+  just not in those two specific positions yet.
 - A procedure's name and a variable's name share one namespace — you
-  can't declare a procedure with the same name as an existing variable,
-  or vice versa.
-- Functions (procedures that return a value) aren't implemented yet.
+  can't declare a procedure with the same name as an existing global
+  variable, or vice versa.
+- Functions (procedures that return a value) aren't implemented yet — a
+  procedure "returns" a result only by writing to a global variable (as
+  in the example above) or, less commonly, by leaving a value on the
+  operand stack for the caller before returning (possible today by
+  hand-writing `.sasm`, see [docs/BYTECODE.md](BYTECODE.md), but the
+  Pascal compiler doesn't expose this as `function`/`result` syntax yet).
 
 ## Errors
 
@@ -396,9 +426,9 @@ a crash.
 
 ## What's not implemented
 
-- Procedure parameters, local variables, and functions (procedures that
-  return a value) — see [Procedures](#procedures) above for what does
-  exist today
+- Functions (procedures that return a value), array parameters/locals,
+  `forward` declarations (needed for mutual recursion) — see
+  [Procedures](#procedures) above for what does exist today
 - Multi-dimensional arrays
 - `real`/floating-point numbers
 - `ord`/`chr` (needs functions, above)

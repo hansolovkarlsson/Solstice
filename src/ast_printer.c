@@ -195,8 +195,29 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
-        case NODE_CALL:
+        case NODE_CALL: {
             printf("[Call] -> Procedure: %s\n", proc_table[node->data.var_idx].name);
+            int arg_num = 1;
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                print_indent(indent + 1);
+                printf("Arg %d:\n", arg_num++);
+                print_ast(arg, indent + 2);
+            }
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
+
+        case NODE_LOCAL_VAR:
+            printf("[Local] slot %d\n", node->data.var_idx);
+            break;
+
+        case NODE_LOCAL_ASSIGN:
+            printf("[Local Assignment] -> slot %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->left, indent + 2);
             if (node->next) {
                 print_ast(node->next, indent);
             }

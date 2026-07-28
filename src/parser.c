@@ -13,6 +13,21 @@ static const char *current_filename = "<source>";
 // loop right where they're written, rather than only failing at codegen.
 static int loop_depth = 0;
 
+// The parameters and local variables of whichever procedure is currently
+// being parsed - a fresh, tiny scope, reset at the start of each
+// procedure_declaration() and cleared again once it's done. Empty (and
+// in_procedure == 0) while parsing the main program body, so every
+// identifier there resolves against sym_table exactly as before
+// procedures existed.
+#define MAX_LOCALS 32
+typedef struct {
+    char name[MAX_NAME];
+    DataType type;
+} LocalSymbol;
+static LocalSymbol current_locals[MAX_LOCALS];
+static int current_local_count = 0;
+static int in_procedure = 0;
+
 const char *get_current_filename(void) {
     return current_filename;
 }
@@ -120,6 +135,32 @@ static int add_proc(const char *name) {
     return proc_count++;
 }
 
+// Soft lookup, like find_proc() - returns -1 if `name` isn't a
+// parameter/local of the procedure currently being parsed (or if we're
+// not currently parsing a procedure body at all). A local shadows a
+// procedure name or a global variable of the same name, matching
+// standard Pascal lexical scoping - which is exactly why every call site
+// below checks this first.
+static int find_local(const char *name) {
+    if (!in_procedure) return -1;
+    for (int i = 0; i < current_local_count; i++) {
+        if (strcmp(current_locals[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+static int add_local(const char *name, DataType type) {
+    if (find_local(name) != -1) {
+        compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
+    }
+    if (current_local_count >= MAX_LOCALS) {
+        compile_error(token.line, "Too many parameters/local variables (limit is %d)", MAX_LOCALS);
+    }
+    strcpy(current_locals[current_local_count].name, name);
+    current_locals[current_local_count].type = type;
+    return current_local_count++;
+}
+
 // Adds a string literal to the pool, reusing an existing slot if the exact
 // same text was already interned (this is a space-saving dedup, not a
 // correctness requirement - string equality is checked via strcmp at
@@ -155,6 +196,46 @@ static int parse_int_literal(void) {
     int val = token.value * sign;
     match(TOKEN_NUMBER);
     return val;
+}
+
+// A scalar type only - used for parameters and procedure-local variables,
+// neither of which support arrays in this increment.
+static DataType parse_scalar_type(void) {
+    if (token.type == TOKEN_INTEGER) { match(TOKEN_INTEGER); return TYPE_INTEGER; }
+    if (token.type == TOKEN_BOOLEAN) { match(TOKEN_BOOLEAN); return TYPE_BOOLEAN; }
+    if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
+    if (token.type == TOKEN_CHAR_TYPE) { match(TOKEN_CHAR_TYPE); return TYPE_CHAR; }
+    compile_error(token.line, "Unknown type (arrays are not supported for parameters or local variables)");
+    return TYPE_UNKNOWN;
+}
+
+// Parses 'name {, name} : scalar-type' - the shared inner syntax of a
+// parameter group and a procedure-local var declaration line.
+#define MAX_GROUP_NAMES 16
+typedef struct {
+    char names[MAX_GROUP_NAMES][MAX_NAME];
+    int count;
+    DataType type;
+} NameGroup;
+
+static NameGroup parse_name_group(void) {
+    NameGroup g;
+    g.count = 0;
+    if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
+    strcpy(g.names[g.count++], token.text);
+    match(TOKEN_IDENTIFIER);
+    while (token.type == TOKEN_COMMA) {
+        match(TOKEN_COMMA);
+        if (g.count >= MAX_GROUP_NAMES) {
+            compile_error(token.line, "Too many names in one group (limit is %d)", MAX_GROUP_NAMES);
+        }
+        if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
+        strcpy(g.names[g.count++], token.text);
+        match(TOKEN_IDENTIFIER);
+    }
+    match(TOKEN_COLON);
+    g.type = parse_scalar_type();
+    return g;
 }
 
 static ASTNode *expression(void);
@@ -196,6 +277,17 @@ static ASTNode *factor(void) {
         return node;
     } else if (token.type == TOKEN_IDENTIFIER) {
         int line = token.line;
+
+        int local_idx = find_local(token.text);
+        if (local_idx != -1) {
+            match(TOKEN_IDENTIFIER);
+            ASTNode *node = create_node(NODE_LOCAL_VAR);
+            node->line = line;
+            node->data.var_idx = local_idx;
+            node->expression_type = current_locals[local_idx].type;
+            return node;
+        }
+
         int idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
         if (sym_table[idx].is_array) {
@@ -278,6 +370,8 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     array_mem_count = 0;
     loop_depth = 0;
     proc_count = 0;
+    current_local_count = 0;
+    in_procedure = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -350,9 +444,13 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     return root;
 }
 
-// 'procedure name; <compound-statement>;'. Registers the name (via
-// add_proc) before parsing the body, so a call to this procedure's own
-// name inside its body - recursion - resolves correctly.
+// 'procedure name [(params)] ; [var locals ;] <compound-statement>;'.
+// Registers the name (via add_proc) before parsing anything else, so a
+// call to this procedure's own name inside its body - recursion -
+// resolves correctly. Parameter info is written back to proc_table right
+// after the parameter list is parsed, before the body: a recursive call
+// site inside the body needs the real param_count/param_types already in
+// place, not the placeholders add_proc() set.
 static void procedure_declaration(void) {
     match(TOKEN_PROCEDURE);
     if (token.type != TOKEN_IDENTIFIER) {
@@ -361,13 +459,61 @@ static void procedure_declaration(void) {
     char name[MAX_NAME];
     strcpy(name, token.text);
     match(TOKEN_IDENTIFIER);
-    match(TOKEN_SEMI);
 
     int proc_idx = add_proc(name);
+
+    in_procedure = 1;
+    current_local_count = 0;
+
+    int param_count = 0;
+    DataType param_types[MAX_PARAMS];
+
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_RPAREN) {
+            while (1) {
+                NameGroup g = parse_name_group();
+                for (int i = 0; i < g.count; i++) {
+                    if (param_count >= MAX_PARAMS) {
+                        compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
+                    }
+                    add_local(g.names[i], g.type);
+                    param_types[param_count++] = g.type;
+                }
+                if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+                break;
+            }
+        }
+        match(TOKEN_RPAREN);
+    }
+    match(TOKEN_SEMI);
+
+    // Write parameter info back now - before the body is parsed, so a
+    // recursive call from inside the body sees the real values.
+    proc_table[proc_idx].param_count = param_count;
+    for (int i = 0; i < param_count; i++) {
+        proc_table[proc_idx].param_types[i] = param_types[i];
+    }
+
+    if (token.type == TOKEN_VAR) {
+        match(TOKEN_VAR);
+        while (token.type == TOKEN_IDENTIFIER) {
+            NameGroup g = parse_name_group();
+            for (int i = 0; i < g.count; i++) {
+                add_local(g.names[i], g.type);
+            }
+            match(TOKEN_SEMI);
+        }
+    }
+
     ASTNode *body = compound_statement();
     match(TOKEN_SEMI);
 
     proc_table[proc_idx].body = body;
+    proc_table[proc_idx].local_count = current_local_count; // params + locals
+
+    in_procedure = 0;
+    current_local_count = 0;
 }
 
 // True for every token that can legally start a statement. Used by
@@ -388,14 +534,44 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_IDENTIFIER) {
+        int local_idx = find_local(token.text);
+        if (local_idx != -1) {
+            ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
+            stmt->data.var_idx = local_idx;
+            stmt->expression_type = current_locals[local_idx].type; // target type, for the type checker
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_ASSIGN);
+            stmt->left = expression();
+            return stmt;
+        }
+
         int proc_idx = find_proc(token.text);
         if (proc_idx != -1) {
             ASTNode *stmt = create_node(NODE_CALL);
             stmt->data.var_idx = proc_idx;
             match(TOKEN_IDENTIFIER);
+
+            int arg_count = 0;
             if (token.type == TOKEN_LPAREN) {
                 match(TOKEN_LPAREN);
-                match(TOKEN_RPAREN); // no parameters yet - only empty parens accepted
+                if (token.type != TOKEN_RPAREN) {
+                    ASTNode *arg_head = expression();
+                    arg_count++;
+                    ASTNode *arg_tail = arg_head;
+                    while (token.type == TOKEN_COMMA) {
+                        match(TOKEN_COMMA);
+                        ASTNode *next_arg = expression();
+                        arg_count++;
+                        arg_tail->next = next_arg;
+                        arg_tail = next_arg;
+                    }
+                    stmt->left = arg_head;
+                }
+                match(TOKEN_RPAREN);
+            }
+            if (arg_count != proc_table[proc_idx].param_count) {
+                compile_error(token.line, "Procedure '%s' expects %d argument(s), got %d",
+                               proc_table[proc_idx].name, proc_table[proc_idx].param_count, arg_count);
             }
             return stmt;
         }
@@ -449,6 +625,9 @@ static ASTNode *statement(void) {
         match(TOKEN_LPAREN);
         ASTNode *stmt = create_node(NODE_READLN);
         if (token.type == TOKEN_IDENTIFIER) {
+            if (find_local(token.text) != -1) {
+                compile_error(token.line, "readln into a parameter or local variable is not yet supported");
+            }
             stmt->data.var_idx = find_var(token.text);
             match(TOKEN_IDENTIFIER);
         } else {
@@ -487,6 +666,9 @@ static ASTNode *statement(void) {
         match(TOKEN_FOR);
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "'for' expects a variable identifier");
+        }
+        if (find_local(token.text) != -1) {
+            compile_error(token.line, "'for' loop variable must be a global variable (parameters/locals not yet supported)");
         }
         stmt->data.var_idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
