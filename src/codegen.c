@@ -120,6 +120,36 @@ static void patch_loop(int continue_target, int break_target) {
     for (int i = 0; i < lc->break_count; i++) code[lc->break_jumps[i]].arg = break_target;
 }
 
+// Procedure-call target resolution: forward declarations mean a CALL's
+// target entry_address isn't always known yet when the CALL itself is
+// generated (procedure A can call forward-declared procedure B before B's
+// real body - and therefore its entry_address - has been generated). So
+// every CALL is backpatched, the same technique as break/continue above:
+// emit a placeholder now, record which procedure it's really calling, and
+// fill in the real address in one final pass once every procedure (and
+// main) has been generated and every entry_address is therefore known.
+#define MAX_PENDING_CALLS 200
+
+typedef struct {
+    int call_instr_idx;  // index into code[] of the CALL instruction
+    int target_proc_idx; // which procedure it's calling
+} PendingCall;
+
+static PendingCall pending_calls[MAX_PENDING_CALLS];
+static int pending_call_count = 0;
+
+static void record_call(int target_proc_idx) {
+    if (pending_call_count >= MAX_PENDING_CALLS) {
+        fprintf(stderr, "%s: Compile Error: Too many procedure calls (limit is %d)\n",
+                get_current_filename(), MAX_PENDING_CALLS);
+        fatal_abort();
+    }
+    pending_calls[pending_call_count].call_instr_idx = code_idx;
+    pending_calls[pending_call_count].target_proc_idx = target_proc_idx;
+    pending_call_count++;
+    emit(OP_CALL, 0); // placeholder, patched once generate_program() finishes
+}
+
 void generate_code(ASTNode *node) {
     if (!node) return;
 
@@ -346,7 +376,7 @@ void generate_code(ASTNode *node) {
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg);
             }
-            emit(OP_CALL, proc_table[node->data.var_idx].entry_address);
+            record_call(node->data.var_idx);
             generate_code(node->next);
             break;
 
@@ -376,15 +406,19 @@ void generate_code(ASTNode *node) {
 //   main_start:
 //     <main body>
 //
-// Each procedure's entry_address is recorded the instant its own
-// generation starts, before its body is generated - so a CALL to that
-// procedure from inside its own body (recursion) or from any
-// later-generated code (a later procedure, or main) always finds a
-// resolved address already. No backpatching needed for CALL targets at
-// all, unlike everything else in this file - this increment deliberately
-// disallows calling a procedure declared *later* in the source (no
-// forward references beyond self), which is exactly what makes that true.
+// A procedure only becomes callable (findable by find_proc()) once its
+// name has been registered - as soon as parsing starts on it (self-
+// recursion), or, with 'forward', as soon as the forward declaration is
+// parsed (calls before either point are correctly rejected as unknown
+// identifiers). But its entry_address isn't necessarily known yet at the
+// point some other procedure calls it - forward declarations specifically
+// exist to let procedure A call procedure B before B's real body appears
+// in the source. So every CALL target is backpatched (record_call()
+// above), resolved in the final pass below once every procedure's
+// entry_address is known.
 void generate_program(ASTNode *main_body) {
+    pending_call_count = 0;
+
     if (proc_count > 0) {
         int jmp_idx = code_idx;
         emit(OP_JMP, 0); // placeholder, patched below
@@ -407,6 +441,10 @@ void generate_program(ASTNode *main_body) {
         code[jmp_idx].arg = code_idx; // main starts here
     }
     generate_code(main_body);
+
+    for (int i = 0; i < pending_call_count; i++) {
+        code[pending_calls[i].call_instr_idx].arg = proc_table[pending_calls[i].target_proc_idx].entry_address;
+    }
 }
 
 void emit_halt(void) {

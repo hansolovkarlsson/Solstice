@@ -35,6 +35,7 @@ typedef enum {
     TOKEN_BREAK, TOKEN_CONTINUE,
     TOKEN_CHAR_TYPE,
     TOKEN_PROCEDURE,
+    TOKEN_FORWARD,
     TOKEN_EOF
 } TokenType;
 
@@ -192,7 +193,7 @@ typedef struct ASTNode {
 // which table the name resolves in. entry_address is filled in during
 // codegen (the instruction index where this procedure's body starts);
 // -1 until then. body is the parsed AST for the procedure's compound
-// statement, set once parsing finishes it.
+// statement, set once parsing finishes it (NULL while is_forward is set).
 typedef struct {
     char name[MAX_NAME];
     int entry_address;
@@ -201,6 +202,14 @@ typedef struct {
                                     // occupy 0..param_count-1, additional
                                     // locals continue from there
     DataType param_types[MAX_PARAMS];
+    char param_names[MAX_PARAMS][MAX_NAME]; // needed so a forward
+                                    // declaration's later completing
+                                    // definition - which doesn't re-list
+                                    // parameters - can still resolve them
+                                    // by name inside its body
+    int is_forward;                // 1 while forward-declared but not yet
+                                    // completed; 0 once a real body exists
+                                    // (or if it was never forward at all)
     struct ASTNode *body;
 } ProcSymbol;
 

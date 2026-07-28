@@ -396,10 +396,9 @@ end.
   procedure) takes priority inside that procedure's body, standard Pascal
   lexical scoping. The global is simply inaccessible by that name from
   inside the procedure; nothing about the global itself changes.
-- **A procedure can call any procedure declared earlier** (or itself),
-  but not one declared later in the file — there's no `forward`
-  declaration yet, so mutual recursion (A calls B, B calls A) isn't
-  possible.
+- **A procedure can call any procedure declared earlier** (or itself)
+  without anything special. Calling one declared *later* requires a
+  `forward` declaration first — see below.
 - Not yet supported, with a clear compile error if attempted:
   `readln` into a parameter or local variable, and using one as a `for`
   loop's counter. Both work fine as ordinary expressions/assignments —
@@ -414,6 +413,47 @@ end.
   hand-writing `.sasm`, see [docs/BYTECODE.md](BYTECODE.md), but the
   Pascal compiler doesn't expose this as `function`/`result` syntax yet).
 
+### Forward declarations
+
+```pascal
+procedure isOdd(n: integer); forward;   { declare the header now, define it later }
+
+procedure isEven(n: integer);
+begin
+    if n = 0 then
+        writeln('even')
+    else
+        isOdd(n - 1);   { isOdd only exists as a forward declaration so far - that's fine }
+end;
+
+procedure isOdd;   { completing the forward declaration - no parameter list here }
+begin
+    if n = 0 then
+        writeln('odd')
+    else
+        isEven(n - 1);
+end;
+```
+
+- `procedure name(params); forward;` declares a procedure's name and
+  parameter list without a body yet — this is what lets an *earlier*
+  procedure call one that's only fully defined *later* in the file,
+  which is exactly what enables mutual recursion (as in the `isEven`/
+  `isOdd` example above, where each one calls the other).
+- The completing definition — the one with the real body — repeats just
+  `procedure name;`, with **no parameter list**. The parameters were
+  already declared in the forward declaration; re-specifying them here is
+  a compile error. Inside the completing body, parameters are referenced
+  by the same names given in the forward declaration.
+- Every forward declaration must eventually be completed somewhere later
+  in the same file — an unfulfilled one (`forward;` with no matching
+  definition anywhere) is a compile error.
+- Calling a procedure that hasn't been declared *at all yet* — not even
+  with `forward` — is still a compile error, exactly as without forward
+  declarations. `forward` only moves *when* a name becomes callable
+  earlier; it doesn't remove the requirement that it be declared in some
+  form before it's used.
+
 ## Errors
 
 Every compile error reports as `file:line: Compile Error: message` (or
@@ -426,9 +466,8 @@ a crash.
 
 ## What's not implemented
 
-- Functions (procedures that return a value), array parameters/locals,
-  `forward` declarations (needed for mutual recursion) — see
-  [Procedures](#procedures) above for what does exist today
+- Functions (procedures that return a value) and array parameters/locals
+  — see [Procedures](#procedures) above for what does exist today
 - Multi-dimensional arrays
 - `real`/floating-point numbers
 - `ord`/`chr` (needs functions, above)

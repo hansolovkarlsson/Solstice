@@ -132,6 +132,8 @@ static int add_proc(const char *name) {
     strcpy(proc_table[proc_count].name, name);
     proc_table[proc_count].entry_address = -1; // resolved during codegen
     proc_table[proc_count].body = NULL;        // set once the body is parsed
+    proc_table[proc_count].is_forward = 0;     // may be set to 1 right after, if this is a forward declaration
+    proc_table[proc_count].param_count = 0;    // defensive reset (see comment above the struct)
     return proc_count++;
 }
 
@@ -439,12 +441,24 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         procedure_declaration();
     }
 
+    for (int i = 0; i < proc_count; i++) {
+        if (proc_table[i].is_forward) {
+            compile_error(token.line, "Procedure '%s' was forward-declared but never defined", proc_table[i].name);
+        }
+    }
+
     ASTNode *root = compound_statement();
     match(TOKEN_PERIOD);
     return root;
 }
 
-// 'procedure name [(params)] ; [var locals ;] <compound-statement>;'.
+// 'procedure name [(params)] ; forward;'  -- a forward declaration, or
+// 'procedure name [(params)] ; [var locals ;] <compound-statement>;'  -- a
+// full declaration, or
+// 'procedure name ; [var locals ;] <compound-statement>;'  -- completing a
+// previous forward declaration (no parameter list here - it was already
+// given).
+//
 // Registers the name (via add_proc) before parsing anything else, so a
 // call to this procedure's own name inside its body - recursion -
 // resolves correctly. Parameter info is written back to proc_table right
@@ -457,42 +471,74 @@ static void procedure_declaration(void) {
         compile_error(token.line, "Expected a procedure name");
     }
     char name[MAX_NAME];
+    int decl_line = token.line;
     strcpy(name, token.text);
     match(TOKEN_IDENTIFIER);
 
-    int proc_idx = add_proc(name);
+    int existing_idx = find_proc(name);
+    int completing_forward = (existing_idx != -1 && proc_table[existing_idx].is_forward);
+
+    int proc_idx = completing_forward ? existing_idx : add_proc(name);
 
     in_procedure = 1;
     current_local_count = 0;
 
-    int param_count = 0;
-    DataType param_types[MAX_PARAMS];
-
-    if (token.type == TOKEN_LPAREN) {
-        match(TOKEN_LPAREN);
-        if (token.type != TOKEN_RPAREN) {
-            while (1) {
-                NameGroup g = parse_name_group();
-                for (int i = 0; i < g.count; i++) {
-                    if (param_count >= MAX_PARAMS) {
-                        compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
-                    }
-                    add_local(g.names[i], g.type);
-                    param_types[param_count++] = g.type;
-                }
-                if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
-                break;
-            }
+    if (completing_forward) {
+        if (token.type == TOKEN_LPAREN) {
+            compile_error(decl_line, "'%s' was already forward-declared with its parameter list - omit parameters here", name);
         }
-        match(TOKEN_RPAREN);
+        // Replay the forward declaration's parameters as locals, so this
+        // completing body can reference them by name even though they
+        // aren't re-listed here.
+        for (int i = 0; i < proc_table[proc_idx].param_count; i++) {
+            add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
+        }
+    } else {
+        int param_count = 0;
+        DataType param_types[MAX_PARAMS];
+        char param_names[MAX_PARAMS][MAX_NAME];
+
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            if (token.type != TOKEN_RPAREN) {
+                while (1) {
+                    NameGroup g = parse_name_group();
+                    for (int i = 0; i < g.count; i++) {
+                        if (param_count >= MAX_PARAMS) {
+                            compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
+                        }
+                        add_local(g.names[i], g.type);
+                        strcpy(param_names[param_count], g.names[i]);
+                        param_types[param_count] = g.type;
+                        param_count++;
+                    }
+                    if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+                    break;
+                }
+            }
+            match(TOKEN_RPAREN);
+        }
+
+        // Write parameter info back now - before a 'forward;' marker or a
+        // body is parsed, so a recursive call from inside the body (or a
+        // mutually-recursive call from another procedure) sees the real
+        // values right away.
+        proc_table[proc_idx].param_count = param_count;
+        for (int i = 0; i < param_count; i++) {
+            proc_table[proc_idx].param_types[i] = param_types[i];
+            strcpy(proc_table[proc_idx].param_names[i], param_names[i]);
+        }
     }
+
     match(TOKEN_SEMI);
 
-    // Write parameter info back now - before the body is parsed, so a
-    // recursive call from inside the body sees the real values.
-    proc_table[proc_idx].param_count = param_count;
-    for (int i = 0; i < param_count; i++) {
-        proc_table[proc_idx].param_types[i] = param_types[i];
+    if (!completing_forward && token.type == TOKEN_FORWARD) {
+        match(TOKEN_FORWARD);
+        match(TOKEN_SEMI);
+        proc_table[proc_idx].is_forward = 1;
+        in_procedure = 0;
+        current_local_count = 0;
+        return; // the real body comes later, in a completing declaration
     }
 
     if (token.type == TOKEN_VAR) {
@@ -511,6 +557,7 @@ static void procedure_declaration(void) {
 
     proc_table[proc_idx].body = body;
     proc_table[proc_idx].local_count = current_local_count; // params + locals
+    proc_table[proc_idx].is_forward = 0; // completed now (harmless if it wasn't forward to begin with)
 
     in_procedure = 0;
     current_local_count = 0;

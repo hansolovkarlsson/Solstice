@@ -81,3 +81,4 @@ Two things worth remembering for next time:
 - **Array parameters/locals** — the least urgent of the three, and the most architecturally involved (arrays currently live in one flat `vm_array_mem` region addressed by compile-time-known base offsets; a parameter would need either pass-by-reference or a copy-in/copy-out convention).
 
 Let me know which you'd like to pick up whenever you're ready to continue.
+
