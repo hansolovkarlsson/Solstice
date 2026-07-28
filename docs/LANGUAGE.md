@@ -347,6 +347,43 @@ var
 - No multi-dimensional arrays (`array[1..3, 1..3] of integer` isn't
   supported — nest a loop instead, or wait for that feature).
 
+## Procedures
+
+```pascal
+program Example;
+var
+    x: integer;
+
+procedure greet;
+begin
+    writeln('Hello, x = ', x);
+end;
+
+begin
+    x := 42;
+    greet;
+    greet();   { equivalent - empty parens are accepted too }
+end.
+```
+
+- Procedures are declared after the `var` section and before the main
+  `begin...end.` body, each as `procedure name; <compound-statement>;`.
+- **No parameters and no return value yet** — a procedure body reads and
+  writes the program's global variables, exactly like the main body does.
+  There's no such thing as a procedure-local variable yet either
+  (parameters and locals are planned together, since they share the same
+  underlying mechanism).
+- **Recursion works.** A procedure can call itself.
+- **A procedure can call any procedure declared earlier**, but not one
+  declared later in the file — there's no `forward` declaration yet, so
+  mutual recursion (A calls B, B calls A) isn't possible. This is a
+  standard Pascal restriction in the absence of `forward`, not a
+  shortcut specific to this compiler.
+- A procedure's name and a variable's name share one namespace — you
+  can't declare a procedure with the same name as an existing variable,
+  or vice versa.
+- Functions (procedures that return a value) aren't implemented yet.
+
 ## Errors
 
 Every compile error reports as `file:line: Compile Error: message` (or
@@ -359,8 +396,9 @@ a crash.
 
 ## What's not implemented
 
-- Procedures and functions (no user-defined subroutines at all yet — this
-  is the biggest gap, and needs a call stack in SolVM first)
+- Procedure parameters, local variables, and functions (procedures that
+  return a value) — see [Procedures](#procedures) above for what does
+  exist today
 - Multi-dimensional arrays
 - `real`/floating-point numbers
 - `ord`/`chr` (needs functions, above)

@@ -57,18 +57,39 @@ int main(int argc, char *argv[]) {
 
     if (verbose_mode) printf("\n--- Phase 2: Type Checking ---\n");
     type_check(ast);
+    for (int i = 0; i < proc_count; i++) {
+        type_check(proc_table[i].body);
+    }
 
     if (verbose_mode) printf("\n--- Phase 3: Optimizing AST ---\n");
     ast = optimize_ast(ast);
-    ast = eliminate_dead_code(ast);
+    for (int i = 0; i < proc_count; i++) {
+        proc_table[i].body = optimize_ast(proc_table[i].body);
+    }
+    // Mark variable usage across every tree in the program before
+    // sweeping any of them - a procedure can write a global that main (or
+    // another procedure) reads, so DCE can't judge each tree in isolation.
+    dce_reset();
+    dce_mark(ast);
+    for (int i = 0; i < proc_count; i++) {
+        dce_mark(proc_table[i].body);
+    }
+    ast = dce_sweep(ast);
+    for (int i = 0; i < proc_count; i++) {
+        proc_table[i].body = dce_sweep(proc_table[i].body);
+    }
 
     if (verbose_mode) {
         printf("\n--- Abstract Syntax Tree Visualization ---\n");
         print_ast(ast, 0);
+        for (int i = 0; i < proc_count; i++) {
+            printf("\n--- Procedure: %s ---\n", proc_table[i].name);
+            print_ast(proc_table[i].body, 0);
+        }
     }
 
     if (verbose_mode) printf("\n--- Phase 4: Code Generation ---\n");
-    generate_code(ast);
+    generate_program(ast);
     emit_halt();
 
     save_bytecode(bin_path);
@@ -78,6 +99,9 @@ int main(int argc, char *argv[]) {
     }
 
     free_ast(ast);
+    for (int i = 0; i < proc_count; i++) {
+        free_ast(proc_table[i].body);
+    }
     free(source);
     fatal_error_active = 0;
 

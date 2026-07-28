@@ -40,7 +40,7 @@ static int find_var(const char *name) {
     for (int i = 0; i < sym_count; i++) {
         if (strcmp(sym_table[i].name, name) == 0) return i;
     }
-    compile_error(token.line, "Unknown variable '%s'", name);
+    compile_error(token.line, "Unknown identifier '%s'", name);
     return -1;
 }
 
@@ -87,6 +87,39 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     sym_count++;
 }
 
+// Soft lookup - returns -1 rather than erroring, since the caller needs
+// to decide "is this name a procedure or a variable?" before knowing
+// which error (if any) is appropriate.
+static int find_proc(const char *name) {
+    for (int i = 0; i < proc_count; i++) {
+        if (strcmp(proc_table[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+// Registers a procedure's name immediately (before its body is parsed) -
+// required so a procedure can call itself (recursion): by the time the
+// parser is inside the body, find_proc() already sees this entry.
+// Procedures and variables are stored in separate tables but share one
+// namespace from the user's perspective, so this checks against both.
+static int add_proc(const char *name) {
+    if (find_proc(name) != -1) {
+        compile_error(token.line, "Duplicate procedure declaration '%s'", name);
+    }
+    for (int i = 0; i < sym_count; i++) {
+        if (strcmp(sym_table[i].name, name) == 0) {
+            compile_error(token.line, "'%s' is already declared as a variable", name);
+        }
+    }
+    if (proc_count >= MAX_PROCEDURES) {
+        compile_error(token.line, "Too many procedure declarations (limit is %d)", MAX_PROCEDURES);
+    }
+    strcpy(proc_table[proc_count].name, name);
+    proc_table[proc_count].entry_address = -1; // resolved during codegen
+    proc_table[proc_count].body = NULL;        // set once the body is parsed
+    return proc_count++;
+}
+
 // Adds a string literal to the pool, reusing an existing slot if the exact
 // same text was already interned (this is a space-saving dedup, not a
 // correctness requirement - string equality is checked via strcmp at
@@ -128,6 +161,7 @@ static ASTNode *expression(void);
 static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
+static void procedure_declaration(void);
 
 static ASTNode *factor(void) {
     if (token.type == TOKEN_MINUS || token.type == TOKEN_NOT) {
@@ -243,6 +277,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     string_count = 0;
     array_mem_count = 0;
     loop_depth = 0;
+    proc_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -306,9 +341,33 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         }
     }
 
+    while (token.type == TOKEN_PROCEDURE) {
+        procedure_declaration();
+    }
+
     ASTNode *root = compound_statement();
     match(TOKEN_PERIOD);
     return root;
+}
+
+// 'procedure name; <compound-statement>;'. Registers the name (via
+// add_proc) before parsing the body, so a call to this procedure's own
+// name inside its body - recursion - resolves correctly.
+static void procedure_declaration(void) {
+    match(TOKEN_PROCEDURE);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a procedure name");
+    }
+    char name[MAX_NAME];
+    strcpy(name, token.text);
+    match(TOKEN_IDENTIFIER);
+    match(TOKEN_SEMI);
+
+    int proc_idx = add_proc(name);
+    ASTNode *body = compound_statement();
+    match(TOKEN_SEMI);
+
+    proc_table[proc_idx].body = body;
 }
 
 // True for every token that can legally start a statement. Used by
@@ -329,6 +388,18 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_IDENTIFIER) {
+        int proc_idx = find_proc(token.text);
+        if (proc_idx != -1) {
+            ASTNode *stmt = create_node(NODE_CALL);
+            stmt->data.var_idx = proc_idx;
+            match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_LPAREN) {
+                match(TOKEN_LPAREN);
+                match(TOKEN_RPAREN); // no parameters yet - only empty parens accepted
+            }
+            return stmt;
+        }
+
         ASTNode *stmt = create_node(NODE_ASSIGN);
         int idx = find_var(token.text);
         stmt->data.var_idx = idx;

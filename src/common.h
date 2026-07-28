@@ -10,6 +10,7 @@
 #define MAX_ARRAY_MEM 4096
 #define MAX_CALL_DEPTH 256
 #define MAX_FRAME_STACK 4096
+#define MAX_PROCEDURES 50
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -32,6 +33,7 @@ typedef enum {
     TOKEN_LBRACKET, TOKEN_RBRACKET,
     TOKEN_BREAK, TOKEN_CONTINUE,
     TOKEN_CHAR_TYPE,
+    TOKEN_PROCEDURE,
     TOKEN_EOF
 } TokenType;
 
@@ -152,7 +154,11 @@ typedef enum {
     NODE_ARRAY_ACCESS, // 'arr[i]' as an expression. data.var_idx = the
                        // array's symbol index, left = index expression.
     NODE_BREAK,
-    NODE_CONTINUE
+    NODE_CONTINUE,
+    NODE_CALL // Procedure call statement. data.var_idx = proc_table
+              // index. left is reserved for an argument list (a future
+              // increment, once procedures take parameters) - always
+              // NULL for now.
 } NodeType;
 
 typedef struct ASTNode {
@@ -171,6 +177,18 @@ typedef struct ASTNode {
                              // by NODE_IF, for the optional else-branch.
 } ASTNode;
 
+// A procedure's own namespace, separate from Symbol (variables) - needed
+// so 'foo;' (a call) and 'foo := 5;' (an assignment) can be told apart by
+// which table the name resolves in. entry_address is filled in during
+// codegen (the instruction index where this procedure's body starts);
+// -1 until then. body is the parsed AST for the procedure's compound
+// statement, set once parsing finishes it.
+typedef struct {
+    char name[MAX_NAME];
+    int entry_address;
+    struct ASTNode *body;
+} ProcSymbol;
+
 // Shared Global State
 extern Instruction code[MAX_CODE];
 extern int code_idx;
@@ -179,6 +197,8 @@ extern int sym_count;
 extern char string_pool[MAX_STRINGS][MAX_STRING_LEN];
 extern int string_count;
 extern int array_mem_count;
+extern ProcSymbol proc_table[MAX_PROCEDURES];
+extern int proc_count;
 extern Token token;
 
 #endif

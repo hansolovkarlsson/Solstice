@@ -21,6 +21,9 @@ int string_count = 0;
 
 int array_mem_count = 0;
 
+ProcSymbol proc_table[MAX_PROCEDURES];
+int proc_count = 0;
+
 void save_bytecode(const char *filename) {
     FILE *f = fopen(filename, "wb");
     if (!f) {

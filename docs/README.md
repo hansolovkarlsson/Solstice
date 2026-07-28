@@ -114,12 +114,14 @@ Working: `if`/`while`/`repeat`/`for` (with `break`/`continue`),
 `integer`/`boolean`/`string`/`char` types, string concatenation and
 comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
-elimination and constant folding.
+elimination and constant folding, and parameterless procedures
+(declaration, calling, and recursion — see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#procedures)).
 
-Not yet implemented at the Pascal language level: procedures and
-functions — there's no syntax to declare or call one yet. SolVM itself
-already has everything needed underneath (`CALL`/`RET`, a call stack, and
-per-call local-variable frames — see
+Not yet implemented: procedure parameters, local variables, and
+functions (procedures that return a value). SolVM itself already has
+everything needed underneath for these too (`CALL`/`RET`, a call stack,
+and per-call local-variable frames — see
 [docs/BYTECODE.md](docs/BYTECODE.md#procedures-call-ret-and-stack-frames)),
 provable today by hand-writing `.sasm`; what's missing is wiring the
 compiler to emit it. Also missing: multi-dimensional arrays.

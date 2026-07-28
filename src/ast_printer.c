@@ -194,6 +194,13 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->next, indent);
             }
             break;
+
+        case NODE_CALL:
+            printf("[Call] -> Procedure: %s\n", proc_table[node->data.var_idx].name);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
     }
 }
 

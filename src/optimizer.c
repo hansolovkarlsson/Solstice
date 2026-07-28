@@ -101,6 +101,11 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
 
     if (node->type == NODE_COMPOUND) {
         node->left = sweep_dead_assignments(node->left);
+        node->next = sweep_dead_assignments(node->next); // a compound used
+                                                           // as one statement
+                                                           // in a sequence
+                                                           // can have
+                                                           // siblings after it
         return node;
     }
 
@@ -143,9 +148,31 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
     return node;
 }
 
-ASTNode *eliminate_dead_code(ASTNode *node) {
+// Multi-tree-safe DCE API: reset once, mark() every tree in the program
+// (main body, and now every procedure body), THEN sweep() every tree.
+// This matters once a variable can be written in one tree and read in
+// another - e.g. a procedure assigns a global that main later reads.
+// Marking each tree in isolation (the old single-call eliminate_dead_code
+// below still does exactly that) would see no read within the writing
+// tree and incorrectly remove the assignment as dead.
+void dce_reset(void) {
     memset(var_used_tracker, 0, sizeof(var_used_tracker));
+}
+
+void dce_mark(ASTNode *node) {
     mark_used_variables(node);
+}
+
+ASTNode *dce_sweep(ASTNode *node) {
     return sweep_dead_assignments(node);
+}
+
+// Single-tree convenience wrapper (reset + mark + sweep in one call) -
+// correct as long as the caller passes the *only* tree that exists in the
+// program (no procedures). test_recovery.c's test programs use this.
+ASTNode *eliminate_dead_code(ASTNode *node) {
+    dce_reset();
+    dce_mark(node);
+    return dce_sweep(node);
 }
 

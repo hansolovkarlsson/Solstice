@@ -341,7 +341,50 @@ void generate_code(ASTNode *node) {
             record_continue();
             generate_code(node->next);
             break;
+
+        case NODE_CALL:
+            emit(OP_CALL, proc_table[node->data.var_idx].entry_address);
+            generate_code(node->next);
+            break;
     }
+}
+
+// Emits every procedure body first (each preceded by one shared JMP that
+// skips straight to the main program), then the main program itself.
+//
+//     JMP main_start        ; only emitted if there's at least one procedure
+//   proc0:
+//     <proc0 body>
+//     RET
+//   proc1:
+//     <proc1 body>
+//     RET
+//     ...
+//   main_start:
+//     <main body>
+//
+// Each procedure's entry_address is recorded the instant its own
+// generation starts, before its body is generated - so a CALL to that
+// procedure from inside its own body (recursion) or from any
+// later-generated code (a later procedure, or main) always finds a
+// resolved address already. No backpatching needed for CALL targets at
+// all, unlike everything else in this file - this increment deliberately
+// disallows calling a procedure declared *later* in the source (no
+// forward references beyond self), which is exactly what makes that true.
+void generate_program(ASTNode *main_body) {
+    if (proc_count > 0) {
+        int jmp_idx = code_idx;
+        emit(OP_JMP, 0); // placeholder, patched below
+
+        for (int i = 0; i < proc_count; i++) {
+            proc_table[i].entry_address = code_idx;
+            generate_code(proc_table[i].body);
+            emit(OP_RET, 0);
+        }
+
+        code[jmp_idx].arg = code_idx; // main starts here
+    }
+    generate_code(main_body);
 }
 
 void emit_halt(void) {
