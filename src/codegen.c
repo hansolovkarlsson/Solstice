@@ -195,8 +195,17 @@ void generate_code(ASTNode *node) {
 
         case NODE_UNARY_OP:
             generate_code(node->left);
-            if (node->op == TOKEN_MINUS) emit(OP_NEG, 0);
-            else if (node->op == TOKEN_NOT) emit(OP_NOT, 0);
+            if (node->op == TOKEN_MINUS) {
+                emit(OP_NEG, 0);
+            } else if (node->op == TOKEN_NOT) {
+                if (node->left->expression_type == TYPE_INTEGER) emit(OP_BNOT, 0);
+                else emit(OP_NOT, 0);
+            } else if (node->op == TOKEN_ABS) {
+                emit(OP_ABS, 0);
+            } else if (node->op == TOKEN_SQR) {
+                emit(OP_DUP, 0);
+                emit(OP_MUL, 0);
+            }
             break;
 
         case NODE_BINARY_OP:
@@ -216,8 +225,14 @@ void generate_code(ASTNode *node) {
                     break;
                 case TOKEN_LT:    emit_ordering(node, OP_LT);  break;
                 case TOKEN_GT:    emit_ordering(node, OP_GT);  break;
-                case TOKEN_AND: emit(OP_AND, 0); break;
-                case TOKEN_OR:  emit(OP_OR, 0); break;
+                case TOKEN_AND:
+                    if (node->left->expression_type == TYPE_INTEGER) emit(OP_BAND, 0);
+                    else emit(OP_AND, 0);
+                    break;
+                case TOKEN_OR:
+                    if (node->left->expression_type == TYPE_INTEGER) emit(OP_BOR, 0);
+                    else emit(OP_OR, 0);
+                    break;
                 case TOKEN_LTE: emit_ordering(node, OP_LTE); break;
                 case TOKEN_GTE: emit_ordering(node, OP_GTE); break;
                 case TOKEN_NEQ:
@@ -226,7 +241,12 @@ void generate_code(ASTNode *node) {
                     break;
                 case TOKEN_DIV_KW: emit(OP_DIV, 0); break; // Reuses OP_DIV
                 case TOKEN_MOD:    emit(OP_MOD, 0); break;
-                case TOKEN_XOR:    emit(OP_XOR, 0); break;
+                case TOKEN_XOR:
+                    if (node->left->expression_type == TYPE_INTEGER) emit(OP_BXOR, 0);
+                    else emit(OP_XOR, 0);
+                    break;
+                case TOKEN_SHL: emit(OP_SHL, 0); break;
+                case TOKEN_SHR: emit(OP_SHR, 0); break;
                 default: break;
             }
             break;

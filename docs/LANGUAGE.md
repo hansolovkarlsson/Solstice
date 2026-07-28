@@ -94,10 +94,14 @@ var
 | `/` | Integer division (alias for `div`) |
 | `div` | Integer division |
 | `mod` | Modulo |
+| `shl` | Bitwise shift left (integer, logical - see below) |
+| `shr` | Bitwise shift right (integer, logical - see below) |
 
 Division or modulo by a literal zero is a compile-time error; by a
 runtime-zero value is a runtime error. Both are caught, never silently
-produce garbage.
+produce garbage. `shl`/`shr`'s shift amount must be `0..31`; anything
+else is a runtime error rather than the undefined behavior C's `<<`/`>>`
+would give for an out-of-range shift.
 
 ### Comparison
 
@@ -112,27 +116,55 @@ String/char ordering is lexicographic (character-by-character, like
 `strcmp`) — e.g. `'apple' < 'banana'` is `true`. Boolean is ordinal
 (`false < true`), matching standard Pascal.
 
-### Logical (boolean operands)
+### Logical / bitwise (`and`, `or`, `xor`, `not`)
 
-| Operator | Meaning |
-|---|---|
-| `and` | Logical AND |
-| `or` | Logical OR |
-| `xor` | Logical XOR |
-| `not` | Logical NOT (unary) |
+| Operator | Between two `boolean`s | Between two `integer`s |
+|---|---|---|
+| `and` | Logical AND | Bitwise AND |
+| `or` | Logical OR | Bitwise OR |
+| `xor` | Logical XOR | Bitwise XOR |
+| `not` | Logical NOT (unary) | Bitwise NOT (unary, ones' complement) |
 
-There's no short-circuit evaluation — both operands of `and`/`or` are
-always evaluated.
+Same four keywords, different meaning depending on operand type — this
+matches Turbo Pascal/Delphi/Free Pascal (plain ISO Pascal doesn't define
+`and`/`or`/`xor`/`not` on integers at all). Mixing a `boolean` and an
+`integer` operand is a compile-time error; both operands must be the
+same one of the two. There's no short-circuit evaluation — both operands
+of `and`/`or` are always evaluated.
 
 ### Precedence (highest to lowest)
 
 1. Unary `-`, `not`, parenthesized expressions
-2. `*`, `/`, `div`, `mod`, `and`
+2. `*`, `/`, `div`, `mod`, `and`, `shl`, `shr`
 3. `+`, `-`, `or`, `xor`
 4. `=`, `<>`, `<`, `>`, `<=`, `>=`
 
 Assignment (`:=`) is a statement, not an expression — you can't write
 `x := (y := 5)`.
+
+## Built-in functions and procedures
+
+| Name | Kind | Meaning |
+|---|---|---|
+| `abs(x)` | function | Absolute value of an integer |
+| `sqr(x)` | function | `x * x`, for an integer |
+| `odd(x)` | function | `true` if the integer `x` is odd |
+| `succ(x)` | function | `x + 1`, for an integer |
+| `pred(x)` | function | `x - 1`, for an integer |
+| `inc(x)`, `inc(x, n)` | statement | Adds `1` (or `n`) to `x` in place |
+| `dec(x)`, `dec(x, n)` | statement | Subtracts `1` (or `n`) from `x` in place |
+
+- All seven currently work on `integer` only.
+- `inc`/`dec`'s target `x` must be a plain integer variable — global or
+  local, but not an array element. Real Pascal's `inc`/`dec` mutate their
+  argument by reference (`var` parameter); this compiler doesn't support
+  by-reference *scalar* parameters yet (only array parameters are by
+  reference), so `inc`/`dec` are handled as a special statement form
+  rather than a general mechanism — `inc(x)` compiles to exactly what
+  `x := x + 1;` would.
+- `inc`/`dec` are statements (no return value, can't be used inside an
+  expression), matching real Pascal. The other five are ordinary
+  functions, usable anywhere an expression is expected.
 
 ## Statements
 

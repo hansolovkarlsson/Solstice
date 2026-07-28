@@ -100,6 +100,11 @@ corruption.
 | `AND` / `OR` | Pop `b`, pop `a`, push the logical result. No short-circuiting. |
 | `NOT` | Pop `a`, push `!a`. |
 | `XOR` | Pop `b`, pop `a`, push `a != b`. |
+| `BAND` / `BOR` / `BXOR` | Bitwise integer AND/OR/XOR - pop `b`, pop `a`, push `a & b` / `a \| b` / `a ^ b`. Chosen by codegen instead of `AND`/`OR`/`XOR` when both operands are `integer` rather than `boolean` - the underlying `0`/`1` boolean values happen to make bitwise and logical AND/OR/XOR agree, but not NOT (see `BNOT`), so these are genuinely separate opcodes rather than a shared one. |
+| `BNOT` | Pop `a`, push `~a` (bitwise NOT / ones' complement). Distinct from `NOT` because `~0` is `-1`, not `1` - reusing `NOT` for integers would be wrong. |
+| `SHL` / `SHR` | Pop `b` (shift amount), pop `a`, push `a << b` / a *logical* (not sign-extending) `a >> b`. Runtime error if `b` is outside `0..31`, rather than the undefined behavior C's `<<`/`>>` give for an out-of-range shift. |
+| `DUP` | Duplicate the top of the stack (push a second copy). A generic primitive - first used by `sqr(x)` (evaluate `x` once, `DUP`, `MUL`), rather than evaluating `x`'s bytecode twice. |
+| `ABS` | Pop `a`, push its absolute value. |
 
 ### Strings
 

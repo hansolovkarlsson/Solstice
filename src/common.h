@@ -37,6 +37,9 @@ typedef enum {
     TOKEN_PROCEDURE,
     TOKEN_FORWARD,
     TOKEN_FUNCTION,
+    TOKEN_SHL, TOKEN_SHR,
+    TOKEN_INC, TOKEN_DEC,
+    TOKEN_ABS, TOKEN_SQR, TOKEN_ODD, TOKEN_SUCC, TOKEN_PRED,
     TOKEN_EOF
 } TokenType;
 
@@ -72,10 +75,25 @@ typedef enum {
     OP_PUSH, OP_LOAD, OP_STORE,
     OP_ADD, OP_SUB, OP_MUL, OP_DIV,
     OP_EQ, OP_LT, OP_GT,
-    OP_AND, OP_OR, OP_NOT,
+    OP_AND, OP_OR, OP_NOT,     // logical (boolean) - see OP_BAND etc. for the bitwise (integer) versions
     OP_LTE, OP_GTE, OP_NEQ,
     OP_NEG,
     OP_MOD, OP_XOR,
+    OP_BAND, OP_BOR, OP_BXOR, OP_BNOT, // bitwise integer and/or/xor/not -
+                  // 'and'/'or'/'xor'/'not' on two integers means bitwise
+                  // in Pascal, distinct from the same keywords on two
+                  // booleans (logical) - the underlying values (0/1 for
+                  // boolean) happen to make bitwise AND/OR/XOR agree with
+                  // logical AND/OR/XOR, but NOT does not (bitwise ~0 is
+                  // -1, not 1), so these need to be genuinely separate
+                  // opcodes, chosen by codegen based on operand type.
+    OP_SHL, OP_SHR, // integer shift left/right. SHR is a logical (not
+                  // arithmetic/sign-extending) shift, matching Pascal.
+    OP_DUP,       // Duplicate the top of the stack (push a second copy).
+                  // A generic primitive, not tied to any one feature -
+                  // first real use is 'sqr(x)' (evaluate x once, DUP,
+                  // multiply) rather than evaluating x's bytecode twice.
+    OP_ABS,       // Pop a value; push its absolute value.
     OP_PRINT,     // Pop a value; print it with NO trailing newline.
     OP_PRINT_BOOL, // Pop a value; print "TRUE" (nonzero) or "FALSE" (zero)
                   // with NO trailing newline - standard Pascal prints

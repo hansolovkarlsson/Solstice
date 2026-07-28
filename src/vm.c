@@ -258,6 +258,48 @@ void run_vm(void) {
             case OP_NEG: { int a = vm_pop(&sp); vm_push(&sp, -a); break; }
             case OP_NOT: { int a = vm_pop(&sp); vm_push(&sp, !a); break; }
 
+            case OP_BAND: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a & b); break; }
+            case OP_BOR:  { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a | b); break; }
+            case OP_BXOR: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a ^ b); break; }
+            case OP_BNOT: { int a = vm_pop(&sp); vm_push(&sp, ~a); break; }
+
+            case OP_SHL: {
+                int b = vm_pop(&sp);
+                int a = vm_pop(&sp);
+                if (b < 0 || b >= 32) {
+                    fprintf(stderr, "VM Runtime Error: Shift amount %d out of range (0..31)\n", b);
+                    fatal_abort();
+                }
+                vm_push(&sp, a << b);
+                break;
+            }
+
+            case OP_SHR: {
+                int b = vm_pop(&sp);
+                int a = vm_pop(&sp);
+                if (b < 0 || b >= 32) {
+                    fprintf(stderr, "VM Runtime Error: Shift amount %d out of range (0..31)\n", b);
+                    fatal_abort();
+                }
+                // Logical (unsigned) shift, matching Pascal's 'shr' - does
+                // not sign-extend, unlike C's >> on a signed int.
+                vm_push(&sp, (int)((unsigned int)a >> b));
+                break;
+            }
+
+            case OP_DUP: {
+                int a = vm_pop(&sp);
+                vm_push(&sp, a);
+                vm_push(&sp, a);
+                break;
+            }
+
+            case OP_ABS: {
+                int a = vm_pop(&sp);
+                vm_push(&sp, a < 0 ? -a : a);
+                break;
+            }
+
             case OP_MOD: {
                 int b = vm_pop(&sp);
                 int a = vm_pop(&sp);

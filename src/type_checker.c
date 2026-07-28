@@ -53,11 +53,23 @@ void type_check(ASTNode *node) {
                 }
                 node->expression_type = TYPE_INTEGER;
             } else if (node->op == TOKEN_NOT) {
-                if (node->left->expression_type != TYPE_BOOLEAN) {
-                    fprintf(stderr, "%s:%d: Type Error: 'not' requires boolean\n", get_current_filename(), node->line);
+                // 'not' on boolean is logical; on integer it's bitwise
+                // (Pascal convention, e.g. Turbo Pascal/Delphi/Free Pascal).
+                if (node->left->expression_type == TYPE_BOOLEAN) {
+                    node->expression_type = TYPE_BOOLEAN;
+                } else if (node->left->expression_type == TYPE_INTEGER) {
+                    node->expression_type = TYPE_INTEGER;
+                } else {
+                    fprintf(stderr, "%s:%d: Type Error: 'not' requires boolean or integer\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
-                node->expression_type = TYPE_BOOLEAN;
+            } else if (node->op == TOKEN_ABS || node->op == TOKEN_SQR) {
+                if (node->left->expression_type != TYPE_INTEGER) {
+                    fprintf(stderr, "%s:%d: Type Error: '%s' requires an integer argument\n",
+                            get_current_filename(), node->line, node->op == TOKEN_ABS ? "abs" : "sqr");
+                    fatal_abort();
+                }
+                node->expression_type = TYPE_INTEGER;
             }
             break;
 
@@ -72,17 +84,23 @@ void type_check(ASTNode *node) {
             }
 
             if (node->op == TOKEN_AND || node->op == TOKEN_OR || node->op == TOKEN_XOR) {
-                if (left_t != TYPE_BOOLEAN || right_t != TYPE_BOOLEAN) {
-                    fprintf(stderr, "%s:%d: Type Error: Logical operators (and, or, xor) require boolean operands\n", 
+                // and/or/xor are logical between two booleans, bitwise
+                // between two integers (Pascal convention).
+                if (left_t == TYPE_BOOLEAN && right_t == TYPE_BOOLEAN) {
+                    node->expression_type = TYPE_BOOLEAN;
+                } else if (left_t == TYPE_INTEGER && right_t == TYPE_INTEGER) {
+                    node->expression_type = TYPE_INTEGER;
+                } else {
+                    fprintf(stderr, "%s:%d: Type Error: 'and'/'or'/'xor' require both operands boolean, or both integer\n",
                             get_current_filename(), node->line);
                     fatal_abort();
                 }
-                node->expression_type = TYPE_BOOLEAN;
             } else if (node->op == TOKEN_PLUS && is_string_type(left_t) && is_string_type(right_t)) {
                 node->expression_type = TYPE_STRING; // concatenation always yields a string, even from chars
             } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || 
                     node->op == TOKEN_MUL || node->op == TOKEN_DIV || 
-                    node->op == TOKEN_DIV_KW || node->op == TOKEN_MOD) {
+                    node->op == TOKEN_DIV_KW || node->op == TOKEN_MOD ||
+                    node->op == TOKEN_SHL || node->op == TOKEN_SHR) {
                 if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
                     fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer operands%s\n", 
                             get_current_filename(), node->line,

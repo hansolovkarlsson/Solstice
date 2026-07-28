@@ -20,20 +20,38 @@ ASTNode *optimize_ast(ASTNode *node) {
             node->type = NODE_NUMBER;
             node->data.num_value = -val;
         } else if (node->op == TOKEN_NOT) {
-            node->type = NODE_BOOLEAN;
-            node->data.num_value = !val;
+            // Logical not on a boolean literal, bitwise not on an integer
+            // literal - same distinction as the runtime opcodes.
+            if (node->left->type == NODE_BOOLEAN) {
+                node->type = NODE_BOOLEAN;
+                node->data.num_value = !val;
+            } else {
+                node->type = NODE_NUMBER;
+                node->data.num_value = ~val;
+            }
+        } else if (node->op == TOKEN_ABS) {
+            node->type = NODE_NUMBER;
+            node->data.num_value = val < 0 ? -val : val;
+        } else if (node->op == TOKEN_SQR) {
+            node->type = NODE_NUMBER;
+            node->data.num_value = val * val;
         }
         free_ast(node->left);
         node->left = NULL;
         return node;
     }
 
-    if (node->type == NODE_BINARY_OP && node->left->type == NODE_NUMBER 
-        && node->right->type == NODE_NUMBER) {
+    if (node->type == NODE_BINARY_OP
+        && (node->left->type == NODE_NUMBER || node->left->type == NODE_BOOLEAN)
+        && (node->right->type == NODE_NUMBER || node->right->type == NODE_BOOLEAN)) {
         int l_val = node->left->data.num_value;
         int r_val = node->right->data.num_value;
         int folded_val = 0;
         int is_comparison = 0;
+        int is_bool_operand = (node->left->type == NODE_BOOLEAN); // AND/OR/XOR only: by this
+                                          // point type-checking already
+                                          // guaranteed both operands match
+                                          // (both boolean or both integer)
 
         switch (node->op) {
             case TOKEN_PLUS:  folded_val = l_val + r_val; break;
@@ -49,8 +67,14 @@ ASTNode *optimize_ast(ASTNode *node) {
             case TOKEN_EQ: folded_val = (l_val == r_val); is_comparison = 1; break;
             case TOKEN_LT: folded_val = (l_val < r_val);  is_comparison = 1; break;
             case TOKEN_GT: folded_val = (l_val > r_val);  is_comparison = 1; break;
-            case TOKEN_AND: folded_val = (l_val && r_val); is_comparison = 1; break;
-            case TOKEN_OR:  folded_val = (l_val || r_val); is_comparison = 1; break;
+            case TOKEN_AND:
+                if (is_bool_operand) { folded_val = (l_val && r_val); is_comparison = 1; }
+                else { folded_val = (l_val & r_val); }
+                break;
+            case TOKEN_OR:
+                if (is_bool_operand) { folded_val = (l_val || r_val); is_comparison = 1; }
+                else { folded_val = (l_val | r_val); }
+                break;
             case TOKEN_LTE: folded_val = (l_val <= r_val); is_comparison = 1; break;
             case TOKEN_GTE: folded_val = (l_val >= r_val); is_comparison = 1; break;
             case TOKEN_NEQ: folded_val = (l_val != r_val); is_comparison = 1; break;
@@ -63,8 +87,24 @@ ASTNode *optimize_ast(ASTNode *node) {
                 folded_val = l_val % r_val;
                 break;
             case TOKEN_XOR:
-                folded_val = (l_val != r_val);
-                is_comparison = 1;
+                if (is_bool_operand) { folded_val = (l_val != r_val); is_comparison = 1; }
+                else { folded_val = (l_val ^ r_val); }
+                break;
+            case TOKEN_SHL:
+                if (r_val < 0 || r_val >= 32) {
+                    fprintf(stderr, "%s:%d: Compile Error: Shift amount %d out of range (0..31)\n",
+                            get_current_filename(), node->line, r_val);
+                    fatal_abort();
+                }
+                folded_val = l_val << r_val;
+                break;
+            case TOKEN_SHR:
+                if (r_val < 0 || r_val >= 32) {
+                    fprintf(stderr, "%s:%d: Compile Error: Shift amount %d out of range (0..31)\n",
+                            get_current_filename(), node->line, r_val);
+                    fatal_abort();
+                }
+                folded_val = (int)((unsigned int)l_val >> r_val);
                 break;
             default: return node;
         }

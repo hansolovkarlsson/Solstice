@@ -37,6 +37,14 @@ static const char *opcode_name(Opcode op) {
         case OP_NEG:   return "neg";
         case OP_MOD:   return "mod";
         case OP_XOR:   return "xor";
+        case OP_BAND:  return "band";
+        case OP_BOR:   return "bor";
+        case OP_BXOR:  return "bxor";
+        case OP_BNOT:  return "bnot";
+        case OP_SHL:   return "shl";
+        case OP_SHR:   return "shr";
+        case OP_DUP:   return "dup";
+        case OP_ABS:   return "abs";
         case OP_PRINT: return "print";
         case OP_PRINT_BOOL: return "print_bool";
         case OP_READ:  return "read";

@@ -440,6 +440,53 @@ static ASTNode *factor(void) {
         node->op = op;
         node->left = factor();
         return node;
+    } else if (token.type == TOKEN_ABS || token.type == TOKEN_SQR) {
+        TokenType op = token.type;
+        match(op);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_UNARY_OP);
+        node->op = op;
+        node->left = expression();
+        match(TOKEN_RPAREN);
+        return node;
+    } else if (token.type == TOKEN_ODD) {
+        // odd(x) desugars to '(x mod 2) <> 0' - reuses the existing
+        // mod/comparison machinery entirely, so type checking (x must be
+        // integer) and codegen need no awareness of 'odd' at all.
+        match(TOKEN_ODD);
+        match(TOKEN_LPAREN);
+        ASTNode *x = expression();
+        match(TOKEN_RPAREN);
+        ASTNode *two = create_node(NODE_NUMBER);
+        two->data.num_value = 2;
+        two->expression_type = TYPE_INTEGER;
+        ASTNode *rem = create_node(NODE_BINARY_OP);
+        rem->op = TOKEN_MOD;
+        rem->left = x;
+        rem->right = two;
+        ASTNode *zero = create_node(NODE_NUMBER);
+        zero->data.num_value = 0;
+        zero->expression_type = TYPE_INTEGER;
+        ASTNode *node = create_node(NODE_BINARY_OP);
+        node->op = TOKEN_NEQ;
+        node->left = rem;
+        node->right = zero;
+        return node;
+    } else if (token.type == TOKEN_SUCC || token.type == TOKEN_PRED) {
+        // succ(x)/pred(x) desugar to 'x + 1'/'x - 1' - same reasoning as odd().
+        TokenType kind = token.type;
+        match(kind);
+        match(TOKEN_LPAREN);
+        ASTNode *x = expression();
+        match(TOKEN_RPAREN);
+        ASTNode *one = create_node(NODE_NUMBER);
+        one->data.num_value = 1;
+        one->expression_type = TYPE_INTEGER;
+        ASTNode *node = create_node(NODE_BINARY_OP);
+        node->op = (kind == TOKEN_SUCC) ? TOKEN_PLUS : TOKEN_MINUS;
+        node->left = x;
+        node->right = one;
+        return node;
     } else if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         ASTNode *node = expression();
@@ -552,7 +599,7 @@ static ASTNode *term(void) {
     ASTNode *node = factor();
     while (token.type == TOKEN_MUL || token.type == TOKEN_DIV || 
            token.type == TOKEN_DIV_KW || token.type == TOKEN_MOD || 
-           token.type == TOKEN_AND) {
+           token.type == TOKEN_AND || token.type == TOKEN_SHL || token.type == TOKEN_SHR) {
         TokenType op = token.type;
         match(op);
         ASTNode *new_node = create_node(NODE_BINARY_OP);
@@ -868,12 +915,92 @@ static void subroutine_declaration(int is_function_decl) {
 static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
-           t == TOKEN_BREAK || t == TOKEN_CONTINUE;
+           t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC;
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
 // if/while/repeat, or a nested begin...end block. Never touches a
 // separating semicolon or the node's ->next; that's statement_list()'s job.
+// Parses 'inc(target)', 'inc(target, delta)', and the 'dec' equivalents.
+// Desugars directly to the same AST 'target := target + delta;' (or '-'
+// for dec) would produce - reuses every bit of existing assignment type-
+// checking and codegen, no new opcodes or node types needed. The target
+// must be a plain integer variable (global or local) - not an array
+// element, and not boolean/string/char: char is a string-pool index at
+// runtime, not a character code, so "incrementing" it wouldn't mean
+// "next character" the way it does in real Pascal.
+static ASTNode *parse_inc_dec(TokenType kind) {
+    const char *name_str = (kind == TOKEN_INC) ? "inc" : "dec";
+    match(kind);
+    match(TOKEN_LPAREN);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'%s' expects a variable", name_str);
+    }
+    char name[MAX_NAME];
+    int line = token.line;
+    strcpy(name, token.text);
+    match(TOKEN_IDENTIFIER);
+
+    int local_idx = find_local(name);
+    int is_local = (local_idx != -1 && !current_locals[local_idx].is_array && !current_locals[local_idx].is_array_ref);
+    int global_idx = -1;
+    DataType target_type;
+    if (local_idx != -1 && !is_local) {
+        compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
+    }
+    if (is_local) {
+        target_type = current_locals[local_idx].type;
+    } else {
+        global_idx = find_var(name);
+        if (sym_table[global_idx].is_array) {
+            compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
+        }
+        target_type = sym_table[global_idx].type;
+    }
+    if (target_type != TYPE_INTEGER) {
+        compile_error(line, "'%s' only supports integer variables", name_str);
+    }
+
+    ASTNode *delta;
+    if (token.type == TOKEN_COMMA) {
+        match(TOKEN_COMMA);
+        delta = expression();
+    } else {
+        delta = create_node(NODE_NUMBER);
+        delta->data.num_value = 1;
+        delta->expression_type = TYPE_INTEGER;
+    }
+    match(TOKEN_RPAREN);
+
+    ASTNode *read_node;
+    if (is_local) {
+        read_node = create_node(NODE_LOCAL_VAR);
+        read_node->data.var_idx = local_idx;
+        read_node->expression_type = TYPE_INTEGER;
+    } else {
+        read_node = create_node(NODE_VARIABLE);
+        read_node->data.var_idx = global_idx;
+        read_node->expression_type = TYPE_INTEGER;
+    }
+
+    ASTNode *value_node = create_node(NODE_BINARY_OP);
+    value_node->op = (kind == TOKEN_INC) ? TOKEN_PLUS : TOKEN_MINUS;
+    value_node->left = read_node;
+    value_node->right = delta;
+
+    ASTNode *write_node;
+    if (is_local) {
+        write_node = create_node(NODE_LOCAL_ASSIGN);
+        write_node->data.var_idx = local_idx;
+        write_node->expression_type = TYPE_INTEGER;
+    } else {
+        write_node = create_node(NODE_ASSIGN);
+        write_node->data.var_idx = global_idx;
+    }
+    write_node->left = value_node;
+    return write_node;
+}
+
 static ASTNode *statement(void) {
     if (token.type == TOKEN_BEGIN) {
         return compound_statement();
@@ -960,6 +1087,10 @@ static ASTNode *statement(void) {
             stmt->left = expression();  // value
         }
         return stmt;
+    }
+
+    if (token.type == TOKEN_INC || token.type == TOKEN_DEC) {
+        return parse_inc_dec(token.type);
     }
 
     if (token.type == TOKEN_WRITELN || token.type == TOKEN_WRITE) {
