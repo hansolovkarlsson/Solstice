@@ -1,5 +1,9 @@
 # 001_start.md
 
+# Before
+
+First code done in Gemini
+
 # Prompt
 
 From the start of my programming career, I’ve been interested in many different programming languages and technologies. BASIC was my first language, then Pascal, C, C++, and many other. I was fascinated how compilers work and one thing that got my attention the most was postfix languages like Forth. I loved my HP calculators that had a stack and postfix notation.
