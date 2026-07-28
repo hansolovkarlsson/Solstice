@@ -134,6 +134,7 @@ corruption.
 | `ENTER` | `arg` = number of local slots to reserve. Set `fp = frame_sp + 1`; zero-initialize `arg` slots starting there; advance `frame_sp` past them. Normally the first instruction of a procedure body. |
 | `LOAD_LOCAL` | `arg` = a slot index relative to `fp`. Push `vm_frame_stack[fp + arg]`. |
 | `STORE_LOCAL` | `arg` = a slot index relative to `fp`. Pop a value; store it at `vm_frame_stack[fp + arg]`. |
+| `POP` | Pop a value and discard it. Used when a function is called as a statement (its return value unwanted) rather than as part of an expression - the value is still pushed like any function's, but nothing consumes it, so this discards it explicitly rather than leaving the operand stack unbalanced. |
 
 See [Procedures: CALL, RET, and stack frames](#procedures-call-ret-and-stack-frames) below for the full picture, including why `CALL` needs to save more than just a return address.
 
@@ -258,7 +259,14 @@ scoped again to A's own locals.
 - **Return values**: a "function" leaves its result on the operand stack
   before `RET`. The caller finds it there, on top of the stack, right
   after the `CALL` returns - exactly where any other expression's result
-  would be.
+  would be. This is exactly the convention `pascalc` itself uses for
+  Pascal `function`s: a hidden extra local slot holds the return value
+  (assigning to the function's own name inside its body targets that
+  slot), and `LOAD_LOCAL` on it right before `RET` pushes the result. If
+  a function is called as a *statement* rather than as part of an
+  expression, its still-pushed return value is popped and discarded
+  (`POP`) rather than left to unbalance the operand stack for whatever
+  comes next.
 - **Locals**: anything beyond the parameters just gets its own slot
   number (`k..n-1`) reserved by the same `ENTER <n>`.
 

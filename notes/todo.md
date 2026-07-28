@@ -1,5 +1,10 @@
 # To Do
 
+Would like some built-in functions to:
+dump current stack
+dump current list of symbols
+
+
 More stack operations, like dup, drop, over, rot, swap, etc
 
 Later also add macros and other cool things for assembler

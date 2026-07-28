@@ -114,10 +114,11 @@ Working: `if`/`while`/`repeat`/`for` (with `break`/`continue`),
 `integer`/`boolean`/`string`/`char` types, string concatenation and
 comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
-elimination and constant folding, and procedures with by-value scalar
-parameters and local variables — including correct per-call isolation
-under recursion and mutual recursion via `forward` declarations (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#procedures)).
+elimination and constant folding, and procedures and functions with
+by-value scalar parameters and local variables — including correct
+per-call isolation under recursion and mutual recursion via `forward`
+declarations (see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedures) and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#functions)).
 
-Not yet implemented: functions (procedures that return a value) and array
-parameters/locals. Also missing: multi-dimensional arrays.
+Not yet implemented: array parameters/locals. Also missing:
+multi-dimensional arrays.

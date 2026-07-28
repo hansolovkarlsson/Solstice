@@ -303,6 +303,10 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_POP:
+                vm_pop(&sp);
+                break;
+
             case OP_PUSH_STR:
                 vm_push(&sp, instr.arg); // pool index; validated when actually dereferenced
                 break;

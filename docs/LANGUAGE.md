@@ -406,12 +406,8 @@ end.
 - A procedure's name and a variable's name share one namespace — you
   can't declare a procedure with the same name as an existing global
   variable, or vice versa.
-- Functions (procedures that return a value) aren't implemented yet — a
-  procedure "returns" a result only by writing to a global variable (as
-  in the example above) or, less commonly, by leaving a value on the
-  operand stack for the caller before returning (possible today by
-  hand-writing `.sasm`, see [docs/BYTECODE.md](BYTECODE.md), but the
-  Pascal compiler doesn't expose this as `function`/`result` syntax yet).
+- Functions (procedures that return a value) work — see
+  [Functions](#functions) below.
 
 ### Forward declarations
 
@@ -454,6 +450,49 @@ end;
   earlier; it doesn't remove the requirement that it be declared in some
   form before it's used.
 
+## Functions
+
+```pascal
+function factorial(n: integer): integer;
+begin
+    if n <= 1 then
+        factorial := 1
+    else
+        factorial := n * factorial(n - 1);
+end;
+
+begin
+    writeln(factorial(5));   { 120 }
+end.
+```
+
+- `function name [(params)] : returnType; ...` — otherwise declared
+  exactly like a procedure (parameters, local `var` sections, `forward`
+  all work the same way; a `forward`-declared function's completing
+  definition omits both the parameter list *and* the return type, since
+  both were already given).
+- **The return value is set by assigning to the function's own name**
+  inside its body — `factorial := ...` above. This is the only way to
+  set it; there's no separate `return`/`exit` statement. If a function's
+  body never assigns to its own name, it returns a default value (`0`
+  for `integer`/`boolean`/`char`-as-a-number, or an out-of-range value
+  for `string`/`char` that will cleanly error if actually used — not
+  silently wrong data).
+- Reading the function's own name as an expression (to check the return
+  value computed so far) isn't supported — only assigning to it is.
+  Inside its own body, using the bare name as an expression is treated as
+  a call (usually a recursive one), not a read of the stored result.
+- **A function can be called as a statement**, discarding its return
+  value, exactly like a procedure call:
+  ```pascal
+  bump;             { call bump, ignore what it returns }
+  x := bump;         { call bump, use what it returns }
+  ```
+- The return type is scalar only (`integer`, `boolean`, `string`,
+  `char`) — same restriction as parameters and local variables.
+- A function's return type is checked at every call site used as an
+  expression, the same way argument types are checked.
+
 ## Errors
 
 Every compile error reports as `file:line: Compile Error: message` (or
@@ -466,11 +505,12 @@ a crash.
 
 ## What's not implemented
 
-- Functions (procedures that return a value) and array parameters/locals
-  — see [Procedures](#procedures) above for what does exist today
+- Array parameters/locals — see [Procedures](#procedures) and
+  [Functions](#functions) above for what does exist today
 - Multi-dimensional arrays
 - `real`/floating-point numbers
-- `ord`/`chr` (needs functions, above)
+- `ord`/`chr` (now that user-defined functions exist, these could
+  plausibly be added as builtins - just not done yet)
 - Records, sets, enumerated types
 - Units/modules/`uses`
 

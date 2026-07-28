@@ -196,7 +196,8 @@ void print_ast(ASTNode *node, int indent) {
             break;
 
         case NODE_CALL: {
-            printf("[Call] -> Procedure: %s\n", proc_table[node->data.var_idx].name);
+            ProcSymbol *proc = &proc_table[node->data.var_idx];
+            printf("[Call] -> %s: %s\n", proc->is_function ? "Function" : "Procedure", proc->name);
             int arg_num = 1;
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 print_indent(indent + 1);

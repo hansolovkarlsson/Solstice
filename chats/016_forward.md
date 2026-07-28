@@ -52,3 +52,4 @@ Sure, add it.
 
 # Response
 
+Let's rebuild everything to confirm this doesn't break anything (it shouldn't — it only affects where the linker places these symbols, not program behavior):Clean build. Since this warning is specific to Apple's `ld` on macOS, I can't directly reproduce it in this Linux sandbox — but I can confirm the flag applies cleanly and doesn't change program behavior at all:Everything behaves identically, as expected. Let's deliver the updated Makefile:One line changed — `CFLAGS` now includes `-fno-common`. On your Mac, `proc_table`/`string_pool`/etc. should now land in ordinary zero-initialized data instead of Mach-O's `__DATA,__common` section, which should quiet that specific linker warning. Rebuild with `make clean && make` and you should get a silent build; let me know if the warning somehow persists (unlikely, but if Apple's linker is doing something slightly different than the standard mechanism I described, worth knowing).

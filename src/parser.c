@@ -28,6 +28,13 @@ static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
 static int in_procedure = 0;
 
+// The proc_table index of the function whose body is currently being
+// parsed, or -1 if we're not inside a function body (either not inside
+// any procedure/function at all, or inside a plain procedure). Used to
+// recognize 'FunctionName := expr;' inside that function's own body as
+// setting its return value, rather than an ordinary assignment.
+static int current_function_idx = -1;
+
 const char *get_current_filename(void) {
     return current_filename;
 }
@@ -134,6 +141,7 @@ static int add_proc(const char *name) {
     proc_table[proc_count].body = NULL;        // set once the body is parsed
     proc_table[proc_count].is_forward = 0;     // may be set to 1 right after, if this is a forward declaration
     proc_table[proc_count].param_count = 0;    // defensive reset (see comment above the struct)
+    proc_table[proc_count].is_function = 0;    // may be set to 1 right after, if this is a function
     return proc_count++;
 }
 
@@ -244,7 +252,40 @@ static ASTNode *expression(void);
 static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
-static void procedure_declaration(void);
+static void subroutine_declaration(int is_function_decl);
+
+// Parses '(' [expr {',' expr}] ')' as a call's argument list, or nothing
+// if there are no parens at all - both are accepted for a zero-argument
+// call, matching how write/writeln also tolerate the parenless form.
+// Checks the parsed count against proc_table[proc_idx]'s declared
+// param_count, erroring immediately (with proc_idx's own name in the
+// message) on a mismatch. Returns the head of the argument list (chained
+// via each argument's own ->next), or NULL if there are none.
+static ASTNode *parse_call_arguments(int proc_idx) {
+    ASTNode *arg_head = NULL;
+    int arg_count = 0;
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_RPAREN) {
+            arg_head = expression();
+            arg_count++;
+            ASTNode *arg_tail = arg_head;
+            while (token.type == TOKEN_COMMA) {
+                match(TOKEN_COMMA);
+                ASTNode *next_arg = expression();
+                arg_count++;
+                arg_tail->next = next_arg;
+                arg_tail = next_arg;
+            }
+        }
+        match(TOKEN_RPAREN);
+    }
+    if (arg_count != proc_table[proc_idx].param_count) {
+        compile_error(token.line, "'%s' expects %d argument(s), got %d",
+                       proc_table[proc_idx].name, proc_table[proc_idx].param_count, arg_count);
+    }
+    return arg_head;
+}
 
 static ASTNode *factor(void) {
     if (token.type == TOKEN_MINUS || token.type == TOKEN_NOT) {
@@ -287,6 +328,21 @@ static ASTNode *factor(void) {
             node->line = line;
             node->data.var_idx = local_idx;
             node->expression_type = current_locals[local_idx].type;
+            return node;
+        }
+
+        int call_proc_idx = find_proc(token.text);
+        if (call_proc_idx != -1) {
+            if (!proc_table[call_proc_idx].is_function) {
+                compile_error(token.line, "'%s' is a procedure and does not return a value; it cannot be used in an expression",
+                               proc_table[call_proc_idx].name);
+            }
+            match(TOKEN_IDENTIFIER);
+            ASTNode *node = create_node(NODE_CALL);
+            node->line = line;
+            node->data.var_idx = call_proc_idx;
+            node->expression_type = proc_table[call_proc_idx].return_type;
+            node->left = parse_call_arguments(call_proc_idx);
             return node;
         }
 
@@ -374,6 +430,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     proc_count = 0;
     current_local_count = 0;
     in_procedure = 0;
+    current_function_idx = -1;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -437,13 +494,14 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         }
     }
 
-    while (token.type == TOKEN_PROCEDURE) {
-        procedure_declaration();
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION);
     }
 
     for (int i = 0; i < proc_count; i++) {
         if (proc_table[i].is_forward) {
-            compile_error(token.line, "Procedure '%s' was forward-declared but never defined", proc_table[i].name);
+            compile_error(token.line, "%s '%s' was forward-declared but never defined",
+                           proc_table[i].is_function ? "Function" : "Procedure", proc_table[i].name);
         }
     }
 
@@ -465,10 +523,26 @@ ASTNode *parse_ast(const char *source, const char *filename) {
 // after the parameter list is parsed, before the body: a recursive call
 // site inside the body needs the real param_count/param_types already in
 // place, not the placeholders add_proc() set.
-static void procedure_declaration(void) {
-    match(TOKEN_PROCEDURE);
+// 'procedure name [(params)] ; forward;' or
+// 'function name [(params)] : returnType ; forward;'  -- a forward
+// declaration, or
+// 'procedure name [(params)] ; [var locals ;] <compound-statement>;' or
+// 'function name [(params)] : returnType ; [var locals ;] <compound-statement>;'
+// -- a full declaration, or
+// 'procedure name ; ...' / 'function name ; ...'  -- completing a
+// previous forward declaration (no parameter list or return type here -
+// both were already given).
+//
+// Registers the name (via add_proc) before parsing anything else, so a
+// call to this procedure's own name inside its body - recursion -
+// resolves correctly. Parameter info is written back to proc_table right
+// after the parameter list is parsed, before the body: a recursive call
+// site inside the body needs the real param_count/param_types already in
+// place, not the placeholders add_proc() set.
+static void subroutine_declaration(int is_function_decl) {
+    match(is_function_decl ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
     if (token.type != TOKEN_IDENTIFIER) {
-        compile_error(token.line, "Expected a procedure name");
+        compile_error(token.line, "Expected a %s name", is_function_decl ? "function" : "procedure");
     }
     char name[MAX_NAME];
     int decl_line = token.line;
@@ -477,6 +551,12 @@ static void procedure_declaration(void) {
 
     int existing_idx = find_proc(name);
     int completing_forward = (existing_idx != -1 && proc_table[existing_idx].is_forward);
+
+    if (completing_forward && proc_table[existing_idx].is_function != is_function_decl) {
+        compile_error(decl_line, "'%s' was forward-declared as a %s, but completed as a %s", name,
+                       proc_table[existing_idx].is_function ? "function" : "procedure",
+                       is_function_decl ? "function" : "procedure");
+    }
 
     int proc_idx = completing_forward ? existing_idx : add_proc(name);
 
@@ -492,6 +572,9 @@ static void procedure_declaration(void) {
         // aren't re-listed here.
         for (int i = 0; i < proc_table[proc_idx].param_count; i++) {
             add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
+        }
+        if (is_function_decl && token.type == TOKEN_COLON) {
+            compile_error(decl_line, "'%s' was already forward-declared with its return type - omit it here", name);
         }
     } else {
         int param_count = 0;
@@ -528,6 +611,12 @@ static void procedure_declaration(void) {
             proc_table[proc_idx].param_types[i] = param_types[i];
             strcpy(proc_table[proc_idx].param_names[i], param_names[i]);
         }
+
+        proc_table[proc_idx].is_function = is_function_decl;
+        if (is_function_decl) {
+            match(TOKEN_COLON);
+            proc_table[proc_idx].return_type = parse_scalar_type();
+        }
     }
 
     match(TOKEN_SEMI);
@@ -552,15 +641,29 @@ static void procedure_declaration(void) {
         }
     }
 
+    // A function gets one more hidden local slot, reserved last (after
+    // every real parameter/local), to hold its return value. Assigning to
+    // the function's own name inside its body (see statement()) targets
+    // this slot via the ordinary NODE_LOCAL_ASSIGN mechanism - no new AST
+    // node type needed. Must be reserved (and current_function_idx set)
+    // before the body is parsed, so those assignments resolve correctly.
+    if (proc_table[proc_idx].is_function) {
+        proc_table[proc_idx].return_slot = current_local_count++;
+        current_function_idx = proc_idx;
+    } else {
+        current_function_idx = -1;
+    }
+
     ASTNode *body = compound_statement();
     match(TOKEN_SEMI);
 
     proc_table[proc_idx].body = body;
-    proc_table[proc_idx].local_count = current_local_count; // params + locals
+    proc_table[proc_idx].local_count = current_local_count; // params + locals (+ return_slot, for a function)
     proc_table[proc_idx].is_forward = 0; // completed now (harmless if it wasn't forward to begin with)
 
     in_procedure = 0;
     current_local_count = 0;
+    current_function_idx = -1;
 }
 
 // True for every token that can legally start a statement. Used by
@@ -581,6 +684,17 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_IDENTIFIER) {
+        if (current_function_idx != -1 && strcmp(token.text, proc_table[current_function_idx].name) == 0) {
+            // Assigning to the function's own name sets its return value.
+            ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
+            stmt->data.var_idx = proc_table[current_function_idx].return_slot;
+            stmt->expression_type = proc_table[current_function_idx].return_type;
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_ASSIGN);
+            stmt->left = expression();
+            return stmt;
+        }
+
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
@@ -596,30 +710,9 @@ static ASTNode *statement(void) {
         if (proc_idx != -1) {
             ASTNode *stmt = create_node(NODE_CALL);
             stmt->data.var_idx = proc_idx;
+            stmt->op = TOKEN_PROCEDURE; // marks statement context: discard an unused function result
             match(TOKEN_IDENTIFIER);
-
-            int arg_count = 0;
-            if (token.type == TOKEN_LPAREN) {
-                match(TOKEN_LPAREN);
-                if (token.type != TOKEN_RPAREN) {
-                    ASTNode *arg_head = expression();
-                    arg_count++;
-                    ASTNode *arg_tail = arg_head;
-                    while (token.type == TOKEN_COMMA) {
-                        match(TOKEN_COMMA);
-                        ASTNode *next_arg = expression();
-                        arg_count++;
-                        arg_tail->next = next_arg;
-                        arg_tail = next_arg;
-                    }
-                    stmt->left = arg_head;
-                }
-                match(TOKEN_RPAREN);
-            }
-            if (arg_count != proc_table[proc_idx].param_count) {
-                compile_error(token.line, "Procedure '%s' expects %d argument(s), got %d",
-                               proc_table[proc_idx].name, proc_table[proc_idx].param_count, arg_count);
-            }
+            stmt->left = parse_call_arguments(proc_idx);
             return stmt;
         }
 

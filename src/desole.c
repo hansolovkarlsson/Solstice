@@ -47,6 +47,7 @@ static const char *opcode_name(Opcode op) {
         case OP_ENTER:       return "enter";
         case OP_LOAD_LOCAL:  return "load_local";
         case OP_STORE_LOCAL: return "store_local";
+        case OP_POP:         return "pop";
         case OP_PUSH_STR:  return "push_str";
         case OP_PRINT_STR: return "print_str";
         case OP_SEQ:       return "seq";

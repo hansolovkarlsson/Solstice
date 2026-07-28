@@ -36,6 +36,7 @@ typedef enum {
     TOKEN_CHAR_TYPE,
     TOKEN_PROCEDURE,
     TOKEN_FORWARD,
+    TOKEN_FUNCTION,
     TOKEN_EOF
 } TokenType;
 
@@ -123,8 +124,14 @@ typedef enum {
                   // moved into locals 0..k-1 with STORE_LOCAL right after.
     OP_LOAD_LOCAL,  // arg = local slot index, relative to the current
                     // frame pointer. Push its value.
-    OP_STORE_LOCAL  // arg = local slot index, relative to the current
+    OP_STORE_LOCAL, // arg = local slot index, relative to the current
                     // frame pointer. Pop a value; store it there.
+    OP_POP          // Pop a value and discard it. Used when a function is
+                     // called as a statement rather than as part of an
+                     // expression - its return value is still pushed like
+                     // any function's, but nothing consumes it, so this
+                     // discards it explicitly rather than leaving the
+                     // operand stack unbalanced for whatever comes next.
 } Opcode;
 
 typedef struct {
@@ -157,10 +164,14 @@ typedef enum {
                        // array's symbol index, left = index expression.
     NODE_BREAK,
     NODE_CONTINUE,
-    NODE_CALL, // Procedure call statement. data.var_idx = proc_table
+    NODE_CALL, // A procedure or function call. data.var_idx = proc_table
                // index. left is the head of the argument list, chained
                // via each argument's own ->next (same technique as
-               // write/writeln's argument list).
+               // write/writeln's argument list). op is TOKEN_PROCEDURE
+               // when used as a statement - if the target is a function,
+               // its return value is popped and discarded (see OP_POP) -
+               // or left unset (0) when used as an expression, where the
+               // return value stays on the stack for the caller.
     NODE_LOCAL_VAR,    // A parameter/local read, as an expression.
                        // data.var_idx = frame-relative slot index.
     NODE_LOCAL_ASSIGN  // A parameter/local write. left = value expr.
@@ -200,7 +211,9 @@ typedef struct {
     int param_count;
     int local_count;               // total slots ENTER reserves - params
                                     // occupy 0..param_count-1, additional
-                                    // locals continue from there
+                                    // locals continue from there, and (for
+                                    // a function) return_slot is the last
+                                    // one, reserved automatically
     DataType param_types[MAX_PARAMS];
     char param_names[MAX_PARAMS][MAX_NAME]; // needed so a forward
                                     // declaration's later completing
@@ -210,6 +223,15 @@ typedef struct {
     int is_forward;                // 1 while forward-declared but not yet
                                     // completed; 0 once a real body exists
                                     // (or if it was never forward at all)
+    int is_function;                // 1 if declared with 'function' (has
+                                    // a return value), 0 for 'procedure'
+    DataType return_type;           // only meaningful if is_function
+    int return_slot;                // only meaningful if is_function - a
+                                    // hidden local slot, reserved after
+                                    // every real parameter/local; assigning
+                                    // to the function's own name targets
+                                    // this slot (see parser.c), and its
+                                    // value is pushed just before RET
     struct ASTNode *body;
 } ProcSymbol;
 

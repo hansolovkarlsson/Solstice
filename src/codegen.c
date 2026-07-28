@@ -377,7 +377,18 @@ void generate_code(ASTNode *node) {
                 generate_code(arg);
             }
             record_call(node->data.var_idx);
-            generate_code(node->next);
+            if (node->op == TOKEN_PROCEDURE) {
+                // Statement context: continue the enclosing statement
+                // chain, discarding an unused function result first.
+                if (proc_table[node->data.var_idx].is_function) {
+                    emit(OP_POP, 0); // statement-context call to a function: discard the unused result
+                }
+                generate_code(node->next);
+            }
+            // Expression context (node->op left unset): node->next, if
+            // set at all, belongs to an enclosing argument list (write/
+            // writeln's, or another call's) - that list's own loop above
+            // already walks it, so this call must not walk it again.
             break;
 
         case NODE_LOCAL_VAR:
@@ -435,6 +446,9 @@ void generate_program(ASTNode *main_body) {
                 emit(OP_STORE_LOCAL, p);
             }
             generate_code(proc_table[i].body);
+            if (proc_table[i].is_function) {
+                emit(OP_LOAD_LOCAL, proc_table[i].return_slot);
+            }
             emit(OP_RET, 0);
         }
 

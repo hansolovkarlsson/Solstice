@@ -127,6 +127,7 @@ void next_token(void) {
         else if (strcasecmp(token.text, "char") == 0) token.type = TOKEN_CHAR_TYPE;
         else if (strcasecmp(token.text, "procedure") == 0) token.type = TOKEN_PROCEDURE;
         else if (strcasecmp(token.text, "forward") == 0) token.type = TOKEN_FORWARD;
+        else if (strcasecmp(token.text, "function") == 0) token.type = TOKEN_FUNCTION;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }
