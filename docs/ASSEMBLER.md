@@ -48,12 +48,12 @@ MNEMONIC [operand]                            ; one instruction per line
 
 | Kind | Instructions | Example |
 |---|---|---|
-| Integer literal | `PUSH` | `PUSH 5`, `PUSH -1` |
+| Integer literal | `PUSH`, `ENTER`, `LOAD_LOCAL`, `STORE_LOCAL` | `PUSH 5`, `ENTER 2`, `LOAD_LOCAL 0` — a local slot is just a number, not a named symbol |
 | Variable name | `LOAD`, `STORE`, `READ` | `LOAD x` — must have a matching `.var` |
 | Array name | `LOAD_IDX`, `STORE_IDX` | `LOAD_IDX nums` — must have a matching `.array`; the runtime index comes off the stack, not the operand |
-| Label name | `JMP`, `JZ` | `JZ done` — may be a forward reference |
+| Label name | `JMP`, `JZ`, `CALL` | `JZ done`, `CALL sum` — may be a forward reference |
 | Quoted string | `PUSH_STR` | `PUSH_STR "hello"` — interned into the string pool; content is everything between the first and last `"` on the line, so an embedded `"` works without escaping |
-| *(none)* | everything else | |
+| *(none)* | everything else (including `RET`) | |
 
 **`PRINT` and `PRINT_STR` do not print a trailing newline** — use
 `NEWLINE` explicitly. This mirrors exactly what the Pascal compiler
@@ -65,8 +65,11 @@ then one `NEWLINE` only for `writeln`.
 `PUSH`, `LOAD`, `STORE`, `READ`, `ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`,
 `GT`, `AND`, `OR`, `NOT`, `LTE`, `GTE`, `NEQ`, `NEG`, `MOD`, `XOR`,
 `PRINT`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`, `SEQ`, `SCMP`,
-`SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`. See
-[docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does.
+`SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`, `CALL`, `RET`, `ENTER`,
+`LOAD_LOCAL`, `STORE_LOCAL`. See
+[docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does,
+and [Procedures](BYTECODE.md#procedures-call-ret-and-stack-frames) for
+the calling convention and a worked recursive example.
 
 ## Example: countdown loop
 

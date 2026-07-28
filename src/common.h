@@ -9,6 +9,7 @@
 #define MAX_STRINGS 256
 #define MAX_ARRAY_MEM 4096
 #define MAX_CALL_DEPTH 256
+#define MAX_FRAME_STACK 4096
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -104,10 +105,22 @@ typedef enum {
                   // a separate call stack, then jump to arg. Recursion-safe:
                   // each call gets its own return address on that stack,
                   // not a single shared slot.
-    OP_RET        // Pop the call stack; jump to the popped address. A
+    OP_RET,       // Pop the call stack; jump to the popped address. A
                   // runtime error (not a crash) if the call stack is
                   // empty - e.g. bytecode that reaches RET without a
-                  // matching CALL.
+                  // matching CALL. Also restores the caller's frame
+                  // pointer and frame-stack top, deallocating whatever
+                  // frame the returning call had (see OP_ENTER).
+    OP_ENTER,     // arg = number of local slots to reserve (zero-
+                  // initialized) on the frame stack. The first
+                  // instruction of a procedure body - establishes its
+                  // frame. Parameters arrive via the operand stack
+                  // (pushed by the caller before CALL) and are typically
+                  // moved into locals 0..k-1 with STORE_LOCAL right after.
+    OP_LOAD_LOCAL,  // arg = local slot index, relative to the current
+                    // frame pointer. Push its value.
+    OP_STORE_LOCAL  // arg = local slot index, relative to the current
+                    // frame pointer. Pop a value; store it there.
 } Opcode;
 
 typedef struct {

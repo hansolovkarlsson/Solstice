@@ -44,6 +44,9 @@ static const char *opcode_name(Opcode op) {
         case OP_JZ:    return "jz";
         case OP_CALL:  return "call";
         case OP_RET:   return "ret";
+        case OP_ENTER:       return "enter";
+        case OP_LOAD_LOCAL:  return "load_local";
+        case OP_STORE_LOCAL: return "store_local";
         case OP_PUSH_STR:  return "push_str";
         case OP_PRINT_STR: return "print_str";
         case OP_SEQ:       return "seq";
@@ -75,6 +78,13 @@ static int is_jump(Opcode op) {
 // True for opcodes whose arg is a variable index into sym_table[].
 static int is_var_ref(Opcode op) {
     return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_LOAD_IDX || op == OP_STORE_IDX;
+}
+
+// True for opcodes whose arg is a plain immediate value with no lookup -
+// a frame-relative local slot number is just as much "a number" here as
+// PUSH's literal is; neither refers to anything named.
+static int is_immediate(Opcode op) {
+    return op == OP_PUSH || op == OP_ENTER || op == OP_LOAD_LOCAL || op == OP_STORE_LOCAL;
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index
@@ -120,7 +130,7 @@ static void disassemble(FILE *out) {
             continue;
         }
 
-        if (instr.op == OP_PUSH) {
+        if (is_immediate(instr.op)) {
             fprintf(out, "    %s %d ; %04d\n", mnemonic, instr.arg, i);
         } else if (instr.op == OP_PUSH_STR) {
             if (instr.arg >= 0 && instr.arg < string_count) {

@@ -7,11 +7,24 @@
 static int vm_stack[MAX_STACK];
 static int vm_vars[MAX_SYMBOLS];
 static int vm_array_mem[MAX_ARRAY_MEM];
-static int vm_call_stack[MAX_CALL_DEPTH]; // return addresses only - kept
-                                           // separate from vm_stack so a
-                                           // procedure's operand-stack use
-                                           // can never clobber a return
-                                           // address or vice versa.
+static int vm_frame_stack[MAX_FRAME_STACK]; // local variable slots for
+                                             // every active call, stacked
+
+// Everything RET needs to fully restore the caller's context: not just
+// where to jump back to, but also its frame pointer and where the frame
+// stack's top was - restoring saved_frame_sp deallocates the returning
+// call's entire frame in one step, regardless of how many locals it had.
+typedef struct {
+    int return_addr;
+    int saved_fp;
+    int saved_frame_sp;
+} CallRecord;
+
+static CallRecord vm_call_stack[MAX_CALL_DEPTH]; // kept separate from
+                                           // vm_stack so a procedure's
+                                           // operand-stack use can never
+                                           // clobber a return address (or
+                                           // frame state) or vice versa.
 
 static inline void vm_push(int *sp, int val) {
     if (*sp >= MAX_STACK - 1) {
@@ -29,16 +42,19 @@ static inline int vm_pop(int *sp) {
     return vm_stack[(*sp)--];
 }
 
-static inline void vm_call_push(int *call_sp, int return_addr) {
+static inline void vm_call_push(int *call_sp, int return_addr, int saved_fp, int saved_frame_sp) {
     if (*call_sp >= MAX_CALL_DEPTH - 1) {
         fprintf(stderr, "VM Runtime Error: Call stack overflow (limit is %d) - possible infinite recursion\n",
                 MAX_CALL_DEPTH);
         fatal_abort();
     }
-    vm_call_stack[++(*call_sp)] = return_addr;
+    (*call_sp)++;
+    vm_call_stack[*call_sp].return_addr = return_addr;
+    vm_call_stack[*call_sp].saved_fp = saved_fp;
+    vm_call_stack[*call_sp].saved_frame_sp = saved_frame_sp;
 }
 
-static inline int vm_call_pop(int *call_sp) {
+static inline CallRecord vm_call_pop(int *call_sp) {
     if (*call_sp < 0) {
         fprintf(stderr, "VM Runtime Error: 'ret' with no matching 'call' (call stack empty)\n");
         fatal_abort();
@@ -83,6 +99,26 @@ static int vm_array_offset(int var_idx, int runtime_index) {
     return sym->array_base + (runtime_index - sym->array_lower);
 }
 
+// Resolves a frame-relative local slot (k) to an absolute vm_frame_stack[]
+// index, validating both that a frame is currently active (fp >= 0 - an
+// OP_ENTER must have run) and that k falls within that frame's actual
+// size (fp..frame_sp), not just the whole frame stack. A frame stays live
+// for its whole call, including while it has a nested call in progress,
+// so this is always correctly scoped to whichever call's own code is
+// currently executing.
+static int vm_local_index(int fp, int frame_sp, int k) {
+    if (fp < 0) {
+        fprintf(stderr, "VM Runtime Error: No active stack frame (local variable access outside a procedure)\n");
+        fatal_abort();
+    }
+    if (k < 0 || fp + k > frame_sp) {
+        fprintf(stderr, "VM Runtime Error: Local variable index %d out of range (0..%d for current frame)\n",
+                k, frame_sp - fp);
+        fatal_abort();
+    }
+    return fp + k;
+}
+
 // char and string share the exact same runtime representation (a
 // string_pool[] index) - this is what lets every string opcode work
 // unchanged for char too. The only place char is actually enforced is
@@ -123,8 +159,11 @@ static int vm_intern_string(const char *s) {
 void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
+    memset(vm_frame_stack, 0, sizeof(vm_frame_stack));
     int sp = -1;
     int call_sp = -1;
+    int fp = -1;         // -1 = no active frame
+    int frame_sp = -1;   // top of the frame stack (empty when -1)
     int ip = 0;
 
     while (1) {
@@ -223,13 +262,46 @@ void run_vm(void) {
             }
 
             case OP_CALL:
-                vm_call_push(&call_sp, ip); // ip already points past this CALL
+                // ip already points past this CALL. fp/frame_sp are saved
+                // as they are right now (the caller's), before the
+                // callee's own OP_ENTER (if any) establishes its frame.
+                vm_call_push(&call_sp, ip, fp, frame_sp);
                 ip = instr.arg;
                 break;
 
-            case OP_RET:
-                ip = vm_call_pop(&call_sp);
+            case OP_RET: {
+                CallRecord cr = vm_call_pop(&call_sp);
+                ip = cr.return_addr;
+                fp = cr.saved_fp;
+                frame_sp = cr.saved_frame_sp; // deallocates the whole
+                                               // returning frame in one step
                 break;
+            }
+
+            case OP_ENTER: {
+                int n = instr.arg;
+                if (frame_sp + n >= MAX_FRAME_STACK) {
+                    fprintf(stderr, "VM Runtime Error: Frame stack overflow (limit is %d) - possible deep/infinite recursion\n",
+                            MAX_FRAME_STACK);
+                    fatal_abort();
+                }
+                fp = frame_sp + 1;
+                for (int i = 0; i < n; i++) {
+                    vm_frame_stack[fp + i] = 0;
+                }
+                frame_sp += n;
+                break;
+            }
+
+            case OP_LOAD_LOCAL:
+                vm_push(&sp, vm_frame_stack[vm_local_index(fp, frame_sp, instr.arg)]);
+                break;
+
+            case OP_STORE_LOCAL: {
+                int val = vm_pop(&sp);
+                vm_frame_stack[vm_local_index(fp, frame_sp, instr.arg)] = val;
+                break;
+            }
 
             case OP_PUSH_STR:
                 vm_push(&sp, instr.arg); // pool index; validated when actually dereferenced

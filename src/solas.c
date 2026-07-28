@@ -20,7 +20,20 @@
 //                                        runtime index comes off the stack
 //     JMP/JZ/CALL <label name>           may be a forward reference
 //     PUSH_STR "<text>"                  interned into the string pool
+//     ENTER <n>                          reserve n local slots (the first
+//                                        instruction of a procedure body)
+//     LOAD_LOCAL/STORE_LOCAL <k>         slot k, relative to the current
+//                                        frame - not a name, just a number
 //     everything else                    no operand
+//
+// Procedures: CALL pushes a return address and jumps; the callee's first
+// instruction is normally ENTER <n>, which reserves n zero-initialized
+// local slots. Parameters and return values both travel via the ordinary
+// operand stack - the caller pushes arguments before CALL (the callee
+// then STORE_LOCALs them out of slots 0..k-1), and a "function" leaves
+// its result on the operand stack before RET. RET itself deallocates the
+// whole frame and restores the caller's frame pointer - no separate
+// "leave" instruction needed. See docs/BYTECODE.md for the full picture.
 //
 // .var types: integer, boolean, string
 // .array bounds are integer literals (may be negative), e.g.:
@@ -105,6 +118,9 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"JZ",        OP_JZ,        OPERAND_LABEL},
     {"CALL",      OP_CALL,      OPERAND_LABEL},
     {"RET",       OP_RET,       OPERAND_NONE},
+    {"ENTER",       OP_ENTER,       OPERAND_IMMEDIATE},
+    {"LOAD_LOCAL",  OP_LOAD_LOCAL,  OPERAND_IMMEDIATE},
+    {"STORE_LOCAL", OP_STORE_LOCAL, OPERAND_IMMEDIATE},
     {"PUSH_STR",  OP_PUSH_STR,  OPERAND_STRING},
     {"PRINT_STR", OP_PRINT_STR, OPERAND_NONE},
     {"SEQ",       OP_SEQ,       OPERAND_NONE},

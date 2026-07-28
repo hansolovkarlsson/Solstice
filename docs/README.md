@@ -116,5 +116,10 @@ comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
 elimination and constant folding.
 
-Not yet implemented: procedures/functions (and therefore no call stack in
-SolVM yet), multi-dimensional arrays.
+Not yet implemented at the Pascal language level: procedures and
+functions — there's no syntax to declare or call one yet. SolVM itself
+already has everything needed underneath (`CALL`/`RET`, a call stack, and
+per-call local-variable frames — see
+[docs/BYTECODE.md](docs/BYTECODE.md#procedures-call-ret-and-stack-frames)),
+provable today by hand-writing `.sasm`; what's missing is wiring the
+compiler to emit it. Also missing: multi-dimensional arrays.

@@ -7,17 +7,19 @@ index — never more than one of these per instruction).
 
 ## Memory model
 
-SolVM has four separate storage regions, each a fixed-size array sized at
+SolVM has six separate storage regions, each a fixed-size array sized at
 compile time (`common.h`'s `MAX_*` constants) — there is no dynamic
 allocation, no garbage collector, and no shared addressable memory between
 regions:
 
 | Region | What it holds | Size limit |
 |---|---|---|
-| `vm_stack[]` | The evaluation stack — operands for arithmetic, comparisons, etc. | `MAX_STACK` = 100 |
+| `vm_stack[]` | The evaluation stack — operands for arithmetic, comparisons, etc. — and, by convention, arguments and return values crossing a `CALL`/`RET` | `MAX_STACK` = 100 |
 | `vm_vars[]` | One `int` slot per scalar variable (an `integer`, a `0`/`1` `boolean`, or a string-pool index) | `MAX_SYMBOLS` = 100 |
 | `vm_array_mem[]` | Every array in the program, laid out contiguously; each array's `Symbol` entry carries its own base offset | `MAX_ARRAY_MEM` = 4096 elements total |
 | `string_pool[]` | Interned string contents (`char[256]` each) — populated at compile/assemble time, and can also grow at runtime (concatenation, `readln` into a string) | `MAX_STRINGS` = 256 |
+| `vm_call_stack[]` | One record per active call: `{return_addr, saved_fp, saved_frame_sp}` — see [Procedures](#procedures-call-ret-and-stack-frames) | `MAX_CALL_DEPTH` = 256 |
+| `vm_frame_stack[]` | Local variable slots for every active call, stacked | `MAX_FRAME_STACK` = 4096 |
 
 **Strings and booleans are represented as integers.** A string *value*
 anywhere in the VM — on the stack, in a variable slot, in an array
@@ -123,6 +125,18 @@ corruption.
 | `JZ` | Pop a value; if it's `0`, set `ip = arg`. Otherwise fall through. |
 | `HALT` | Stop execution. With `-v`, prints the final value of every non-internal variable (see [`desole`](ASSEMBLER.md) for how `__`-prefixed names are hidden). |
 
+### Procedures
+
+| Opcode | Effect |
+|---|---|
+| `CALL` | Push `{return_addr, current fp, current frame_sp}` onto `vm_call_stack[]` (`return_addr` is `ip` as it already stands, past this instruction); set `ip = arg`. |
+| `RET` | Pop `vm_call_stack[]`; restore `ip`, `fp`, and `frame_sp` from the popped record. Restoring `frame_sp` deallocates the entire returning call's frame in one step, whatever its size. A runtime error (not a crash) if the call stack is empty. |
+| `ENTER` | `arg` = number of local slots to reserve. Set `fp = frame_sp + 1`; zero-initialize `arg` slots starting there; advance `frame_sp` past them. Normally the first instruction of a procedure body. |
+| `LOAD_LOCAL` | `arg` = a slot index relative to `fp`. Push `vm_frame_stack[fp + arg]`. |
+| `STORE_LOCAL` | `arg` = a slot index relative to `fp`. Pop a value; store it at `vm_frame_stack[fp + arg]`. |
+
+See [Procedures: CALL, RET, and stack frames](#procedures-call-ret-and-stack-frames) below for the full picture, including why `CALL` needs to save more than just a return address.
+
 ## How control flow compiles
 
 There's no dedicated "loop" or "branch" instruction — `if`/`while`/
@@ -203,6 +217,87 @@ loop) and the continue-target (loop-type-specific: the condition
 re-check for `while`, the until-condition for `repeat`, the increment
 step for `for`) are finally known - every pending placeholder in both
 lists is patched in one pass.
+
+## Procedures: CALL, RET, and stack frames
+
+There's no built-in notion of "a procedure" — `CALL`/`RET` plus a per-call
+local-variable frame are primitives; everything about how they're used
+(parameter passing, return values, when to call `ENTER`) is convention,
+not something the VM enforces. This is the same philosophy as the rest of
+the instruction set: a small number of primitives, composed.
+
+### Why CALL saves more than a return address
+
+A bare "push return address, jump; pop, jump back" would be enough for
+control flow alone. But once a call has its own local variables, `RET`
+also needs to **deallocate** them and **restore the caller's own frame**
+- otherwise the caller's `LOAD_LOCAL 2` would silently start reading
+whatever the callee left behind in that slot. So `CALL` captures a full
+restore record - `{return_addr, saved_fp, saved_frame_sp}` - and `RET`
+restores all three at once. Restoring `saved_frame_sp` alone deallocates
+the returning call's entire frame regardless of how large it was; no
+separate "how big was my frame" bookkeeping is needed.
+
+This is also why `fp` (frame pointer) and `frame_sp` (frame-stack top)
+are two different things: `frame_sp` only ever grows while a chain of
+active calls is nested, tracking the *combined* depth of every live
+frame; `fp` always points at the base of whichever call's own code is
+*currently executing*. While call A is paused waiting on a nested call to
+B, `frame_sp` reflects both A's and B's frames combined, but `fp` points
+at B's - and the moment B returns, `fp` snaps back to A's, correctly
+scoped again to A's own locals.
+
+### The calling convention (by convention, not enforced)
+
+- **Parameters**: the caller pushes argument values onto the ordinary
+  `vm_stack[]` operand stack *before* `CALL` - no different from pushing
+  operands for arithmetic. The callee's first instruction is normally
+  `ENTER <n>` (reserving `n` local slots), followed by one `STORE_LOCAL`
+  per parameter, pulling each pushed value off the operand stack into
+  slots `0..k-1`.
+- **Return values**: a "function" leaves its result on the operand stack
+  before `RET`. The caller finds it there, on top of the stack, right
+  after the `CALL` returns - exactly where any other expression's result
+  would be.
+- **Locals**: anything beyond the parameters just gets its own slot
+  number (`k..n-1`) reserved by the same `ENTER <n>`.
+
+### Worked example: recursive sum
+
+```
+    push 5
+    call sum
+    print       ; 15 = 1+2+3+4+5
+    newline
+    halt
+sum:
+    enter 1          ; local 0 = n (the parameter)
+    store_local 0
+    load_local 0
+    push 0
+    eq
+    jz recurse
+    push 0           ; base case: sum(0) = 0
+    ret
+recurse:
+    load_local 0     ; n - stays on the operand stack across the call
+    load_local 0
+    push 1
+    sub              ; n - 1
+    call sum         ; recursive call - its own independent frame
+    add              ; n + sum(n-1)
+    ret
+```
+
+This is worth tracing by hand once: `sum` calls itself five times before
+hitting the base case, so at the deepest point there are five live
+frames, each with its own `n` (`5, 4, 3, 2, 1, 0`). As each level
+returns, the caller's `n` - loaded onto the operand stack *before* making
+the recursive call, so it survives the call untouched - is still exactly
+what that level pushed, letting `add` compute the right partial sum at
+every level on the way back out. If `n` were a single shared slot instead
+of a real per-call local, this would silently compute garbage instead of
+`15`.
 
 ## File format (`.bin`)
 
