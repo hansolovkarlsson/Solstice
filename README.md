@@ -139,10 +139,13 @@ entirely at compile time (see
 (`type TPoint = record x, y: integer; end;`), with whole-record
 assignment, implemented as pure compile-time sugar over ordinary global
 variables — zero new bytecode instructions anywhere in the feature (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#records)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#records)). Also working:
+`write`/`writeln` field-width and precision syntax (`writeln(x:10:2)`),
+with width/precision allowed as arbitrary integer expressions, not just
+literals (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#write-and-writeln)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no
-array `copy`/slicing), `write`/`writeln` field-width/precision syntax
-(`writeln(x:10:2)`), and records as array elements, record
+array `copy`/slicing), and records as array elements, record
 parameters/locals, nested records, or record comparison.

@@ -83,6 +83,20 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
         }
+
+        case NODE_WRITE_ARG:
+            print_ast(node->left, indent);
+            if (node->right) {
+                print_indent(indent);
+                printf("Width:\n");
+                print_ast(node->right, indent + 1);
+            }
+            if (node->extra) {
+                print_indent(indent);
+                printf("Precision:\n");
+                print_ast(node->extra, indent + 1);
+            }
+            break;
         case NODE_READLN:
             printf("[ReadLn] -> Target Variable: %s\n", sym_table[node->data.var_idx].name);
             if (node->next) {

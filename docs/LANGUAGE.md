@@ -304,21 +304,51 @@ write('a');
 write('b');
 writeln('c');        { prints "abc" then a newline }
 
-writeln('val: ', 42, ' ok=', true);   { "val: 42 ok=1" }
+writeln('val: ', 42, ' ok=', true);   { "val: 42 ok=TRUE" }
 
 writeln;              { just a newline }
 writeln();             { same thing }
 ```
 
 - Both take zero or more comma-separated arguments of any mixed type
-  (`integer`, `boolean`, `string`).
+  (`integer`, `real`, `boolean`, `string`, `char`).
 - Arguments are printed back-to-back with **no separator** — include your
   own spaces in string literals if you want them.
 - `writeln` appends exactly one trailing newline, after all arguments.
   `write` never appends one.
-- Booleans print as `1` (true) or `0` (false); there's no `true`/`false`
-  text output.
+- Booleans print as `TRUE`/`FALSE`.
 - Parentheses are optional when there are no arguments.
+
+#### Field width and precision
+
+Any argument can be followed by `:width` or `:width:precision`
+(standard Pascal field-width syntax) to control its formatting:
+
+```pascal
+writeln('[', 42:5, ']');           { [   42] - right-justified to width 5 }
+writeln('[', price:0:2, ']');       { [19.90] - exactly 2 decimal places }
+writeln('[', price:10:2, ']');      { [     19.90] - padded to width 10 too }
+```
+
+- `width` justifies the value to *at least* that many characters, padded
+  with spaces — works for every type. If the value's own text is already
+  wider than `width`, nothing is truncated; the full value prints
+  regardless.
+  - **`width >= 0`** right-justifies (the standard, common form).
+  - **`width < 0`** left-justifies instead, padding to `|width|`
+    characters — some Pascal dialects' convention for the same syntax
+    (plain ISO Pascal doesn't define it, but it's common enough to be
+    worth supporting): `writeln('[', 42:-5, ']')` prints `[42   ]`.
+- `precision` (the second, optional colon) fixes the number of digits
+  after the decimal point — **`real` values only**, and requires `width`
+  to already be present (`x:0:2`, not `x::2`). Using it on anything else
+  is a compile-time error. Without `precision`, a `real` still uses this
+  compiler's usual default format (see [Real](#real)), just padded.
+- `width` and `precision` can be arbitrary `integer` expressions, not
+  just literals — `writeln(x:column_width)` works.
+- `precision`, when given, must be `0..20` — beyond `20` digits doesn't
+  mean anything for a 32-bit float anyway. Out of that range is a
+  runtime error, not silently clamped or garbled output.
 
 ### `readln`
 
@@ -405,12 +435,12 @@ integer-division operator, unchanged.
 
 ### Printing
 
-`write`/`writeln` print a `real` with `%.6g` — 6 significant digits,
-matching a 32-bit float's actual precision, switching to scientific
-notation only for very large or very small magnitudes. There's no
-field-width/precision syntax (`writeln(x:10:2)`) — this compiler doesn't
-implement `write`/`writeln`'s `:width` / `:width:precision` argument
-forms at all, for any type.
+`write`/`writeln` print a `real` with `%.6g` by default — 6 significant
+digits, matching a 32-bit float's actual precision, switching to
+scientific notation only for very large or very small magnitudes.
+Field-width/precision syntax (`writeln(x:10:2)`) is supported and is the
+more common way to control this — see [`write` and
+`writeln`](#write-and-writeln).
 
 ### What's not (yet) extended to `real`
 
@@ -993,7 +1023,6 @@ a crash.
 - Three-or-more-dimensional arrays, and array parameters/locals for 2D
   arrays specifically (1D supports both already) — see
   [Two-dimensional arrays](#two-dimensional-arrays) above
-- `write`/`writeln` field-width/precision syntax (`writeln(x:10:2)`)
 - Records as array elements, record parameters/locals, nested records,
   and record comparison (plain record variables and whole-record
   assignment work — see [Records](#records) above)

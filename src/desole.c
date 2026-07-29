@@ -93,6 +93,11 @@ static const char *opcode_name(Opcode op) {
         case OP_INT_TO_REAL: return "int_to_real";
         case OP_TRUNC: return "trunc";
         case OP_ROUND: return "round";
+        case OP_PRINT_PADDED:      return "print_padded";
+        case OP_PRINT_STR_PADDED:  return "print_str_padded";
+        case OP_PRINT_BOOL_PADDED: return "print_bool_padded";
+        case OP_FPRINT_PADDED:         return "fprint_padded";
+        case OP_FPRINT_PADDED_PRECISE: return "fprint_padded_precise";
         case OP_LOAD_IDX_DYN:  return "load_idx_dyn";
         case OP_STORE_IDX_DYN: return "store_idx_dyn";
         default:       return NULL;

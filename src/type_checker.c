@@ -415,6 +415,27 @@ void type_check(ASTNode *node) {
             break;
         }
 
+        case NODE_WRITE_ARG:
+            if (node->right && node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: write/writeln field width must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (node->extra) {
+                if (node->extra->expression_type != TYPE_INTEGER) {
+                    fprintf(stderr, "%s:%d: Type Error: write/writeln field precision must be integer\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                if (node->left->expression_type != TYPE_REAL) {
+                    fprintf(stderr, "%s:%d: Type Error: write/writeln field precision (':width:precision') is only valid for real values\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+            }
+            node->expression_type = node->left->expression_type;
+            break;
+
         case NODE_CALL: {
             // Argument count is already guaranteed correct by the parser
             // (it errors immediately at the call site if it doesn't match

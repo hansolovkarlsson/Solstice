@@ -1599,6 +1599,26 @@ static ASTNode *parse_whole_record_assignment(int dest_rv_idx) {
     return compound;
 }
 
+// Parses one write/writeln argument: an expression, optionally followed
+// by ':width' or ':width:precision' (Pascal's field-width syntax).
+// Always wraps the result in NODE_WRITE_ARG, even when no ':width' is
+// present, so codegen sees a uniform shape for every argument.
+static ASTNode *parse_write_arg(void) {
+    ASTNode *value = expression();
+    ASTNode *arg = create_node(NODE_WRITE_ARG);
+    arg->line = value->line;
+    arg->left = value;
+    if (token.type == TOKEN_COLON) {
+        match(TOKEN_COLON);
+        arg->right = expression(); // width
+        if (token.type == TOKEN_COLON) {
+            match(TOKEN_COLON);
+            arg->extra = expression(); // precision
+        }
+    }
+    return arg;
+}
+
 static ASTNode *statement(void) {
     if (token.type == TOKEN_BEGIN) {
         return compound_statement();
@@ -1707,11 +1727,11 @@ static ASTNode *statement(void) {
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
             if (token.type != TOKEN_RPAREN) {
-                ASTNode *arg_head = expression();
+                ASTNode *arg_head = parse_write_arg();
                 ASTNode *arg_tail = arg_head;
                 while (token.type == TOKEN_COMMA) {
                     match(TOKEN_COMMA);
-                    ASTNode *next_arg = expression();
+                    ASTNode *next_arg = parse_write_arg();
                     arg_tail->next = next_arg;
                     arg_tail = next_arg;
                 }

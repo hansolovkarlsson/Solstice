@@ -264,8 +264,33 @@ typedef enum {
                   // trunc() - never a runtime error, unlike most
                   // conversions in this VM, since truncation is always
                   // well-defined for any finite float).
-    OP_ROUND      // Same as OP_TRUNC, but rounds to the nearest integer
+    OP_ROUND,     // Same as OP_TRUNC, but rounds to the nearest integer
                   // (half away from zero) instead of truncating.
+    OP_PRINT_PADDED,      // Pop width, then a value; format as decimal,
+                  // right-justify to at least `width` characters (padded
+                  // with spaces - never truncated if the content is
+                  // already wider), print, no trailing newline. Kept
+                  // entirely separate from plain OP_PRINT (rather than
+                  // extending it to always take a width) so ordinary
+                  // write/writeln arguments without ':width' compile to
+                  // exactly the same bytecode as before this feature
+                  // existed.
+    OP_PRINT_STR_PADDED,  // Same as OP_PRINT_PADDED, but for a
+                  // string_pool[] index.
+    OP_PRINT_BOOL_PADDED, // Same as OP_PRINT_PADDED, but for a boolean.
+    OP_FPRINT_PADDED,     // Pop width, then a value; format with the
+                  // same default %.6g OP_FPRINT uses (no explicit
+                  // decimal-place count given), pad, print.
+    OP_FPRINT_PADDED_PRECISE // Pop precision, then width, then a value;
+                  // format with exactly `precision` digits after the
+                  // decimal point (Pascal's ':width:precision' form),
+                  // pad, print. A genuinely separate opcode from
+                  // OP_FPRINT_PADDED, rather than one opcode with a
+                  // "precision not given" sentinel value, specifically
+                  // to avoid ambiguity with a real, valid user-written
+                  // precision - the two forms are syntactically distinct
+                  // ('x:10' vs 'x:10:2'), so codegen already knows which
+                  // one applies and picks the opcode accordingly.
 } Opcode;
 
 typedef struct {
@@ -361,6 +386,16 @@ typedef enum {
                        // data.var_idx = the array's symbol index.
                        // left = first index, right = second index,
                        // extra = value expression.
+    NODE_WRITE_ARG,    // One argument to write/writeln, wrapping its
+                       // optional ':width[:precision]' field-width
+                       // syntax. left = the value expression, right =
+                       // width expression (NULL if not given), extra =
+                       // precision expression (NULL if not given -
+                       // real-typed values only). expression_type
+                       // mirrors left's, set once left is type-checked.
+                       // Every write/writeln argument gets wrapped in
+                       // one of these, even with no ':width' at all, so
+                       // codegen always sees a uniform shape.
     NODE_REAL_NUMBER,  // A real literal. data.num_value holds the exact
                        // bit pattern (via float_to_bits), not the value
                        // itself - reusing the same int union member

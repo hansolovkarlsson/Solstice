@@ -298,11 +298,28 @@ void generate_code(ASTNode *node) {
 
         case NODE_WRITELN:
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
-                generate_code(arg);
-                if (is_string_type(arg->expression_type)) emit(OP_PRINT_STR, 0);
-                else if (arg->expression_type == TYPE_BOOLEAN) emit(OP_PRINT_BOOL, 0);
-                else if (arg->expression_type == TYPE_REAL) emit(OP_FPRINT, 0);
-                else emit(OP_PRINT, 0);
+                generate_code(arg->left);
+                DataType t = arg->left->expression_type;
+                if (arg->right) {
+                    generate_code(arg->right); // width
+                    if (arg->extra) {
+                        generate_code(arg->extra); // precision (real only, guaranteed by the type checker)
+                        emit(OP_FPRINT_PADDED_PRECISE, 0);
+                    } else if (is_string_type(t)) {
+                        emit(OP_PRINT_STR_PADDED, 0);
+                    } else if (t == TYPE_BOOLEAN) {
+                        emit(OP_PRINT_BOOL_PADDED, 0);
+                    } else if (t == TYPE_REAL) {
+                        emit(OP_FPRINT_PADDED, 0);
+                    } else {
+                        emit(OP_PRINT_PADDED, 0);
+                    }
+                } else {
+                    if (is_string_type(t)) emit(OP_PRINT_STR, 0);
+                    else if (t == TYPE_BOOLEAN) emit(OP_PRINT_BOOL, 0);
+                    else if (t == TYPE_REAL) emit(OP_FPRINT, 0);
+                    else emit(OP_PRINT, 0);
+                }
             }
             if (node->op == TOKEN_WRITELN) emit(OP_NEWLINE, 0);
             generate_code(node->next);
@@ -493,6 +510,14 @@ void generate_code(ASTNode *node) {
             generate_code(node->extra); // value
             emit(OP_STORE_IDX2D, node->data.var_idx);
             generate_code(node->next);
+            break;
+
+        case NODE_WRITE_ARG:
+            // Structurally unreachable: NODE_WRITELN's own case unwraps
+            // a NODE_WRITE_ARG's left/right/extra directly and never
+            // calls generate_code() on the wrapper node itself. Listed
+            // explicitly anyway, matching this switch's "every node type
+            // is handled" convention.
             break;
 
         case NODE_CALL:

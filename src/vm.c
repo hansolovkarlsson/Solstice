@@ -2,8 +2,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 #include "vm.h"
 #include "error.h"
+
+// Prints `text` padded to at least |width| characters: right-justified
+// for width >= 0 (Pascal's normal 'x:width' field-width form),
+// left-justified for width < 0 (some Pascal dialects' convention for the
+// same syntax). Negating INT_MIN would be undefined behavior, so that
+// one case is clamped to INT_MAX instead - no real program needs a field
+// that wide anyway.
+static void vm_print_padded(const char *text, int width) {
+    if (width < 0) {
+        int abs_width = (width == INT_MIN) ? INT_MAX : -width;
+        printf("%-*s", abs_width, text);
+    } else {
+        printf("%*s", width, text);
+    }
+}
 
 // Reinterprets an int-sized storage slot's raw bits as a float, or vice
 // versa - memcpy is the well-defined way to do this in C (a union would
@@ -704,6 +720,53 @@ void run_vm(void) {
             case OP_FPRINT: {
                 float val = bits_to_float(vm_pop(&sp));
                 printf("%.6g", val);
+                break;
+            }
+
+            case OP_PRINT_PADDED: {
+                int width = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", val);
+                vm_print_padded(buf, width);
+                break;
+            }
+
+            case OP_PRINT_STR_PADDED: {
+                int width = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                vm_print_padded(string_pool[idx], width);
+                break;
+            }
+
+            case OP_PRINT_BOOL_PADDED: {
+                int width = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                vm_print_padded(val ? "TRUE" : "FALSE", width);
+                break;
+            }
+
+            case OP_FPRINT_PADDED: {
+                int width = vm_pop(&sp);
+                float val = bits_to_float(vm_pop(&sp));
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.6g", val);
+                vm_print_padded(buf, width);
+                break;
+            }
+
+            case OP_FPRINT_PADDED_PRECISE: {
+                int precision = vm_pop(&sp);
+                int width = vm_pop(&sp);
+                float val = bits_to_float(vm_pop(&sp));
+                if (precision < 0 || precision > 20) {
+                    fprintf(stderr, "VM Runtime Error: write field precision %d out of range (0..20)\n", precision);
+                    fatal_abort();
+                }
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.*f", precision, val);
+                vm_print_padded(buf, width);
                 break;
             }
 
