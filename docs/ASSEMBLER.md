@@ -27,7 +27,7 @@ narration.
 
 ```
 ; a comment - runs to end of line
-.var <name> <integer|boolean|string|char>     ; declare a variable
+.var <name> <integer|boolean|string|char|real>     ; declare a variable
 .array <name> <lower> <upper> <type>         ; declare a 1D array
 .array2d <name> <lo1> <hi1> <lo2> <hi2> <type> ; declare a 2D array
 label:                                        ; a label, alone on its own line
@@ -71,7 +71,9 @@ then one `NEWLINE` only for `writeln`.
 `LOWERCASE_STR`, `LEFT`, `RIGHT`,
 `PRINT`, `PRINT_BOOL`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`,
 `SEQ`, `SCMP`, `SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`,
-`LOAD_IDX_DYN`, `STORE_IDX_DYN`, `LOAD_IDX2D`, `STORE_IDX2D`, `CALL`,
+`LOAD_IDX_DYN`, `STORE_IDX_DYN`, `LOAD_IDX2D`, `STORE_IDX2D`,
+`FADD`, `FSUB`, `FMUL`, `FDIV`, `FEQ`, `FLT`, `FGT`, `FLTE`, `FGTE`,
+`FNEQ`, `FNEG`, `FPRINT`, `INT_TO_REAL`, `TRUNC`, `ROUND`, `CALL`,
 `RET`, `ENTER`, `LOAD_LOCAL`,
 `STORE_LOCAL`, `POP`. See
 [docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does,

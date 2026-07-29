@@ -13,6 +13,40 @@ static int is_string_type(DataType t) {
     return t == TYPE_STRING || t == TYPE_CHAR;
 }
 
+// Wraps *child in an implicit int->real widening conversion (Pascal's
+// automatic integer-to-real promotion) and updates *child to point at the
+// wrapper. Preserves *child's own ->next (if it has one - e.g. it's a
+// member of an argument list or statement list) by moving that link onto
+// the new wrapper instead, so this is safe to call on any child pointer,
+// not just binary-op operands. No-op guard is the caller's job (only call
+// this when you've already confirmed the child is TYPE_INTEGER).
+static void widen_to_real(ASTNode **child) {
+    if ((*child)->expression_type != TYPE_INTEGER) return; // already real - nothing to do
+    ASTNode *original = *child;
+    ASTNode *wrapper = create_node(NODE_INT_TO_REAL);
+    wrapper->left = original;
+    wrapper->expression_type = TYPE_REAL;
+    wrapper->line = original->line;
+    wrapper->next = original->next;
+    original->next = NULL;
+    *child = wrapper;
+}
+
+// Assignment-compatibility check with implicit widening: if *value is
+// integer-typed and target is real, widens *value (mutating it through
+// the pointer) and returns 1 - the caller's own type-mismatch condition
+// should short-circuit past its error in that case. Returns 0 (no
+// widening performed) for every other combination, including real-typed
+// value into an integer target - Pascal requires an explicit trunc()/
+// round() for that narrowing, so this deliberately doesn't paper over it.
+static int try_widen_for_assignment(ASTNode **value, DataType target) {
+    if ((*value)->expression_type == TYPE_INTEGER && target == TYPE_REAL) {
+        widen_to_real(value);
+        return 1;
+    }
+    return 0;
+}
+
 void type_check(ASTNode *node) {
     if (!node) return;
 
@@ -31,13 +65,15 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 if (!(is_string_type(node->right->expression_type) && is_string_type(sym->type))
-                    && node->right->expression_type != sym->type) {
+                    && node->right->expression_type != sym->type
+                    && !try_widen_for_assignment(&node->right, sym->type)) {
                     fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
                             get_current_filename(), node->line, sym->name);
                     fatal_abort();
                 }
             } else if (!(is_string_type(node->left->expression_type) && is_string_type(sym->type))
-                       && node->left->expression_type != sym->type) {
+                       && node->left->expression_type != sym->type
+                       && !try_widen_for_assignment(&node->left, sym->type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to variable '%s'\n",
                         get_current_filename(), node->line, sym->name);
                 fatal_abort();
@@ -47,11 +83,11 @@ void type_check(ASTNode *node) {
 
         case NODE_UNARY_OP:
             if (node->op == TOKEN_MINUS) {
-                if (node->left->expression_type != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: Unary minus requires integer\n", get_current_filename(), node->line);
+                if (node->left->expression_type != TYPE_INTEGER && node->left->expression_type != TYPE_REAL) {
+                    fprintf(stderr, "%s:%d: Type Error: Unary minus requires integer or real\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
-                node->expression_type = TYPE_INTEGER;
+                node->expression_type = node->left->expression_type; // preserves int or real
             } else if (node->op == TOKEN_NOT) {
                 // 'not' on boolean is logical; on integer it's bitwise
                 // (Pascal convention, e.g. Turbo Pascal/Delphi/Free Pascal).
@@ -84,14 +120,23 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 node->expression_type = TYPE_CHAR;
+            } else if (node->op == TOKEN_TRUNC || node->op == TOKEN_ROUND) {
+                if (node->left->expression_type != TYPE_REAL) {
+                    fprintf(stderr, "%s:%d: Type Error: '%s' requires a real argument\n",
+                            get_current_filename(), node->line, node->op == TOKEN_TRUNC ? "trunc" : "round");
+                    fatal_abort();
+                }
+                node->expression_type = TYPE_INTEGER;
             }
             break;
 
         case NODE_BINARY_OP: {
             DataType left_t = node->left->expression_type;
             DataType right_t = node->right->expression_type;
+            int mixed_numeric = (left_t == TYPE_INTEGER && right_t == TYPE_REAL)
+                              || (left_t == TYPE_REAL && right_t == TYPE_INTEGER);
 
-            if (!(is_string_type(left_t) && is_string_type(right_t)) && left_t != right_t) {
+            if (!(is_string_type(left_t) && is_string_type(right_t)) && !mixed_numeric && left_t != right_t) {
                 fprintf(stderr, "%s:%d: Type Error: Mismatched operand types in binary operation\n",
                         get_current_filename(), node->line);
                 fatal_abort();
@@ -99,7 +144,9 @@ void type_check(ASTNode *node) {
 
             if (node->op == TOKEN_AND || node->op == TOKEN_OR || node->op == TOKEN_XOR) {
                 // and/or/xor are logical between two booleans, bitwise
-                // between two integers (Pascal convention).
+                // between two integers (Pascal convention) - real never
+                // participates, so a mixed int/real pair correctly falls
+                // through to the error below (matching neither case).
                 if (left_t == TYPE_BOOLEAN && right_t == TYPE_BOOLEAN) {
                     node->expression_type = TYPE_BOOLEAN;
                 } else if (left_t == TYPE_INTEGER && right_t == TYPE_INTEGER) {
@@ -111,29 +158,59 @@ void type_check(ASTNode *node) {
                 }
             } else if (node->op == TOKEN_PLUS && is_string_type(left_t) && is_string_type(right_t)) {
                 node->expression_type = TYPE_STRING; // concatenation always yields a string, even from chars
-            } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || 
-                    node->op == TOKEN_MUL || node->op == TOKEN_DIV || 
-                    node->op == TOKEN_DIV_KW || node->op == TOKEN_MOD ||
-                    node->op == TOKEN_SHL || node->op == TOKEN_SHR) {
+            } else if (node->op == TOKEN_DIV_KW || node->op == TOKEN_MOD ||
+                       node->op == TOKEN_SHL || node->op == TOKEN_SHR) {
+                // div/mod/shl/shr are integer-only in Pascal - real
+                // doesn't participate at all, not even via widening.
                 if (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer operands%s\n", 
+                    fprintf(stderr, "%s:%d: Type Error: 'div'/'mod'/'shl'/'shr' require integer operands\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                node->expression_type = TYPE_INTEGER;
+            } else if (node->op == TOKEN_DIV) {
+                // '/' always produces a real result in Pascal, even for
+                // two integer operands (5 / 2 = 2.5, not 2) - 'div' is
+                // the integer-division operator, handled above.
+                if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
+                    fprintf(stderr, "%s:%d: Type Error: '/' requires integer or real operands\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                widen_to_real(&node->left);
+                widen_to_real(&node->right);
+                node->expression_type = TYPE_REAL;
+            } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || node->op == TOKEN_MUL) {
+                if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
+                    fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer or real operands%s\n", 
                             get_current_filename(), node->line,
                             node->op == TOKEN_PLUS ? " (or, for '+', string/char operands)" : "");
                     fatal_abort();
                 }
-                node->expression_type = TYPE_INTEGER;
+                if (left_t == TYPE_REAL || right_t == TYPE_REAL) {
+                    widen_to_real(&node->left);
+                    widen_to_real(&node->right);
+                    node->expression_type = TYPE_REAL;
+                } else {
+                    node->expression_type = TYPE_INTEGER;
+                }
             } else {
                 // Relational operators (=, <, >, <=, >=, <>). Boolean is
                 // ordinal in Pascal (false < true), so all six are valid
                 // between two booleans too - represented as a plain 0/1
                 // int at the VM level, exactly like integer, so the
                 // existing integer comparison opcodes already handle this
-                // correctly; no codegen changes needed for this case.
+                // correctly; no codegen changes needed for that case.
                 int both_bool = (left_t == TYPE_BOOLEAN && right_t == TYPE_BOOLEAN);
-                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool
-                    && (left_t != TYPE_INTEGER || right_t != TYPE_INTEGER)) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, boolean, string, or char operands\n", get_current_filename(), node->line);
+                int both_numeric = (left_t == TYPE_INTEGER || left_t == TYPE_REAL)
+                                 && (right_t == TYPE_INTEGER || right_t == TYPE_REAL);
+                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool && !both_numeric) {
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, real, boolean, string, or char operands\n", get_current_filename(), node->line);
                     fatal_abort();
+                }
+                if (both_numeric && (left_t == TYPE_REAL || right_t == TYPE_REAL)) {
+                    widen_to_real(&node->left);
+                    widen_to_real(&node->right);
                 }
                 node->expression_type = TYPE_BOOLEAN;
             }
@@ -219,7 +296,8 @@ void type_check(ASTNode *node) {
                 fatal_abort();
             }
             if (!(is_string_type(node->right->expression_type) && is_string_type(node->expression_type))
-                && node->right->expression_type != node->expression_type) {
+                && node->right->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->right, node->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to array element\n",
                         get_current_filename(), node->line);
                 fatal_abort();
@@ -228,7 +306,8 @@ void type_check(ASTNode *node) {
 
         case NODE_LOCAL_ASSIGN:
             if (!(is_string_type(node->left->expression_type) && is_string_type(node->expression_type))
-                && node->left->expression_type != node->expression_type) {
+                && node->left->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->left, node->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to local variable\n",
                         get_current_filename(), node->line);
                 fatal_abort();
@@ -327,7 +406,8 @@ void type_check(ASTNode *node) {
             }
             Symbol *sym = &sym_table[node->data.var_idx];
             if (!(is_string_type(node->extra->expression_type) && is_string_type(sym->type))
-                && node->extra->expression_type != sym->type) {
+                && node->extra->expression_type != sym->type
+                && !try_widen_for_assignment(&node->extra, sym->type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
                         get_current_filename(), node->line, sym->name);
                 fatal_abort();
@@ -341,14 +421,18 @@ void type_check(ASTNode *node) {
             // proc_table[...].param_count), so this only needs to check types.
             ProcSymbol *proc = &proc_table[node->data.var_idx];
             int i = 0;
-            for (ASTNode *arg = node->left; arg; arg = arg->next, i++) {
+            ASTNode **arg_ptr = &node->left;
+            while (*arg_ptr) {
                 DataType expected = proc->param_types[i];
-                DataType actual = arg->expression_type;
-                if (!(is_string_type(expected) && is_string_type(actual)) && expected != actual) {
+                DataType actual = (*arg_ptr)->expression_type;
+                if (!(is_string_type(expected) && is_string_type(actual)) && expected != actual
+                    && !try_widen_for_assignment(arg_ptr, expected)) {
                     fprintf(stderr, "%s:%d: Type Error: Argument %d to procedure '%s' has the wrong type\n",
                             get_current_filename(), node->line, i + 1, proc->name);
                     fatal_abort();
                 }
+                arg_ptr = &(*arg_ptr)->next;
+                i++;
             }
             break;
         }

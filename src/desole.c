@@ -78,6 +78,21 @@ static const char *opcode_name(Opcode op) {
         case OP_STORE_IDX: return "store_idx";
         case OP_LOAD_IDX2D:  return "load_idx2d";
         case OP_STORE_IDX2D: return "store_idx2d";
+        case OP_FADD:  return "fadd";
+        case OP_FSUB:  return "fsub";
+        case OP_FMUL:  return "fmul";
+        case OP_FDIV:  return "fdiv";
+        case OP_FEQ:   return "feq";
+        case OP_FLT:   return "flt";
+        case OP_FGT:   return "fgt";
+        case OP_FLTE:  return "flte";
+        case OP_FGTE:  return "fgte";
+        case OP_FNEQ:  return "fneq";
+        case OP_FNEG:  return "fneg";
+        case OP_FPRINT: return "fprint";
+        case OP_INT_TO_REAL: return "int_to_real";
+        case OP_TRUNC: return "trunc";
+        case OP_ROUND: return "round";
         case OP_LOAD_IDX_DYN:  return "load_idx_dyn";
         case OP_STORE_IDX_DYN: return "store_idx_dyn";
         default:       return NULL;
@@ -90,6 +105,7 @@ static const char *type_name(DataType type) {
         case TYPE_BOOLEAN: return "boolean";
         case TYPE_STRING:  return "string";
         case TYPE_CHAR:    return "char";
+        case TYPE_REAL:    return "real";
         default:           return "unknown";
     }
 }

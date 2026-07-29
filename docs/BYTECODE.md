@@ -85,6 +85,13 @@ corruption.
 | `STORE_IDX_DYN` | Same as `STORE_IDX`, but *which* array is also popped from the stack. Pop a value, then a runtime index, then a runtime array reference; bounds-check; store. |
 | `LOAD_IDX2D` | `arg` = a 2D array's symbol index. Pop the second runtime index, then the first (second pushed last by codegen, so it's on top); bounds-check each against its own dimension; push the element at the row-major offset `(i - lower1) * dim2_size + (j - lower2)`. |
 | `STORE_IDX2D` | Same addressing as `LOAD_IDX2D`. Pop a value, then the second index, then the first (value pushed last); bounds-check; store. |
+| `FADD` / `FSUB` / `FMUL` / `FDIV` | Float arithmetic. Pop two int-sized bit patterns, reinterpret each as `float` (see `bits_to_float` in vm.c), compute, reinterpret the result back to a bit pattern, push. `FDIV` errors on division by zero, same as integer `DIV`. |
+| `FEQ` / `FLT` / `FGT` / `FLTE` / `FGTE` / `FNEQ` | Float comparison - same reinterpret-compute-push shape as the arithmetic ops above, but the result is a plain 0/1 boolean int, not a float. |
+| `FNEG` | Float unary negation. |
+| `FPRINT` | Pop a value, reinterpret as float, print it (`%.6g` - 6 significant digits, matching a 32-bit float's actual precision) with no trailing newline. |
+| `INT_TO_REAL` | Pop an integer; push the bit pattern of its exact float equivalent. Emitted wherever Pascal's implicit int→real widening applies - chosen by the type checker, not codegen. |
+| `TRUNC` | Pop a value, reinterpret as float, push its integer part (truncated toward zero) - never a runtime error, truncation is always well-defined for a finite float. |
+| `ROUND` | Same as `TRUNC`, but rounds to the nearest integer (half away from zero) instead of truncating. |
 
 ### Arithmetic (integer)
 

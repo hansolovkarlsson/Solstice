@@ -1,5 +1,15 @@
 #include <stdio.h>
+#include <string.h>
 #include "ast_printer.h"
+
+// Local copy of the bit-reinterpretation helper (see vm.c for the full
+// explanation) - needed here just to print a real literal's actual value
+// rather than its raw bit pattern.
+static float bits_to_float(int bits) {
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
 
 static void print_indent(int indent) {
     for (int i = 0; i < indent; i++) {
@@ -99,6 +109,15 @@ void print_ast(ASTNode *node, int indent) {
 
         case NODE_NUMBER:
             printf("[Number] %d\n", node->data.num_value);
+            break;
+
+        case NODE_REAL_NUMBER:
+            printf("[Real] %g\n", bits_to_float(node->data.num_value));
+            break;
+
+        case NODE_INT_TO_REAL:
+            printf("[Int->Real Widen]\n");
+            print_ast(node->left, indent + 1);
             break;
 
         case NODE_BOOLEAN:

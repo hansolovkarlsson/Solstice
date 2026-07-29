@@ -1,8 +1,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "vm.h"
 #include "error.h"
+
+// Reinterprets an int-sized storage slot's raw bits as a float, or vice
+// versa - memcpy is the well-defined way to do this in C (a union would
+// risk strict-aliasing undefined behavior). This is what lets a 'real'
+// value live in exactly the same int-sized slots (vm_stack, vm_vars,
+// array elements, frame slots) every other type already uses, with no
+// changes needed to any of those storage arrays themselves.
+static float bits_to_float(int bits) {
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+static int float_to_bits(float f) {
+    int bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
 
 static int vm_stack[MAX_STACK];
 static int vm_vars[MAX_SYMBOLS];
@@ -500,6 +519,34 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_FADD: { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, float_to_bits(a + b)); break; }
+            case OP_FSUB: { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, float_to_bits(a - b)); break; }
+            case OP_FMUL: { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, float_to_bits(a * b)); break; }
+            case OP_FDIV: {
+                float b = bits_to_float(vm_pop(&sp));
+                float a = bits_to_float(vm_pop(&sp));
+                if (b == 0.0f) {
+                    fprintf(stderr, "VM Runtime Error: Division by zero\n");
+                    fatal_abort();
+                }
+                vm_push(&sp, float_to_bits(a / b));
+                break;
+            }
+
+            case OP_FEQ:  { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, a == b); break; }
+            case OP_FLT:  { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, a < b);  break; }
+            case OP_FGT:  { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, a > b);  break; }
+            case OP_FLTE: { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, a <= b); break; }
+            case OP_FGTE: { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, a >= b); break; }
+            case OP_FNEQ: { float b = bits_to_float(vm_pop(&sp)); float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, a != b); break; }
+
+            case OP_FNEG: { float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, float_to_bits(-a)); break; }
+
+            case OP_INT_TO_REAL: { int a = vm_pop(&sp); vm_push(&sp, float_to_bits((float)a)); break; }
+
+            case OP_TRUNC: { float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, (int)a); break; }
+            case OP_ROUND: { float a = bits_to_float(vm_pop(&sp)); vm_push(&sp, (int)roundf(a)); break; }
+
             case OP_JMP:
                 ip = instr.arg;
                 break;
@@ -617,6 +664,8 @@ void run_vm(void) {
                                     else printf("<invalid string index %d>", elem);
                                 } else if (sym_table[i].type == TYPE_BOOLEAN) {
                                     printf("%s", elem ? "TRUE" : "FALSE");
+                                } else if (sym_table[i].type == TYPE_REAL) {
+                                    printf("%.6g", bits_to_float(elem));
                                 } else {
                                     printf("%d", elem);
                                 }
@@ -631,6 +680,8 @@ void run_vm(void) {
                             }
                         } else if (sym_table[i].type == TYPE_BOOLEAN) {
                             printf("%s = %s\n", sym_table[i].name, vm_vars[i] ? "TRUE" : "FALSE");
+                        } else if (sym_table[i].type == TYPE_REAL) {
+                            printf("%s = %.6g\n", sym_table[i].name, bits_to_float(vm_vars[i]));
                         } else {
                             printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
                         }
@@ -647,6 +698,12 @@ void run_vm(void) {
             case OP_PRINT_BOOL: {
                 int val = vm_pop(&sp);
                 printf("%s", val ? "TRUE" : "FALSE");
+                break;
+            }
+
+            case OP_FPRINT: {
+                float val = bits_to_float(vm_pop(&sp));
+                printf("%.6g", val);
                 break;
             }
 
@@ -672,6 +729,15 @@ void run_vm(void) {
                         fatal_abort();
                     }
                     vm_vars[idx] = vm_intern_string(line);
+                } else if (sym_table[idx].type == TYPE_REAL) {
+                    float input_val;
+                    if (scanf("%f", &input_val) != 1) {
+                        fprintf(stderr, "VM Runtime Error: Invalid real input\n");
+                        fatal_abort();
+                    }
+                    int c;
+                    while ((c = getchar()) != '\n' && c != EOF) { } // flush rest of the line
+                    vm_vars[idx] = float_to_bits(input_val);
                 } else {
                     int input_val;
                     if (scanf("%d", &input_val) != 1) {

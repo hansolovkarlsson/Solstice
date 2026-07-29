@@ -46,6 +46,10 @@ typedef enum {
     TOKEN_LOW, TOKEN_HIGH,
     TOKEN_UPCASE, TOKEN_UPPERCASE, TOKEN_LOWERCASE,
     TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
+    TOKEN_REAL,       // a real literal, e.g. 3.14 - distinct from
+                      // TOKEN_NUMBER (integer literals)
+    TOKEN_REAL_TYPE,  // the 'real' type keyword
+    TOKEN_TRUNC, TOKEN_ROUND,
     TOKEN_EOF
 } TokenType;
 
@@ -54,10 +58,15 @@ typedef enum {
     TYPE_INTEGER,
     TYPE_BOOLEAN,
     TYPE_STRING,
-    TYPE_CHAR   // Represented identically to TYPE_STRING at runtime (a
+    TYPE_CHAR,  // Represented identically to TYPE_STRING at runtime (a
                 // string_pool[] index) - the only difference is the VM
                 // enforces a length-1 constraint whenever a value is
                 // actually stored into a char variable/array element.
+    TYPE_REAL   // A 32-bit IEEE-754 float, reinterpreting the bits of the
+                // same int-sized storage slot every other type uses (see
+                // vm.c's bits_to_float/float_to_bits) - not a double,
+                // specifically so a real value still fits in exactly one
+                // slot, matching every other type's storage model.
 } DataType;
 
 typedef struct {
@@ -65,6 +74,7 @@ typedef struct {
     char text[MAX_NAME];
     char string_value[MAX_STRING_LEN]; // populated only for TOKEN_STRING
     int value;
+    float real_value; // populated only for TOKEN_REAL
     int line;
 } Token;
 
@@ -223,10 +233,38 @@ typedef enum {
                     // second ends up on top); bounds-check each against
                     // its own dimension; push the element at the row-
                     // major offset (i - lower1) * dim2_size + (j - lower2).
-    OP_STORE_IDX2D  // arg = array's symbol index. Pop a value, then the
+    OP_STORE_IDX2D, // arg = array's symbol index. Pop a value, then the
                     // second index, then the first (value pushed last by
                     // codegen, so it's on top); bounds-check; store at
                     // the same row-major offset OP_LOAD_IDX2D computes.
+    OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV, // float arithmetic - integer
+                  // opcodes operate on the popped ints directly, which
+                  // would be meaningless applied to a float's raw bit
+                  // pattern (adding two floats' bit patterns doesn't give
+                  // their sum's bit pattern), so these reinterpret the
+                  // bits as float first (see vm.c's bits_to_float),
+                  // compute, then reinterpret the float result back to
+                  // an int-sized bit pattern before pushing.
+    OP_FEQ, OP_FLT, OP_FGT, OP_FLTE, OP_FGTE, OP_FNEQ, // float comparison -
+                  // result is a plain 0/1 boolean int, same as the
+                  // integer comparison opcodes; only the comparison
+                  // itself is done in float.
+    OP_FNEG,      // Float unary negation.
+    OP_FPRINT,    // Pop a value, reinterpret as float, print it (no
+                  // trailing newline) - see vm.c for the exact format.
+    OP_INT_TO_REAL, // Pop an integer; push the bit pattern of its exact
+                  // float equivalent. Emitted wherever an integer-typed
+                  // expression needs implicit widening to real (mixed
+                  // arithmetic, or assigning an integer to a real
+                  // variable) - inserted by the type checker, not chosen
+                  // ad hoc by codegen.
+    OP_TRUNC,     // Pop a value, reinterpret as float, push its integer
+                  // part (truncated toward zero, matching Pascal's
+                  // trunc() - never a runtime error, unlike most
+                  // conversions in this VM, since truncation is always
+                  // well-defined for any finite float).
+    OP_ROUND      // Same as OP_TRUNC, but rounds to the nearest integer
+                  // (half away from zero) instead of truncating.
 } Opcode;
 
 typedef struct {
@@ -318,10 +356,25 @@ typedef enum {
     NODE_ARRAY_ACCESS_2D, // 'arr[i, j]' as an expression, for a GLOBAL 2D
                        // array. data.var_idx = the array's symbol index.
                        // left = first index, right = second index.
-    NODE_ARRAY_ASSIGN_2D  // 'arr[i, j] := val' for a GLOBAL 2D array.
+    NODE_ARRAY_ASSIGN_2D,  // 'arr[i, j] := val' for a GLOBAL 2D array.
                        // data.var_idx = the array's symbol index.
                        // left = first index, right = second index,
                        // extra = value expression.
+    NODE_REAL_NUMBER,  // A real literal. data.num_value holds the exact
+                       // bit pattern (via float_to_bits), not the value
+                       // itself - reusing the same int union member
+                       // NODE_NUMBER uses, just reinterpreted. Kept as
+                       // its own node type (not folded into NODE_NUMBER)
+                       // so nothing that inspects node type - constant
+                       // folding, in particular - can mistake a real
+                       // literal's bit pattern for a plain integer value.
+    NODE_INT_TO_REAL   // Implicit widening: left is an integer-typed
+                       // expression; this node's own value is its real
+                       // equivalent. Inserted by the type checker
+                       // wherever Pascal's automatic int->real widening
+                       // applies (mixed arithmetic, assigning an integer
+                       // to a real variable) - codegen never has to
+                       // decide this itself, it just sees the wrapper.
 } NodeType;
 
 typedef struct ASTNode {

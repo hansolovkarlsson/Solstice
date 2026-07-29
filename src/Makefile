@@ -34,13 +34,12 @@ TEST_RECOVERY_OBJS := test_recovery.o $(FRONTEND_OBJS) $(SHARED_OBJS)
 .PHONY: all clean
 
 all: $(PASCALC) $(SOLVM) $(SOLAS) $(DESOLE) $(TEST_RECOVERY)
-	cp $^ ../bin
 
 $(PASCALC): $(PASCALC_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
 
 $(SOLVM): $(SOLVM_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
 $(SOLAS): $(SOLAS_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^

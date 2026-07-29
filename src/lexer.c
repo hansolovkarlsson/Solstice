@@ -125,6 +125,9 @@ void next_token(void) {
         else if (strcasecmp(token.text, "break") == 0) token.type = TOKEN_BREAK;
         else if (strcasecmp(token.text, "continue") == 0) token.type = TOKEN_CONTINUE;
         else if (strcasecmp(token.text, "char") == 0) token.type = TOKEN_CHAR_TYPE;
+        else if (strcasecmp(token.text, "real") == 0) token.type = TOKEN_REAL_TYPE;
+        else if (strcasecmp(token.text, "trunc") == 0) token.type = TOKEN_TRUNC;
+        else if (strcasecmp(token.text, "round") == 0) token.type = TOKEN_ROUND;
         else if (strcasecmp(token.text, "procedure") == 0) token.type = TOKEN_PROCEDURE;
         else if (strcasecmp(token.text, "forward") == 0) token.type = TOKEN_FORWARD;
         else if (strcasecmp(token.text, "function") == 0) token.type = TOKEN_FUNCTION;
@@ -186,6 +189,39 @@ void next_token(void) {
             src++;
         }
         *p = '\0';
+
+        // A '.' followed by a digit makes this a real literal instead -
+        // '..' (the range operator, e.g. array[1..10]) and a bare '.'
+        // (the period ending the program) must NOT be consumed here.
+        if (*src == '.' && isdigit(*(src + 1))) {
+            if (p >= end) lexer_error("Numeric literal too long (limit is %d characters)", MAX_NAME - 1);
+            *p++ = *src++; // the '.'
+            while (isdigit(*src)) {
+                if (p >= end) lexer_error("Numeric literal too long (limit is %d characters)", MAX_NAME - 1);
+                *p++ = *src++;
+            }
+            // Optional exponent: e/E, optional sign, one or more digits.
+            if (*src == 'e' || *src == 'E') {
+                const char *save_src = src;
+                char *save_p = p;
+                *p++ = *src++;
+                if (*src == '+' || *src == '-') {
+                    *p++ = *src++;
+                }
+                if (isdigit(*src)) {
+                    while (isdigit(*src)) {
+                        if (p >= end) lexer_error("Numeric literal too long (limit is %d characters)", MAX_NAME - 1);
+                        *p++ = *src++;
+                    }
+                } else {
+                    src = save_src; // not actually a valid exponent - back off
+                    p = save_p;
+                }
+            }
+            *p = '\0';
+            token.type = TOKEN_REAL;
+            token.real_value = strtof(token.text, NULL);
+        }
         return;
     }
 

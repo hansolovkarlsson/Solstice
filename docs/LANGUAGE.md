@@ -45,13 +45,13 @@ y := 2; // this too, to end of line
 | Type | Keyword | Literal examples | Notes |
 |---|---|---|---|
 | Integer | `integer` | `42`, `-7`, `0` | Standard C `int` range |
+| Real | `real` | `3.14`, `2.0`, `1.5e10` | 32-bit float — see [Real](#real) below |
 | Boolean | `boolean` | `true`, `false` | `write`/`writeln` print it as `TRUE`/`FALSE` |
 | String | `string` | `'hello'`, `'it''s here'` | Doubled `''` is an escaped literal quote |
 | Char | `char` | `'a'`, `'!'`, `'x'` | See [Char](#char) below - a single-quoted literal of length exactly 1 |
-| Array | `array[lower..upper] of T` | — | `T` is `integer`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
+| Array | `array[lower..upper] of T` | — | `T` is `integer`, `real`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
 
-There is no `real`/floating-point type, and no user-defined
-(`record`/`enum`) types.
+There are no user-defined (`record`/`enum`) types.
 
 ## Variable declarations
 
@@ -83,22 +83,28 @@ var
   Maximum length is 255 characters.
 - **Char codes**: `#` followed by a decimal number `1..255`, e.g. `#65`
   (the same character as `'A'`) — see [Char](#char).
+- **Reals**: digits, a decimal point, and more digits (`3.14`, `2.0` -
+  the decimal point is required, `2` alone is an integer), with an
+  optional exponent (`1.5e10`, `2.5E-3`). See [Real](#real).
 
 ## Operators
 
-### Arithmetic (integer operands, except `+` which also works on strings)
+### Arithmetic
 
 | Operator | Meaning |
 |---|---|
 | `+` | Addition, or string concatenation if both operands are strings |
 | `-` | Subtraction |
 | `*` | Multiplication |
-| `/` | Integer division (alias for `div`) |
-| `div` | Integer division |
-| `mod` | Modulo |
+| `/` | **Real** division — always produces a `real`, even for two `integer` operands (`5 / 2` is `2.5`, not `2`) |
+| `div` | Integer division (truncating) — `integer` operands only |
+| `mod` | Modulo — `integer` operands only |
 | `shl` | Bitwise shift left (integer, logical - see below) |
 | `shr` | Bitwise shift right (integer, logical - see below) |
 
+`+`, `-`, and `*` accept `integer` or `real` operands (or a mix — see
+[Real](#real) for the widening rules); `div`, `mod`, `shl`, `shr` are
+integer-only, with no exception for `real` operands, even via widening.
 Division or modulo by a literal zero is a compile-time error; by a
 runtime-zero value is a runtime error. Both are caught, never silently
 produce garbage. `shl`/`shr`'s shift amount must be `0..31`; anything
@@ -109,14 +115,16 @@ would give for an out-of-range shift.
 
 | Operator | Meaning | Works on |
 |---|---|---|
-| `=` | Equal | integer, boolean, string, char |
-| `<>` | Not equal | integer, boolean, string, char |
-| `<`, `>`, `<=`, `>=` | Ordering | integer, boolean, string, char |
+| `=` | Equal | integer, real, boolean, string, char |
+| `<>` | Not equal | integer, real, boolean, string, char |
+| `<`, `>`, `<=`, `>=` | Ordering | integer, real, boolean, string, char |
 
 String/char equality compares the actual characters, not identity.
 String/char ordering is lexicographic (character-by-character, like
 `strcmp`) — e.g. `'apple' < 'banana'` is `true`. Boolean is ordinal
-(`false < true`), matching standard Pascal.
+(`false < true`), matching standard Pascal. Comparing an `integer` and a
+`real` widens the integer first, same as arithmetic (see
+[Real](#real)).
 
 ### Logical / bitwise (`and`, `or`, `xor`, `not`)
 
@@ -325,6 +333,90 @@ following `readln` of any type starts cleanly on the next line).
 last one's trailing `;` is optional) into a single statement — usable
 anywhere a single statement is expected (loop/if bodies, or the whole
 program body).
+
+## Real
+
+```pascal
+var
+    price: real;
+    quantity: integer;
+    total: real;
+begin
+    price := 2.5;
+    quantity := 3;
+    total := price * quantity;   { integer widened to real automatically }
+    writeln('total: ', total);
+
+    writeln('5 / 2 = ', 5 / 2);           { 2.5 - '/' always produces real }
+    writeln('trunc(total) = ', trunc(total));
+    writeln('round(2.6) = ', round(2.6));
+end.
+```
+
+### Representation
+
+`real` is a 32-bit IEEE-754 float (C's `float`), not a 64-bit `double` —
+this is a deliberate trade-off, not an oversight. Every storage slot in
+this VM (the operand stack, variables, array elements, frame slots) is a
+single 4-byte `int`; a `float` fits in that same slot with no changes
+needed to any of those storage arrays. A `double` wouldn't fit in one
+slot and would force every one of them to become "1 or 2 slots depending
+on type" — a much larger, riskier change for comparatively little
+practical benefit in a language without any of this scale. The real
+consequence: roughly 7 significant decimal digits of precision, not 15-16
+— there's real historical precedent for this exact choice (Turbo
+Pascal's original `real` on FPU-less hardware).
+
+### Widening and narrowing
+
+- **Integer → real is implicit** ("widening"), anywhere Pascal allows it:
+  mixed arithmetic (`2 + 3.5`), assignment (`x: real; x := 5;`), and
+  passing an integer argument to a `real` parameter.
+- **Real → integer is never implicit** ("narrowing") — `i: integer; i :=
+  3.5;` is a compile-time error. Use `trunc`/`round` (below) to convert
+  explicitly. This matches standard Pascal: silently truncating a real
+  on assignment would silently lose information, so it's not automatic.
+- `div`, `mod`, `shl`, `shr` are **integer-only**, with no exception for
+  `real` operands even via widening — these don't have a `real` meaning
+  in Pascal at all.
+
+### `/` always produces `real`
+
+Unlike most of this compiler's other decisions, this one is a genuine
+**behavior change**: `/` used to be an alias for `div` (integer
+division). Now that `real` exists, `/` matches actual Pascal semantics
+— **always** floating-point division, even for two `integer` operands
+(`5 / 2` is `2.5`, not `2`). `div` remains the truncating
+integer-division operator, unchanged.
+
+### `trunc` and `round`
+
+- `trunc(x)` — `x`'s integer part, truncated toward zero (`trunc(3.7) =
+  3`, `trunc(-3.7) = -3`).
+- `round(x)` — `x` rounded to the nearest integer, half away from zero
+  (`round(3.5) = 4`, `round(-3.5) = -4`).
+- Both require a `real` argument and always succeed — there's no
+  "value too large" runtime error, unlike most conversions in this VM.
+
+### Printing
+
+`write`/`writeln` print a `real` with `%.6g` — 6 significant digits,
+matching a 32-bit float's actual precision, switching to scientific
+notation only for very large or very small magnitudes. There's no
+field-width/precision syntax (`writeln(x:10:2)`) — this compiler doesn't
+implement `write`/`writeln`'s `:width` / `:width:precision` argument
+forms at all, for any type.
+
+### What's not (yet) extended to `real`
+
+- `abs`/`sqr` — `integer` only for now, same as before `real` existed.
+- Constant folding — `3.14 + 2.0` is computed at runtime, not folded
+  into a single literal at compile time, unlike the equivalent integer
+  expression. Purely a missed optimization, not a correctness gap.
+- `real` array **parameters** and **local** arrays actually do work
+  (they're generic over element type already) - what's *not* supported
+  is 2D arrays of any element type, `real` included (see
+  [Two-dimensional arrays](#two-dimensional-arrays)).
 
 ## String
 
@@ -798,7 +890,7 @@ a crash.
 - Three-or-more-dimensional arrays, and array parameters/locals for 2D
   arrays specifically (1D supports both already) — see
   [Two-dimensional arrays](#two-dimensional-arrays) above
-- `real`/floating-point numbers
+- `write`/`writeln` field-width/precision syntax (`writeln(x:10:2)`)
 - Records, sets, enumerated types
 - Units/modules/`uses`
 

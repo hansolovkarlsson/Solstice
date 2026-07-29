@@ -176,6 +176,15 @@ void generate_code(ASTNode *node) {
             emit(OP_PUSH, node->data.num_value);
             break;
 
+        case NODE_REAL_NUMBER:
+            emit(OP_PUSH, node->data.num_value); // the bit pattern, already computed at parse time
+            break;
+
+        case NODE_INT_TO_REAL:
+            generate_code(node->left);
+            emit(OP_INT_TO_REAL, 0);
+            break;
+
         case NODE_ARRAY_REF:
             emit(OP_PUSH, node->data.var_idx);
             break;
@@ -196,7 +205,8 @@ void generate_code(ASTNode *node) {
         case NODE_UNARY_OP:
             generate_code(node->left);
             if (node->op == TOKEN_MINUS) {
-                emit(OP_NEG, 0);
+                if (node->left->expression_type == TYPE_REAL) emit(OP_FNEG, 0);
+                else emit(OP_NEG, 0);
             } else if (node->op == TOKEN_NOT) {
                 if (node->left->expression_type == TYPE_INTEGER) emit(OP_BNOT, 0);
                 else emit(OP_NOT, 0);
@@ -209,26 +219,49 @@ void generate_code(ASTNode *node) {
                 emit(OP_ORD, 0);
             } else if (node->op == TOKEN_CHR) {
                 emit(OP_CHR, 0);
+            } else if (node->op == TOKEN_TRUNC) {
+                emit(OP_TRUNC, 0);
+            } else if (node->op == TOKEN_ROUND) {
+                emit(OP_ROUND, 0);
             }
             break;
 
-        case NODE_BINARY_OP:
+        case NODE_BINARY_OP: {
             generate_code(node->left);
             generate_code(node->right);
+            int operand_is_real = (node->left->expression_type == TYPE_REAL);
             switch (node->op) {
                 case TOKEN_PLUS:
                     if (is_string_type(node->left->expression_type)) emit(OP_SCONCAT, 0);
+                    else if (operand_is_real) emit(OP_FADD, 0);
                     else emit(OP_ADD, 0);
                     break;
-                case TOKEN_MINUS: emit(OP_SUB, 0); break;
-                case TOKEN_MUL:   emit(OP_MUL, 0); break;
-                case TOKEN_DIV:   emit(OP_DIV, 0); break;
+                case TOKEN_MINUS:
+                    if (operand_is_real) emit(OP_FSUB, 0);
+                    else emit(OP_SUB, 0);
+                    break;
+                case TOKEN_MUL:
+                    if (operand_is_real) emit(OP_FMUL, 0);
+                    else emit(OP_MUL, 0);
+                    break;
+                case TOKEN_DIV:
+                    // '/' - the type checker guarantees both operands are
+                    // already real by the time codegen sees this node.
+                    emit(OP_FDIV, 0);
+                    break;
                 case TOKEN_EQ:
                     if (is_string_type(node->left->expression_type)) emit(OP_SEQ, 0);
+                    else if (operand_is_real) emit(OP_FEQ, 0);
                     else emit(OP_EQ, 0);
                     break;
-                case TOKEN_LT:    emit_ordering(node, OP_LT);  break;
-                case TOKEN_GT:    emit_ordering(node, OP_GT);  break;
+                case TOKEN_LT:
+                    if (operand_is_real) emit(OP_FLT, 0);
+                    else emit_ordering(node, OP_LT);
+                    break;
+                case TOKEN_GT:
+                    if (operand_is_real) emit(OP_FGT, 0);
+                    else emit_ordering(node, OP_GT);
+                    break;
                 case TOKEN_AND:
                     if (node->left->expression_type == TYPE_INTEGER) emit(OP_BAND, 0);
                     else emit(OP_AND, 0);
@@ -237,14 +270,21 @@ void generate_code(ASTNode *node) {
                     if (node->left->expression_type == TYPE_INTEGER) emit(OP_BOR, 0);
                     else emit(OP_OR, 0);
                     break;
-                case TOKEN_LTE: emit_ordering(node, OP_LTE); break;
-                case TOKEN_GTE: emit_ordering(node, OP_GTE); break;
+                case TOKEN_LTE:
+                    if (operand_is_real) emit(OP_FLTE, 0);
+                    else emit_ordering(node, OP_LTE);
+                    break;
+                case TOKEN_GTE:
+                    if (operand_is_real) emit(OP_FGTE, 0);
+                    else emit_ordering(node, OP_GTE);
+                    break;
                 case TOKEN_NEQ:
                     if (is_string_type(node->left->expression_type)) { emit(OP_SEQ, 0); emit(OP_NOT, 0); }
+                    else if (operand_is_real) emit(OP_FNEQ, 0);
                     else emit(OP_NEQ, 0);
                     break;
-                case TOKEN_DIV_KW: emit(OP_DIV, 0); break; // Reuses OP_DIV
-                case TOKEN_MOD:    emit(OP_MOD, 0); break;
+                case TOKEN_DIV_KW: emit(OP_DIV, 0); break; // integer-only, guaranteed by the type checker
+                case TOKEN_MOD:    emit(OP_MOD, 0); break; // integer-only
                 case TOKEN_XOR:
                     if (node->left->expression_type == TYPE_INTEGER) emit(OP_BXOR, 0);
                     else emit(OP_XOR, 0);
@@ -254,12 +294,14 @@ void generate_code(ASTNode *node) {
                 default: break;
             }
             break;
+        }
 
         case NODE_WRITELN:
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg);
                 if (is_string_type(arg->expression_type)) emit(OP_PRINT_STR, 0);
                 else if (arg->expression_type == TYPE_BOOLEAN) emit(OP_PRINT_BOOL, 0);
+                else if (arg->expression_type == TYPE_REAL) emit(OP_FPRINT, 0);
                 else emit(OP_PRINT, 0);
             }
             if (node->op == TOKEN_WRITELN) emit(OP_NEWLINE, 0);

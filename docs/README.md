@@ -111,7 +111,7 @@ test_recovery.c   Demonstrates that a fatal compile error doesn't kill the proce
 ## Status
 
 Working: `if`/`while`/`repeat`/`for` (with `break`/`continue`),
-`integer`/`boolean`/`string`/`char` types, string concatenation and
+`integer`/`real`/`boolean`/`string`/`char` types, string concatenation and
 comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
 elimination and constant folding, and procedures and functions with
@@ -132,8 +132,12 @@ indexing, `copy`/`pos`/`mid`/`left`/`right`/`inpos`, and
 two-dimensional arrays and `low`/`high`/`length` for arrays, resolved
 entirely at compile time (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#two-dimensional-arrays) and
-[docs/LANGUAGE.md](docs/LANGUAGE.md#low-high-length)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#low-high-length)). Also working: the
+`real` type (a 32-bit float), with automatic integer↔real widening,
+`trunc`/`round`, and `/` now real Pascal's actual always-real division
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#real)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
-parameters/locals for 2D arrays specifically, and dynamic arrays (so no
-array `copy`/slicing).
+parameters/locals for 2D arrays specifically, dynamic arrays (so no
+array `copy`/slicing), and `write`/`writeln` field-width/precision
+syntax (`writeln(x:10:2)`).

@@ -152,6 +152,21 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"STORE_IDX", OP_STORE_IDX, OPERAND_VAR},
     {"LOAD_IDX2D",  OP_LOAD_IDX2D,  OPERAND_VAR},
     {"STORE_IDX2D", OP_STORE_IDX2D, OPERAND_VAR},
+    {"FADD",  OP_FADD,  OPERAND_NONE},
+    {"FSUB",  OP_FSUB,  OPERAND_NONE},
+    {"FMUL",  OP_FMUL,  OPERAND_NONE},
+    {"FDIV",  OP_FDIV,  OPERAND_NONE},
+    {"FEQ",   OP_FEQ,   OPERAND_NONE},
+    {"FLT",   OP_FLT,   OPERAND_NONE},
+    {"FGT",   OP_FGT,   OPERAND_NONE},
+    {"FLTE",  OP_FLTE,  OPERAND_NONE},
+    {"FGTE",  OP_FGTE,  OPERAND_NONE},
+    {"FNEQ",  OP_FNEQ,  OPERAND_NONE},
+    {"FNEG",  OP_FNEG,  OPERAND_NONE},
+    {"FPRINT", OP_FPRINT, OPERAND_NONE},
+    {"INT_TO_REAL", OP_INT_TO_REAL, OPERAND_NONE},
+    {"TRUNC", OP_TRUNC, OPERAND_NONE},
+    {"ROUND", OP_ROUND, OPERAND_NONE},
     {"LOAD_IDX_DYN",  OP_LOAD_IDX_DYN,  OPERAND_NONE},
     {"STORE_IDX_DYN", OP_STORE_IDX_DYN, OPERAND_NONE},
 };
@@ -398,40 +413,43 @@ void assemble(char *source, const char *filename) {
             if (strcasecmp(directive, "var") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
                 if (sscanf(line, ".%31s %31s %31s", directive, name, type_str) != 3) {
-                    asm_error(line_no, "Malformed directive (expected: .var <name> <integer|boolean|string|char>)");
+                    asm_error(line_no, "Malformed directive (expected: .var <name> <integer|boolean|string|char|real>)");
                 }
                 DataType type;
                 if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
                 else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', or 'char')", type_str); return; }
+                else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', or 'real')", type_str); return; }
                 add_var(line_no, name, type);
             } else if (strcasecmp(directive, "array") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
                 int lower, upper;
                 if (sscanf(line, ".%31s %31s %d %d %31s", directive, name, &lower, &upper, type_str) != 5) {
-                    asm_error(line_no, "Malformed directive (expected: .array <name> <lower> <upper> <integer|boolean|string|char>)");
+                    asm_error(line_no, "Malformed directive (expected: .array <name> <lower> <upper> <integer|boolean|string|char|real>)");
                 }
                 DataType type;
                 if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
                 else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', or 'char')", type_str); return; }
+                else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', or 'real')", type_str); return; }
                 add_array_var(line_no, name, type, lower, upper);
             } else if (strcasecmp(directive, "array2d") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
                 int lower, upper, lower2, upper2;
                 if (sscanf(line, ".%31s %31s %d %d %d %d %31s", directive, name, &lower, &upper, &lower2, &upper2, type_str) != 7) {
-                    asm_error(line_no, "Malformed directive (expected: .array2d <name> <lower1> <upper1> <lower2> <upper2> <integer|boolean|string|char>)");
+                    asm_error(line_no, "Malformed directive (expected: .array2d <name> <lower1> <upper1> <lower2> <upper2> <integer|boolean|string|char|real>)");
                 }
                 DataType type;
                 if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
                 else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', or 'char')", type_str); return; }
+                else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', or 'real')", type_str); return; }
                 add_array_var_2d(line_no, name, type, lower, upper, lower2, upper2);
             } else {
                 asm_error(line_no, "Unknown directive '.%s' (expected .var, .array, or .array2d)", directive);

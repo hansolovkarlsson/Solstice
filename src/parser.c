@@ -6,6 +6,17 @@
 #include "lexer.h"
 #include "error.h"
 
+// Reinterprets a float's bits as an int-sized bit pattern - see vm.c for
+// the full explanation (this is how a 'real' value shares the same
+// int-sized storage slots every other type uses). Only float_to_bits is
+// needed here (to encode a real literal's value at parse time); the
+// reverse isn't needed until runtime, so it stays vm.c-only.
+static int float_to_bits(float f) {
+    int bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
+
 static const char *current_filename = "<source>";
 
 // Tracks how many while/for/repeat bodies we're currently parsing inside
@@ -359,7 +370,8 @@ static DataType parse_scalar_type(void) {
     if (token.type == TOKEN_BOOLEAN) { match(TOKEN_BOOLEAN); return TYPE_BOOLEAN; }
     if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
     if (token.type == TOKEN_CHAR_TYPE) { match(TOKEN_CHAR_TYPE); return TYPE_CHAR; }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', or 'char')");
+    if (token.type == TOKEN_REAL_TYPE) { match(TOKEN_REAL_TYPE); return TYPE_REAL; }
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', or 'real')");
     return TYPE_UNKNOWN;
 }
 
@@ -531,7 +543,8 @@ static ASTNode *factor(void) {
         node->left = factor();
         return node;
     } else if (token.type == TOKEN_ABS || token.type == TOKEN_SQR ||
-               token.type == TOKEN_ORD || token.type == TOKEN_CHR) {
+               token.type == TOKEN_ORD || token.type == TOKEN_CHR ||
+               token.type == TOKEN_TRUNC || token.type == TOKEN_ROUND) {
         TokenType op = token.type;
         match(op);
         match(TOKEN_LPAREN);
@@ -685,6 +698,12 @@ static ASTNode *factor(void) {
         node->data.num_value = token.value;
         node->expression_type = TYPE_INTEGER;
         match(TOKEN_NUMBER);
+        return node;
+    } else if (token.type == TOKEN_REAL) {
+        ASTNode *node = create_node(NODE_REAL_NUMBER);
+        node->data.num_value = float_to_bits(token.real_value);
+        node->expression_type = TYPE_REAL;
+        match(TOKEN_REAL);
         return node;
     } else if (token.type == TOKEN_TRUE || token.type == TOKEN_FALSE) {
         ASTNode *node = create_node(NODE_BOOLEAN);
@@ -943,6 +962,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 else if (token.type == TOKEN_BOOLEAN) { elem_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
                 else if (token.type == TOKEN_STRING_TYPE) { elem_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
                 else if (token.type == TOKEN_CHAR_TYPE) { elem_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
+                else if (token.type == TOKEN_REAL_TYPE) { elem_type = TYPE_REAL; match(TOKEN_REAL_TYPE); }
                 else compile_error(token.line, "Unknown array element type");
 
                 for (int i = 0; i < count; i++) {
@@ -958,6 +978,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 else if (token.type == TOKEN_BOOLEAN) { target_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
                 else if (token.type == TOKEN_STRING_TYPE) { target_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
                 else if (token.type == TOKEN_CHAR_TYPE) { target_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
+                else if (token.type == TOKEN_REAL_TYPE) { target_type = TYPE_REAL; match(TOKEN_REAL_TYPE); }
                 else compile_error(token.line, "Unknown primitive category");
 
                 for (int i = 0; i < count; i++) {
