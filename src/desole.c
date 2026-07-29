@@ -45,6 +45,14 @@ static const char *opcode_name(Opcode op) {
         case OP_SHR:   return "shr";
         case OP_DUP:   return "dup";
         case OP_ABS:   return "abs";
+        case OP_FABS:  return "fabs";
+        case OP_FSQRT:   return "fsqrt";
+        case OP_FSIN:    return "fsin";
+        case OP_FCOS:    return "fcos";
+        case OP_FARCTAN: return "farctan";
+        case OP_FEXP:    return "fexp";
+        case OP_FLN:     return "fln";
+        case OP_FPOWER:  return "fpower";
         case OP_ORD:   return "ord";
         case OP_CHR:   return "chr";
         case OP_LENGTH:        return "length";

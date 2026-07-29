@@ -51,6 +51,9 @@ typedef enum {
     TOKEN_REAL_TYPE,  // the 'real' type keyword
     TOKEN_TRUNC, TOKEN_ROUND,
     TOKEN_TYPE, TOKEN_RECORD,
+    TOKEN_SQRT, TOKEN_SIN, TOKEN_COS, TOKEN_ARCTAN, TOKEN_EXP, TOKEN_LN,
+    TOKEN_PI, TOKEN_POWER,
+    TOKEN_POW, // '**'
     TOKEN_EOF
 } TokenType;
 
@@ -281,7 +284,7 @@ typedef enum {
     OP_FPRINT_PADDED,     // Pop width, then a value; format with the
                   // same default %.6g OP_FPRINT uses (no explicit
                   // decimal-place count given), pad, print.
-    OP_FPRINT_PADDED_PRECISE // Pop precision, then width, then a value;
+    OP_FPRINT_PADDED_PRECISE, // Pop precision, then width, then a value;
                   // format with exactly `precision` digits after the
                   // decimal point (Pascal's ':width:precision' form),
                   // pad, print. A genuinely separate opcode from
@@ -291,6 +294,29 @@ typedef enum {
                   // precision - the two forms are syntactically distinct
                   // ('x:10' vs 'x:10:2'), so codegen already knows which
                   // one applies and picks the opcode accordingly.
+    OP_FABS,      // Pop a value, reinterpret as float; push its absolute
+                  // value. sqr(real) needs no equivalent new opcode - it
+                  // reuses the existing generic OP_DUP (duplicates
+                  // whatever's on top of the stack, regardless of type)
+                  // followed by OP_FMUL.
+    OP_FSQRT, OP_FSIN, OP_FCOS, OP_FARCTAN, OP_FEXP, OP_FLN, // the rest
+                  // of ISO Pascal's math function set (sqrt/sin/cos/
+                  // arctan/exp/ln, plus abs/sqr which already existed).
+                  // Each pops a value, reinterprets as float, computes
+                  // via the obvious libm function, checks the result
+                  // isn't NaN/infinite (a runtime error if so - domain
+                  // errors like sqrt(-1) or ln(0) and overflow are all
+                  // caught this one uniform way, rather than needing a
+                  // separate domain precondition check per function),
+                  // pushes the result.
+    OP_FPOWER     // Pop the exponent, then the base (both reinterpreted
+                  // as float); push base^exponent via powf, with the
+                  // same NaN/infinite result check as the functions
+                  // above (e.g. a negative base with a non-integer
+                  // exponent has no real result). Shared by both the
+                  // power(base, exp) function and the '**' operator -
+                  // they compute exactly the same thing, just with
+                  // different surface syntax.
 } Opcode;
 
 typedef struct {

@@ -39,6 +39,20 @@ static int float_to_bits(float f) {
     return bits;
 }
 
+// Checks a math function's result isn't NaN or infinite, erroring
+// cleanly if so rather than letting it silently propagate (with "nan" or
+// "inf" showing up in some later, unrelated printed output, far from the
+// actual cause). Catches domain errors (sqrt of a negative number, ln of
+// a non-positive number, a negative power() base with a non-integer
+// exponent) and overflow uniformly in one place, rather than needing a
+// separate precondition check specific to each function's own domain.
+static void vm_check_real_result(float val, const char *fn_name) {
+    if (isnan(val) || isinf(val)) {
+        fprintf(stderr, "VM Runtime Error: '%s' produced an invalid result (domain error or overflow)\n", fn_name);
+        fatal_abort();
+    }
+}
+
 static int vm_stack[MAX_STACK];
 static int vm_vars[MAX_SYMBOLS];
 static int vm_array_mem[MAX_ARRAY_MEM];
@@ -376,6 +390,69 @@ void run_vm(void) {
             case OP_ABS: {
                 int a = vm_pop(&sp);
                 vm_push(&sp, a < 0 ? -a : a);
+                break;
+            }
+
+            case OP_FABS: {
+                float a = bits_to_float(vm_pop(&sp));
+                vm_push(&sp, float_to_bits(fabsf(a)));
+                break;
+            }
+
+            case OP_FSQRT: {
+                float a = bits_to_float(vm_pop(&sp));
+                float result = sqrtf(a);
+                vm_check_real_result(result, "sqrt");
+                vm_push(&sp, float_to_bits(result));
+                break;
+            }
+
+            case OP_FSIN: {
+                float a = bits_to_float(vm_pop(&sp));
+                float result = sinf(a);
+                vm_check_real_result(result, "sin");
+                vm_push(&sp, float_to_bits(result));
+                break;
+            }
+
+            case OP_FCOS: {
+                float a = bits_to_float(vm_pop(&sp));
+                float result = cosf(a);
+                vm_check_real_result(result, "cos");
+                vm_push(&sp, float_to_bits(result));
+                break;
+            }
+
+            case OP_FARCTAN: {
+                float a = bits_to_float(vm_pop(&sp));
+                float result = atanf(a);
+                vm_check_real_result(result, "arctan");
+                vm_push(&sp, float_to_bits(result));
+                break;
+            }
+
+            case OP_FEXP: {
+                float a = bits_to_float(vm_pop(&sp));
+                float result = expf(a);
+                vm_check_real_result(result, "exp");
+                vm_push(&sp, float_to_bits(result));
+                break;
+            }
+
+            case OP_FLN: {
+                float a = bits_to_float(vm_pop(&sp));
+                float result = logf(a);
+                vm_check_real_result(result, "ln");
+                vm_push(&sp, float_to_bits(result));
+                break;
+            }
+
+            case OP_FPOWER: {
+                float exponent = bits_to_float(vm_pop(&sp)); // pushed second (last) by codegen - on top
+                float base = bits_to_float(vm_pop(&sp));
+                float result = powf(base, exponent);
+                vm_check_real_result(result, "power");
+                vm_push(&sp, float_to_bits(result));
                 break;
             }
 

@@ -36,7 +36,7 @@ TEST_RECOVERY_OBJS := test_recovery.o $(FRONTEND_OBJS) $(SHARED_OBJS)
 all: $(PASCALC) $(SOLVM) $(SOLAS) $(DESOLE) $(TEST_RECOVERY)
 
 $(PASCALC): $(PASCALC_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
 $(SOLVM): $(SOLVM_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
@@ -48,7 +48,7 @@ $(DESOLE): $(DESOLE_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
 
 $(TEST_RECOVERY): $(TEST_RECOVERY_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<

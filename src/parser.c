@@ -702,13 +702,35 @@ static ASTNode *factor(void) {
         return node;
     } else if (token.type == TOKEN_ABS || token.type == TOKEN_SQR ||
                token.type == TOKEN_ORD || token.type == TOKEN_CHR ||
-               token.type == TOKEN_TRUNC || token.type == TOKEN_ROUND) {
+               token.type == TOKEN_TRUNC || token.type == TOKEN_ROUND ||
+               token.type == TOKEN_SQRT || token.type == TOKEN_SIN ||
+               token.type == TOKEN_COS || token.type == TOKEN_ARCTAN ||
+               token.type == TOKEN_EXP || token.type == TOKEN_LN) {
         TokenType op = token.type;
         match(op);
         match(TOKEN_LPAREN);
         ASTNode *node = create_node(NODE_UNARY_OP);
         node->op = op;
         node->left = expression();
+        match(TOKEN_RPAREN);
+        return node;
+    } else if (token.type == TOKEN_PI) {
+        // A zero-cost literal, exactly like true/false - not a function
+        // call, so it needs no runtime opcode and is automatically
+        // constant-foldable in any expression that uses it.
+        match(TOKEN_PI);
+        ASTNode *node = create_node(NODE_REAL_NUMBER);
+        node->data.num_value = float_to_bits(3.14159265358979323846f);
+        node->expression_type = TYPE_REAL;
+        return node;
+    } else if (token.type == TOKEN_POWER) {
+        match(TOKEN_POWER);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_POWER;
+        node->left = expression();  // base
+        match(TOKEN_COMMA);
+        node->right = expression(); // exponent
         match(TOKEN_RPAREN);
         return node;
     } else if (token.type == TOKEN_ODD) {
@@ -986,8 +1008,30 @@ static ASTNode *factor(void) {
     return NULL;
 }
 
-static ASTNode *term(void) {
+// '**' binds tighter than */div/mod/and/shl/shr, and is right-
+// associative (2 ** 3 ** 2 is 2 ** (3 ** 2) = 512, not (2**3)**2 = 64) -
+// achieved by recursing into power_expr() itself for the right operand,
+// rather than the level below it. Note this binds *tighter* than unary
+// minus, since factor() (which handles unary minus) is called first, so
+// '-2 ** 2' parses as '(-2) ** 2' = 4, not '-(2 ** 2)' = -4. Standard
+// Pascal has no exponentiation operator at all to match a precedent
+// from, so this is simply this compiler's own chosen rule, documented
+// here rather than derived from any existing Pascal convention.
+static ASTNode *power_expr(void) {
     ASTNode *node = factor();
+    if (token.type == TOKEN_POW) {
+        match(TOKEN_POW);
+        ASTNode *new_node = create_node(NODE_BINARY_OP);
+        new_node->op = TOKEN_POW;
+        new_node->left = node;
+        new_node->right = power_expr();
+        node = new_node;
+    }
+    return node;
+}
+
+static ASTNode *term(void) {
+    ASTNode *node = power_expr();
     while (token.type == TOKEN_MUL || token.type == TOKEN_DIV || 
            token.type == TOKEN_DIV_KW || token.type == TOKEN_MOD || 
            token.type == TOKEN_AND || token.type == TOKEN_SHL || token.type == TOKEN_SHR) {
@@ -996,7 +1040,7 @@ static ASTNode *term(void) {
         ASTNode *new_node = create_node(NODE_BINARY_OP);
         new_node->op = op;
         new_node->left = node;
-        new_node->right = factor();
+        new_node->right = power_expr();
         node = new_node;
     }
     return node;

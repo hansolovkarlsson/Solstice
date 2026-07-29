@@ -1,6 +1,11 @@
 # To Do
 
 
+
+See if I can get LISP, Smalltalk, Prolog working on the SolVM as well
+Should make separate projects first, because I'm learning Pascal making this compiler
+Logo as well
+
 I could name the project Ouroboros, seems like there are very vague use of it in programming environment
 
 

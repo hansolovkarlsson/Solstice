@@ -211,10 +211,12 @@ void generate_code(ASTNode *node) {
                 if (node->left->expression_type == TYPE_INTEGER) emit(OP_BNOT, 0);
                 else emit(OP_NOT, 0);
             } else if (node->op == TOKEN_ABS) {
-                emit(OP_ABS, 0);
+                if (node->left->expression_type == TYPE_REAL) emit(OP_FABS, 0);
+                else emit(OP_ABS, 0);
             } else if (node->op == TOKEN_SQR) {
                 emit(OP_DUP, 0);
-                emit(OP_MUL, 0);
+                if (node->left->expression_type == TYPE_REAL) emit(OP_FMUL, 0);
+                else emit(OP_MUL, 0);
             } else if (node->op == TOKEN_ORD) {
                 emit(OP_ORD, 0);
             } else if (node->op == TOKEN_CHR) {
@@ -223,6 +225,18 @@ void generate_code(ASTNode *node) {
                 emit(OP_TRUNC, 0);
             } else if (node->op == TOKEN_ROUND) {
                 emit(OP_ROUND, 0);
+            } else if (node->op == TOKEN_SQRT) {
+                emit(OP_FSQRT, 0);
+            } else if (node->op == TOKEN_SIN) {
+                emit(OP_FSIN, 0);
+            } else if (node->op == TOKEN_COS) {
+                emit(OP_FCOS, 0);
+            } else if (node->op == TOKEN_ARCTAN) {
+                emit(OP_FARCTAN, 0);
+            } else if (node->op == TOKEN_EXP) {
+                emit(OP_FEXP, 0);
+            } else if (node->op == TOKEN_LN) {
+                emit(OP_FLN, 0);
             }
             break;
 
@@ -248,6 +262,10 @@ void generate_code(ASTNode *node) {
                     // '/' - the type checker guarantees both operands are
                     // already real by the time codegen sees this node.
                     emit(OP_FDIV, 0);
+                    break;
+                case TOKEN_POW:
+                    // '**' - same guarantee as '/' above.
+                    emit(OP_FPOWER, 0);
                     break;
                 case TOKEN_EQ:
                     if (is_string_type(node->left->expression_type)) emit(OP_SEQ, 0);
@@ -483,6 +501,9 @@ void generate_code(ASTNode *node) {
                 generate_code(node->right);
                 generate_code(node->extra);
                 emit(OP_COPY, 0);
+            } else if (node->op == TOKEN_POWER) {
+                generate_code(node->right); // exponent
+                emit(OP_FPOWER, 0);
             }
             break;
 

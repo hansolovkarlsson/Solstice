@@ -100,12 +100,12 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
             } else if (node->op == TOKEN_ABS || node->op == TOKEN_SQR) {
-                if (node->left->expression_type != TYPE_INTEGER) {
-                    fprintf(stderr, "%s:%d: Type Error: '%s' requires an integer argument\n",
+                if (node->left->expression_type != TYPE_INTEGER && node->left->expression_type != TYPE_REAL) {
+                    fprintf(stderr, "%s:%d: Type Error: '%s' requires an integer or real argument\n",
                             get_current_filename(), node->line, node->op == TOKEN_ABS ? "abs" : "sqr");
                     fatal_abort();
                 }
-                node->expression_type = TYPE_INTEGER;
+                node->expression_type = node->left->expression_type; // preserves int or real
             } else if (node->op == TOKEN_ORD) {
                 if (!is_string_type(node->left->expression_type)) {
                     fprintf(stderr, "%s:%d: Type Error: 'ord' requires a char or string argument\n",
@@ -127,6 +127,18 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 node->expression_type = TYPE_INTEGER;
+            } else if (node->op == TOKEN_SQRT || node->op == TOKEN_SIN || node->op == TOKEN_COS ||
+                       node->op == TOKEN_ARCTAN || node->op == TOKEN_EXP || node->op == TOKEN_LN) {
+                if (node->left->expression_type != TYPE_INTEGER && node->left->expression_type != TYPE_REAL) {
+                    fprintf(stderr, "%s:%d: Type Error: '%s' requires an integer or real argument\n",
+                            get_current_filename(), node->line,
+                            node->op == TOKEN_SQRT ? "sqrt" : node->op == TOKEN_SIN ? "sin" :
+                            node->op == TOKEN_COS ? "cos" : node->op == TOKEN_ARCTAN ? "arctan" :
+                            node->op == TOKEN_EXP ? "exp" : "ln");
+                    fatal_abort();
+                }
+                widen_to_real(&node->left); // no-op if already real
+                node->expression_type = TYPE_REAL;
             }
             break;
 
@@ -174,6 +186,16 @@ void type_check(ASTNode *node) {
                 // the integer-division operator, handled above.
                 if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
                     fprintf(stderr, "%s:%d: Type Error: '/' requires integer or real operands\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                widen_to_real(&node->left);
+                widen_to_real(&node->right);
+                node->expression_type = TYPE_REAL;
+            } else if (node->op == TOKEN_POW) {
+                // '**' always produces real, same reasoning as '/' above.
+                if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
+                    fprintf(stderr, "%s:%d: Type Error: '**' requires integer or real operands\n",
                             get_current_filename(), node->line);
                     fatal_abort();
                 }
@@ -376,6 +398,19 @@ void type_check(ASTNode *node) {
                     }
                     node->expression_type = TYPE_STRING;
                     break;
+                case TOKEN_POWER: {
+                    DataType bt = node->left->expression_type;
+                    DataType et = node->right->expression_type;
+                    if ((bt != TYPE_INTEGER && bt != TYPE_REAL) || (et != TYPE_INTEGER && et != TYPE_REAL)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'power' requires integer or real arguments\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    widen_to_real(&node->left);
+                    widen_to_real(&node->right);
+                    node->expression_type = TYPE_REAL;
+                    break;
+                }
                 default:
                     break;
             }

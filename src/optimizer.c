@@ -1,9 +1,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "optimizer.h"
 #include "parser.h"
 #include "error.h"
+
+// Local copies of the bit-reinterpretation helpers (see vm.c for the
+// full explanation) - needed here to fold real-literal arithmetic at
+// compile time, matching this project's established pattern of
+// duplicating small helpers per file rather than sharing them via a
+// header.
+static float bits_to_float(int bits) {
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+static int float_to_bits(float f) {
+    int bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
 
 ASTNode *optimize_ast(ASTNode *node) {
     if (!node) return NULL;
@@ -40,6 +58,73 @@ ASTNode *optimize_ast(ASTNode *node) {
         }
         free_ast(node->left);
         node->left = NULL;
+        return node;
+    }
+
+    if (node->type == NODE_UNARY_OP && node->left->type == NODE_REAL_NUMBER
+        && (node->op == TOKEN_MINUS || node->op == TOKEN_ABS || node->op == TOKEN_SQR ||
+            node->op == TOKEN_TRUNC || node->op == TOKEN_ROUND || node->op == TOKEN_SQRT ||
+            node->op == TOKEN_SIN || node->op == TOKEN_COS || node->op == TOKEN_ARCTAN ||
+            node->op == TOKEN_EXP || node->op == TOKEN_LN)) {
+        float val = bits_to_float(node->left->data.num_value);
+        float real_result = 0.0f;
+        int has_real_result = 0;
+        if (node->op == TOKEN_MINUS) {
+            node->type = NODE_REAL_NUMBER;
+            node->data.num_value = float_to_bits(-val);
+        } else if (node->op == TOKEN_ABS) {
+            node->type = NODE_REAL_NUMBER;
+            node->data.num_value = float_to_bits(fabsf(val));
+        } else if (node->op == TOKEN_SQR) {
+            node->type = NODE_REAL_NUMBER;
+            node->data.num_value = float_to_bits(val * val);
+        } else if (node->op == TOKEN_TRUNC) {
+            node->type = NODE_NUMBER;
+            node->data.num_value = (int)val;
+        } else if (node->op == TOKEN_ROUND) {
+            node->type = NODE_NUMBER;
+            node->data.num_value = (int)roundf(val);
+        } else if (node->op == TOKEN_SQRT) {
+            real_result = sqrtf(val); has_real_result = 1;
+        } else if (node->op == TOKEN_SIN) {
+            real_result = sinf(val); has_real_result = 1;
+        } else if (node->op == TOKEN_COS) {
+            real_result = cosf(val); has_real_result = 1;
+        } else if (node->op == TOKEN_ARCTAN) {
+            real_result = atanf(val); has_real_result = 1;
+        } else if (node->op == TOKEN_EXP) {
+            real_result = expf(val); has_real_result = 1;
+        } else if (node->op == TOKEN_LN) {
+            real_result = logf(val); has_real_result = 1;
+        }
+        if (has_real_result) {
+            if (isnan(real_result) || isinf(real_result)) {
+                fprintf(stderr, "%s:%d: Compile Error: constant expression produced an invalid result (domain error or overflow)\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            node->type = NODE_REAL_NUMBER;
+            node->data.num_value = float_to_bits(real_result);
+        }
+        free_ast(node->left);
+        node->left = NULL;
+        return node;
+    }
+
+    // Folds an implicit int->real widening (see type_checker.c's
+    // widen_to_real) whose operand is itself a folded integer literal -
+    // e.g. '2 + 3.14' widens the '2' to a NODE_INT_TO_REAL wrapping
+    // NODE_NUMBER(2); this turns that into a plain NODE_REAL_NUMBER(2.0),
+    // which is what lets the surrounding binary-op fold below see two
+    // real literals and fold the whole expression down to a single
+    // constant, rather than only folding operations between two
+    // naturally-real literals.
+    if (node->type == NODE_INT_TO_REAL && node->left->type == NODE_NUMBER) {
+        float real_val = (float)node->left->data.num_value;
+        free_ast(node->left);
+        node->left = NULL;
+        node->type = NODE_REAL_NUMBER;
+        node->data.num_value = float_to_bits(real_val);
         return node;
     }
 
@@ -119,6 +204,63 @@ ASTNode *optimize_ast(ASTNode *node) {
         node->data.num_value = folded_val;
         node->left = NULL;
         node->right = NULL;
+    }
+
+    if (node->type == NODE_BINARY_OP
+        && node->left->type == NODE_REAL_NUMBER && node->right->type == NODE_REAL_NUMBER
+        && (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || node->op == TOKEN_MUL ||
+            node->op == TOKEN_DIV || node->op == TOKEN_POW || node->op == TOKEN_EQ ||
+            node->op == TOKEN_LT || node->op == TOKEN_GT || node->op == TOKEN_LTE ||
+            node->op == TOKEN_GTE || node->op == TOKEN_NEQ)) {
+        // div/mod/shl/shr/and/or/xor don't apply to real at all (the type
+        // checker already rejects them), so there's no case for those
+        // here - every reachable operator is handled below.
+        float l_val = bits_to_float(node->left->data.num_value);
+        float r_val = bits_to_float(node->right->data.num_value);
+        int is_comparison = 0;
+        float folded_real = 0.0f;
+        int folded_bool = 0;
+
+        switch (node->op) {
+            case TOKEN_PLUS:  folded_real = l_val + r_val; break;
+            case TOKEN_MINUS: folded_real = l_val - r_val; break;
+            case TOKEN_MUL:   folded_real = l_val * r_val; break;
+            case TOKEN_DIV:
+                if (r_val == 0.0f) {
+                    fprintf(stderr, "%s:%d: Compile Error: Division by zero\n", get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                folded_real = l_val / r_val;
+                break;
+            case TOKEN_POW:
+                folded_real = powf(l_val, r_val);
+                if (isnan(folded_real) || isinf(folded_real)) {
+                    fprintf(stderr, "%s:%d: Compile Error: constant expression produced an invalid result (domain error or overflow)\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                break;
+            case TOKEN_EQ:  folded_bool = (l_val == r_val); is_comparison = 1; break;
+            case TOKEN_LT:  folded_bool = (l_val < r_val);  is_comparison = 1; break;
+            case TOKEN_GT:  folded_bool = (l_val > r_val);  is_comparison = 1; break;
+            case TOKEN_LTE: folded_bool = (l_val <= r_val); is_comparison = 1; break;
+            case TOKEN_GTE: folded_bool = (l_val >= r_val); is_comparison = 1; break;
+            case TOKEN_NEQ: folded_bool = (l_val != r_val); is_comparison = 1; break;
+            default: break;
+        }
+
+        if (verbose_mode) printf("[Optimization] Folded real constants\n");
+        free_ast(node->left);
+        free_ast(node->right);
+        node->left = NULL;
+        node->right = NULL;
+        if (is_comparison) {
+            node->type = NODE_BOOLEAN;
+            node->data.num_value = folded_bool;
+        } else {
+            node->type = NODE_REAL_NUMBER;
+            node->data.num_value = float_to_bits(folded_real);
+        }
     }
     return node;
 }

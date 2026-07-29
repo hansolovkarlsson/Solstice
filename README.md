@@ -134,7 +134,9 @@ entirely at compile time (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#two-dimensional-arrays) and
 [docs/LANGUAGE.md](docs/LANGUAGE.md#low-high-length)). Also working: the
 `real` type (a 32-bit float), with automatic integer↔real widening,
-`trunc`/`round`, and `/` now real Pascal's actual always-real division
+`trunc`/`round`, `/` now real Pascal's actual always-real division,
+`abs`/`sqr` extended to `real`, and constant folding of `real`-literal
+expressions at compile time
 (see [docs/LANGUAGE.md](docs/LANGUAGE.md#real)). Also working: records
 (`type TPoint = record x, y: integer; end;`), with whole-record
 assignment, implemented as pure compile-time sugar over ordinary global
@@ -143,7 +145,13 @@ variables — zero new bytecode instructions anywhere in the feature (see
 `write`/`writeln` field-width and precision syntax (`writeln(x:10:2)`),
 with width/precision allowed as arbitrary integer expressions, not just
 literals (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#write-and-writeln)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#write-and-writeln)). Also working:
+the rest of ISO Pascal's math functions (`sqrt`/`sin`/`cos`/`arctan`/
+`exp`/`ln`), the `pi` constant, and exponentiation via `power(base, exp)`
+and `**` (right-associative, tighter-binding than `*`/`/`) — domain
+errors (`sqrt(-1)`, `ln(0)`, etc.) are caught uniformly at runtime, or at
+compile time when foldable (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#math-functions-pi-and-exponentiation)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no

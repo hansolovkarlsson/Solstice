@@ -66,7 +66,8 @@ then one `NEWLINE` only for `writeln`.
 
 `PUSH`, `LOAD`, `STORE`, `READ`, `ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`,
 `GT`, `AND`, `OR`, `NOT`, `LTE`, `GTE`, `NEQ`, `NEG`, `MOD`, `XOR`,
-`BAND`, `BOR`, `BXOR`, `BNOT`, `SHL`, `SHR`, `DUP`, `ABS`, `ORD`, `CHR`,
+`BAND`, `BOR`, `BXOR`, `BNOT`, `SHL`, `SHR`, `DUP`, `ABS`, `FABS`,
+`FSQRT`, `FSIN`, `FCOS`, `FARCTAN`, `FEXP`, `FLN`, `FPOWER`, `ORD`, `CHR`,
 `LENGTH`, `STR_CHAR_AT`, `COPY`, `POS`, `UPCASE_CHAR`, `UPPERCASE_STR`,
 `LOWERCASE_STR`, `LEFT`, `RIGHT`,
 `PRINT`, `PRINT_BOOL`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`,

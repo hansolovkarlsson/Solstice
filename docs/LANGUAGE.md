@@ -150,9 +150,10 @@ of `and`/`or` are always evaluated.
 ### Precedence (highest to lowest)
 
 1. Unary `-`, `not`, parenthesized expressions
-2. `*`, `/`, `div`, `mod`, `and`, `shl`, `shr`
-3. `+`, `-`, `or`, `xor`
-4. `=`, `<>`, `<`, `>`, `<=`, `>=`
+2. `**` (right-associative — `2 ** 3 ** 2` is `2 ** (3 ** 2)` = `512`)
+3. `*`, `/`, `div`, `mod`, `and`, `shl`, `shr`
+4. `+`, `-`, `or`, `xor`
+5. `=`, `<>`, `<`, `>`, `<=`, `>=`
 
 Assignment (`:=`) is a statement, not an expression — you can't write
 `x := (y := 5)`.
@@ -161,8 +162,11 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 
 | Name | Kind | Meaning |
 |---|---|---|
-| `abs(x)` | function | Absolute value of an integer |
-| `sqr(x)` | function | `x * x`, for an integer |
+| `abs(x)` | function | Absolute value — `integer` or `real` |
+| `sqr(x)` | function | `x * x` — `integer` or `real` |
+| `sqrt`, `sin`, `cos`, `arctan`, `exp`, `ln` | functions | The rest of ISO Pascal's math functions — `integer` or `real` in, always `real` out — see [Real](#real) |
+| `pi` | constant | `3.14159265358979...`, usable directly as a value — see [Real](#real) |
+| `power(base, exp)`, `**` | functions/operator | Exponentiation — see [Real](#real) |
 | `odd(x)` | function | `true` if the integer `x` is odd |
 | `succ(x)` | function | `x + 1`, for an integer |
 | `pred(x)` | function | `x - 1`, for an integer |
@@ -175,7 +179,8 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 
-- `abs`/`sqr`/`odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
+- `abs`/`sqr` accept `integer` or `real` (preserving whichever was
+  given); `odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
   `ord`/`chr` are the `char`/`integer` conversion pair.
 - `inc`/`dec`'s target `x` must be a plain integer variable — global or
   local, but not an array element. Real Pascal's `inc`/`dec` mutate their
@@ -442,12 +447,58 @@ Field-width/precision syntax (`writeln(x:10:2)`) is supported and is the
 more common way to control this — see [`write` and
 `writeln`](#write-and-writeln).
 
-### What's not (yet) extended to `real`
+### Math functions, `pi`, and exponentiation
 
-- `abs`/`sqr` — `integer` only for now, same as before `real` existed.
-- Constant folding — `3.14 + 2.0` is computed at runtime, not folded
-  into a single literal at compile time, unlike the equivalent integer
-  expression. Purely a missed optimization, not a correctness gap.
+```pascal
+var radius, area: real;
+begin
+    radius := 3.0;
+    area := pi * sqr(radius);
+    writeln('area: ', area:0:2);          { area: 28.27 }
+
+    writeln('sqrt(2): ', sqrt(2):0:5);     { 1.41421 - integer arg widens }
+    writeln('2 ** 10: ', 2 ** 10);         { 1024 }
+    writeln('power(2, 0.5): ', power(2, 0.5):0:5); { 1.41421, same as sqrt(2) }
+end.
+```
+
+- `sqrt`, `sin`, `cos`, `arctan`, `exp`, `ln` — the rest of ISO Pascal's
+  original math function set (`abs`/`sqr` are the other two — see
+  [Built-in functions and procedures](#built-in-functions-and-procedures)).
+  Each accepts `integer` or `real` (an integer argument is widened
+  automatically, unlike `trunc`/`round` which require `real` strictly)
+  and always returns `real`.
+- `pi` — the constant `3.14159265358979...`, usable directly as a value
+  (`writeln(pi)`, `2 * pi`) rather than as a function call — it costs
+  nothing at runtime, the same as `true`/`false`.
+- `power(base, exp)` and **`**`** compute the same thing (`base` raised
+  to `exp`) — pick whichever reads better. Neither is standard ISO
+  Pascal (which has no exponentiation at all — `^` is Pascal's
+  *pointer*-dereference operator, not exponentiation), but `power` is
+  how Free Pascal's math library spells this, and `**` is a common
+  extension in modern dialects, so both are provided. Both accept
+  `integer` or `real` for either operand (widening as needed) and always
+  return `real`, even `2 ** 10`.
+- **`**`'s precedence**: tighter-binding than `*`/`/`/`div`/`mod`, and
+  right-associative (`2 ** 3 ** 2` is `2 ** (3 ** 2)` = `512`, not
+  `(2 ** 3) ** 2` = `64`) — see [Precedence](#precedence-highest-to-lowest).
+  It binds *less* tightly than unary `-`, so `-2 ** 2` is `(-2) ** 2` =
+  `4`, not `-(2 ** 2)` = `-4`. Standard Pascal has no exponentiation
+  operator to match a precedent from, so this is simply this compiler's
+  own chosen rule.
+- **Domain errors**: rather than a separate precondition check specific
+  to each function (`sqrt` needs a non-negative argument, `ln` needs a
+  positive one, `power` needs a valid base/exponent combination, and so
+  on), every one of these checks its *result* isn't NaN or infinite
+  after computing it, erroring cleanly if so — `sqrt(-1.0)`, `ln(0.0)`,
+  and `power(-4.0, 0.5)` are all runtime errors this same way, rather
+  than silently producing `nan`/`inf` that only becomes visible (and
+  hard to trace back) wherever it's eventually printed. If every operand
+  is a constant, this is caught at compile time instead — same as
+  division by zero.
+
+
+
 - `real` array **parameters** and **local** arrays actually do work
   (they're generic over element type already) - what's *not* supported
   is 2D arrays of any element type, `real` included (see

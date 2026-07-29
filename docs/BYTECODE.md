@@ -117,6 +117,9 @@ corruption.
 | `SHL` / `SHR` | Pop `b` (shift amount), pop `a`, push `a << b` / a *logical* (not sign-extending) `a >> b`. Runtime error if `b` is outside `0..31`, rather than the undefined behavior C's `<<`/`>>` give for an out-of-range shift. |
 | `DUP` | Duplicate the top of the stack (push a second copy). A generic primitive - first used by `sqr(x)` (evaluate `x` once, `DUP`, `MUL`), rather than evaluating `x`'s bytecode twice. |
 | `ABS` | Pop `a`, push its absolute value. |
+| `FABS` | Pop a value, reinterpret as float; push its absolute value. `sqr(real)` needs no equivalent new opcode - it reuses the existing generic `DUP` (duplicates whatever's on top of the stack, regardless of type) followed by `FMUL`. |
+| `FSQRT` / `FSIN` / `FCOS` / `FARCTAN` / `FEXP` / `FLN` | Pop a value, reinterpret as float, compute via the obvious libm function (`sqrtf`/`sinf`/`cosf`/`atanf`/`expf`/`logf`), check the result isn't NaN/infinite (a runtime error if so - this is how domain errors like `sqrt(-1)` or `ln(0)` and overflow are caught, uniformly, rather than a separate precondition check per function), push the result. |
+| `FPOWER` | Pop the exponent, then the base (both reinterpreted as float); push `base^exponent` via `powf`, with the same NaN/infinite result check as above. Shared by both the `power(base, exp)` function and the `**` operator - they compute exactly the same thing, just with different surface syntax. |
 | `ORD` | Pop a `string_pool[]` index; validate it refers to exactly one character (same check as storing into a `char` slot); push that character's byte value (`0..255`). |
 | `CHR` | Pop an integer (`1..255` - `0` can't be represented, since `string_pool[]` entries are null-terminated C strings); intern the single-character string for that byte value (reusing an existing pool entry if there is one); push its index. |
 | `LENGTH` | Pop a `string_pool[]` index; push `strlen()` of it. |

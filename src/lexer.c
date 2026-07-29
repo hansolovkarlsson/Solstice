@@ -130,6 +130,14 @@ void next_token(void) {
         else if (strcasecmp(token.text, "round") == 0) token.type = TOKEN_ROUND;
         else if (strcasecmp(token.text, "type") == 0) token.type = TOKEN_TYPE;
         else if (strcasecmp(token.text, "record") == 0) token.type = TOKEN_RECORD;
+        else if (strcasecmp(token.text, "sqrt") == 0) token.type = TOKEN_SQRT;
+        else if (strcasecmp(token.text, "sin") == 0) token.type = TOKEN_SIN;
+        else if (strcasecmp(token.text, "cos") == 0) token.type = TOKEN_COS;
+        else if (strcasecmp(token.text, "arctan") == 0) token.type = TOKEN_ARCTAN;
+        else if (strcasecmp(token.text, "exp") == 0) token.type = TOKEN_EXP;
+        else if (strcasecmp(token.text, "ln") == 0) token.type = TOKEN_LN;
+        else if (strcasecmp(token.text, "pi") == 0) token.type = TOKEN_PI;
+        else if (strcasecmp(token.text, "power") == 0) token.type = TOKEN_POWER;
         else if (strcasecmp(token.text, "procedure") == 0) token.type = TOKEN_PROCEDURE;
         else if (strcasecmp(token.text, "forward") == 0) token.type = TOKEN_FORWARD;
         else if (strcasecmp(token.text, "function") == 0) token.type = TOKEN_FUNCTION;
@@ -239,7 +247,10 @@ void next_token(void) {
     switch (*src++) {
         case '+': token.type = TOKEN_PLUS; break;
         case '-': token.type = TOKEN_MINUS; break;
-        case '*': token.type = TOKEN_MUL; break;
+        case '*':
+            if (*src == '*') { token.type = TOKEN_POW; strcpy(token.text, "**"); src++; }
+            else { token.type = TOKEN_MUL; }
+            break;
         case '/': token.type = TOKEN_DIV; break;
         case '=': token.type = TOKEN_EQ; break;
         case '<': 
