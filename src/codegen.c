@@ -439,6 +439,20 @@ void generate_code(ASTNode *node) {
             emit(OP_STR_CHAR_AT, 0);
             break;
 
+        case NODE_ARRAY_ACCESS_2D:
+            generate_code(node->left);  // first index
+            generate_code(node->right); // second index
+            emit(OP_LOAD_IDX2D, node->data.var_idx);
+            break;
+
+        case NODE_ARRAY_ASSIGN_2D:
+            generate_code(node->left);  // first index
+            generate_code(node->right); // second index
+            generate_code(node->extra); // value
+            emit(OP_STORE_IDX2D, node->data.var_idx);
+            generate_code(node->next);
+            break;
+
         case NODE_CALL:
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg);

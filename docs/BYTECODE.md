@@ -83,6 +83,8 @@ corruption.
 | `STORE_IDX` | Pop a value, then a runtime index (value was pushed *after* the index by codegen); bounds-check; store the element. |
 | `LOAD_IDX_DYN` | Same as `LOAD_IDX`, but *which* array is also popped from the stack instead of coming from `arg` - needed for array parameters, since different calls can pass different arrays. Pop a runtime index, then a runtime array reference (a symbol index); bounds-check; push the element. |
 | `STORE_IDX_DYN` | Same as `STORE_IDX`, but *which* array is also popped from the stack. Pop a value, then a runtime index, then a runtime array reference; bounds-check; store. |
+| `LOAD_IDX2D` | `arg` = a 2D array's symbol index. Pop the second runtime index, then the first (second pushed last by codegen, so it's on top); bounds-check each against its own dimension; push the element at the row-major offset `(i - lower1) * dim2_size + (j - lower2)`. |
+| `STORE_IDX2D` | Same addressing as `LOAD_IDX2D`. Pop a value, then the second index, then the first (value pushed last); bounds-check; store. |
 
 ### Arithmetic (integer)
 

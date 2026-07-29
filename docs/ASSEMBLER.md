@@ -28,7 +28,8 @@ narration.
 ```
 ; a comment - runs to end of line
 .var <name> <integer|boolean|string|char>     ; declare a variable
-.array <name> <lower> <upper> <type>         ; declare an array
+.array <name> <lower> <upper> <type>         ; declare a 1D array
+.array2d <name> <lo1> <hi1> <lo2> <hi2> <type> ; declare a 2D array
 label:                                        ; a label, alone on its own line
 MNEMONIC [operand]                            ; one instruction per line
 ```
@@ -36,12 +37,13 @@ MNEMONIC [operand]                            ; one instruction per line
 - Mnemonics and type keywords are case-insensitive (`push`, `PUSH`,
   `Push` all work). Variable, array, and label names are case-sensitive —
   matching how the Pascal compiler treats identifiers.
-- `.var`/`.array` can appear anywhere in the file, not just at the top —
-  and so can a label used before it's declared (`jz done` followed later
-  by `done:`). Assembly is two-pass specifically to make this work.
+- `.var`/`.array`/`.array2d` can appear anywhere in the file, not just at
+  the top — and so can a label used before it's declared (`jz done`
+  followed later by `done:`). Assembly is two-pass specifically to make
+  this work.
 - A label must be alone on its own line (no instruction on the same
   line).
-- `.array` bounds are integer literals, may be negative:
+- `.array`/`.array2d` bounds are integer literals, may be negative:
   `.array flags -3 3 boolean`.
 
 ### Operand kinds, by instruction
@@ -50,7 +52,7 @@ MNEMONIC [operand]                            ; one instruction per line
 |---|---|---|
 | Integer literal | `PUSH`, `ENTER`, `LOAD_LOCAL`, `STORE_LOCAL` | `PUSH 5`, `ENTER 2`, `LOAD_LOCAL 0` — a local slot is just a number, not a named symbol |
 | Variable name | `LOAD`, `STORE`, `READ` | `LOAD x` — must have a matching `.var` |
-| Array name | `LOAD_IDX`, `STORE_IDX` | `LOAD_IDX nums` — must have a matching `.array`; the runtime index comes off the stack, not the operand |
+| Array name | `LOAD_IDX`, `STORE_IDX`, `LOAD_IDX2D`, `STORE_IDX2D` | `LOAD_IDX nums` — must have a matching `.array`/`.array2d`; the runtime index (indices, for the 2D ops) come off the stack, not the operand |
 | Label name | `JMP`, `JZ`, `CALL` | `JZ done`, `CALL sum` — may be a forward reference |
 | Quoted string | `PUSH_STR` | `PUSH_STR "hello"` — interned into the string pool; content is everything between the first and last `"` on the line, so an embedded `"` works without escaping |
 | *(none)* | everything else (including `RET`) | |
@@ -69,7 +71,8 @@ then one `NEWLINE` only for `writeln`.
 `LOWERCASE_STR`, `LEFT`, `RIGHT`,
 `PRINT`, `PRINT_BOOL`, `HALT`, `JMP`, `JZ`, `PUSH_STR`, `PRINT_STR`,
 `SEQ`, `SCMP`, `SCONCAT`, `NEWLINE`, `LOAD_IDX`, `STORE_IDX`,
-`LOAD_IDX_DYN`, `STORE_IDX_DYN`, `CALL`, `RET`, `ENTER`, `LOAD_LOCAL`,
+`LOAD_IDX_DYN`, `STORE_IDX_DYN`, `LOAD_IDX2D`, `STORE_IDX2D`, `CALL`,
+`RET`, `ENTER`, `LOAD_LOCAL`,
 `STORE_LOCAL`, `POP`. See
 [docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does,
 and [Procedures](BYTECODE.md#procedures-call-ret-and-stack-frames) for

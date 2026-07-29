@@ -128,6 +128,12 @@ indexing, `copy`/`pos`/`mid`/`left`/`right`/`inpos`, and
 `upcase`/`uppercase`/`lowercase` (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#built-in-functions-and-procedures),
 [docs/LANGUAGE.md](docs/LANGUAGE.md#char), and
-[docs/LANGUAGE.md](docs/LANGUAGE.md#string)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#string)). Also working:
+two-dimensional arrays and `low`/`high`/`length` for arrays, resolved
+entirely at compile time (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#two-dimensional-arrays) and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#low-high-length)).
 
-Not yet implemented: multi-dimensional arrays.
+Not yet implemented: three-or-more-dimensional arrays, array
+parameters/locals for 2D arrays specifically, and dynamic arrays (so no
+array `copy`/slicing).

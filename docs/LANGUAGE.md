@@ -158,6 +158,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `ord(c)` | function | A `char`'s byte value, as an integer — see [Char](#char) |
 | `chr(n)` | function | The `char` with byte value `n` — see [Char](#char) |
 | `length(s)`, `s[i]` | function / indexing | String length and character access — see [String](#string) |
+| `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 
@@ -495,9 +496,73 @@ var
 - An array reference always needs an index; there's no whole-array
   assignment or whole-array printing.
 - Total storage across every array declared in one program is capped at
-  4096 elements combined.
-- No multi-dimensional arrays (`array[1..3, 1..3] of integer` isn't
-  supported — nest a loop instead, or wait for that feature).
+  4096 elements combined (shared across every array, 1D and 2D alike).
+
+### `low`, `high`, `length`
+
+```pascal
+var
+    scores: array[-2..7] of integer;
+    i: integer;
+begin
+    for i := low(scores) to high(scores) do
+        scores[i] := i * i;
+    writeln(length(scores));   { 10 }
+```
+
+- `low(arr)` / `high(arr)` — the array's declared lower/upper bound.
+- `length(arr)` — the number of elements (`high - low + 1`). This is the
+  same `length` used for strings (see [String](#string)) — it works out
+  which one you mean from the argument.
+- All three take a **plain array name** — not an indexed element, not
+  any other expression — global, local, or an array-reference parameter
+  (using the parameter's own declared bounds, which are guaranteed to
+  match whatever's actually passed).
+- Because array bounds are always compile-time-constant in this
+  language, all three resolve to a plain constant at compile time — a
+  literal, with no runtime cost and no reference to the array's actual
+  contents. `for i := low(arr) to high(arr) do` compiles exactly as if
+  you'd written the bounds by hand.
+- **1D arrays only for now** — calling any of these on a 2D array is a
+  compile-time error, since there's no defined answer yet for "which
+  dimension."
+
+### Two-dimensional arrays
+
+```pascal
+var
+    board: array[1..3, 1..3] of char;
+    row, col: integer;
+begin
+    for row := 1 to 3 do
+        for col := 1 to 3 do
+            board[row, col] := '.';
+    board[2, 2] := 'X';
+
+    for row := 1 to 3 do begin
+        for col := 1 to 3 do
+            write(board[row, col]);
+        writeln;
+    end;
+end.
+```
+
+- `array[lower1..upper1, lower2..upper2] of T` — each dimension has its
+  own independent bounds (and its own bounds check at runtime).
+- Indexed with `arr[i, j]`, matching the declaration syntax — not the
+  chained `arr[i][j]` form some other languages use.
+- **Exactly two dimensions** — there's no three-or-more-dimensional
+  array. This isn't an oversight: a 2D array *write* needs three
+  sub-expressions (two indices plus a value), which is the most this
+  compiler's AST nodes can hold without growing every node in the
+  compiler just for this one case. Nest a 1D array of a 2D array's rows,
+  or just use a 1D array with manual index arithmetic, if you need more
+  dimensions.
+- **Global variables only** — no 2D array parameters and no 2D local
+  arrays yet (1D arrays support both; 2D doesn't yet, matching how 1D
+  arrays themselves were global-only before parameters/locals became
+  their own feature).
+- Stored row-major, in the same shared array-memory pool 1D arrays use.
 
 ## Procedures
 
@@ -730,7 +795,9 @@ a crash.
 
 ## What's not implemented
 
-- Multi-dimensional arrays
+- Three-or-more-dimensional arrays, and array parameters/locals for 2D
+  arrays specifically (1D supports both already) — see
+  [Two-dimensional arrays](#two-dimensional-arrays) above
 - `real`/floating-point numbers
 - Records, sets, enumerated types
 - Units/modules/`uses`

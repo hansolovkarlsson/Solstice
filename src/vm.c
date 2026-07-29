@@ -99,6 +99,30 @@ static int vm_array_offset(int var_idx, int runtime_index) {
     return sym->array_base + (runtime_index - sym->array_lower);
 }
 
+// Same as vm_array_offset(), but for a 2D array: bounds-checks each index
+// against its own dimension, then computes the row-major offset into the
+// same flat vm_array_mem[] region every array (1D or 2D) shares.
+static int vm_array_offset_2d(int var_idx, int i, int j) {
+    vm_var_index(var_idx);
+    Symbol *sym = &sym_table[var_idx];
+    if (!sym->is_array || !sym->is_2d) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not a 2D array\n", sym->name);
+        fatal_abort();
+    }
+    if (i < sym->array_lower || i > sym->array_upper) {
+        fprintf(stderr, "VM Runtime Error: First array index %d out of range (%d..%d) for '%s'\n",
+                i, sym->array_lower, sym->array_upper, sym->name);
+        fatal_abort();
+    }
+    if (j < sym->array_lower2 || j > sym->array_upper2) {
+        fprintf(stderr, "VM Runtime Error: Second array index %d out of range (%d..%d) for '%s'\n",
+                j, sym->array_lower2, sym->array_upper2, sym->name);
+        fatal_abort();
+    }
+    int dim2_size = sym->array_upper2 - sym->array_lower2 + 1;
+    return sym->array_base + (i - sym->array_lower) * dim2_size + (j - sym->array_lower2);
+}
+
 // Resolves a frame-relative local slot (k) to an absolute vm_frame_stack[]
 // index, validating both that a frame is currently active (fp >= 0 - an
 // OP_ENTER must have run) and that k falls within that frame's actual
@@ -203,6 +227,26 @@ void run_vm(void) {
                 int val = vm_pop(&sp);
                 int runtime_index = vm_pop(&sp);
                 int offset = vm_array_offset(instr.arg, runtime_index);
+                if (sym_table[instr.arg].type == TYPE_CHAR) {
+                    vm_check_char(val, sym_table[instr.arg].name);
+                }
+                vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_LOAD_IDX2D: {
+                int j = vm_pop(&sp); // pushed second by codegen - on top
+                int i = vm_pop(&sp); // pushed first
+                int offset = vm_array_offset_2d(instr.arg, i, j);
+                vm_push(&sp, vm_array_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_IDX2D: {
+                int val = vm_pop(&sp);
+                int j = vm_pop(&sp);
+                int i = vm_pop(&sp);
+                int offset = vm_array_offset_2d(instr.arg, i, j);
                 if (sym_table[instr.arg].type == TYPE_CHAR) {
                     vm_check_char(val, sym_table[instr.arg].name);
                 }

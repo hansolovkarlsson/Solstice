@@ -279,6 +279,32 @@ void print_ast(ASTNode *node, int indent) {
             printf("Index:\n");
             print_ast(node->left, indent + 2);
             break;
+
+        case NODE_ARRAY_ACCESS_2D:
+            printf("[2D Array Access] -> Array: %s\n", sym_table[node->data.var_idx].name);
+            print_indent(indent + 1);
+            printf("Index 1:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Index 2:\n");
+            print_ast(node->right, indent + 2);
+            break;
+
+        case NODE_ARRAY_ASSIGN_2D:
+            printf("[2D Array Assignment] -> Array: %s\n", sym_table[node->data.var_idx].name);
+            print_indent(indent + 1);
+            printf("Index 1:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Index 2:\n");
+            print_ast(node->right, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->extra, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
     }
 }
 

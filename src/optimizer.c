@@ -129,7 +129,7 @@ static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
     if (node->type == NODE_VARIABLE || node->type == NODE_ARRAY_ACCESS || node->type == NODE_ARRAY_REF
-        || node->type == NODE_STRING_INDEX) {
+        || node->type == NODE_STRING_INDEX || node->type == NODE_ARRAY_ACCESS_2D) {
         var_used_tracker[node->data.var_idx] = 1;
     }
 
@@ -181,6 +181,38 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         if (node->right) {
             node->right = sweep_dead_assignments(node->right);
         }
+        return node;
+    }
+
+    if (node->type == NODE_ARRAY_ASSIGN_2D) {
+        int var_idx = node->data.var_idx;
+        node->next = sweep_dead_assignments(node->next);
+
+        if (!var_used_tracker[var_idx]) {
+            if (verbose_mode) {
+                printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
+                       sym_table[var_idx].name);
+            }
+
+            ASTNode *next_cached = node->next;
+            node->left = optimize_ast(node->left);
+            free_ast(node->left);
+            node->left = NULL;
+            node->right = optimize_ast(node->right);
+            free_ast(node->right);
+            node->right = NULL;
+            node->extra = optimize_ast(node->extra);
+            free_ast(node->extra);
+            node->extra = NULL;
+            node->next = NULL;
+            free(node);
+
+            return next_cached;
+        }
+
+        node->left = sweep_dead_assignments(node->left);
+        node->right = sweep_dead_assignments(node->right);
+        node->extra = sweep_dead_assignments(node->extra);
         return node;
     }
 

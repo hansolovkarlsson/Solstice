@@ -76,6 +76,8 @@ static const char *opcode_name(Opcode op) {
         case OP_NEWLINE:   return "newline";
         case OP_LOAD_IDX:  return "load_idx";
         case OP_STORE_IDX: return "store_idx";
+        case OP_LOAD_IDX2D:  return "load_idx2d";
+        case OP_STORE_IDX2D: return "store_idx2d";
         case OP_LOAD_IDX_DYN:  return "load_idx_dyn";
         case OP_STORE_IDX_DYN: return "store_idx_dyn";
         default:       return NULL;
@@ -100,7 +102,8 @@ static int is_jump(Opcode op) {
 
 // True for opcodes whose arg is a variable index into sym_table[].
 static int is_var_ref(Opcode op) {
-    return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_LOAD_IDX || op == OP_STORE_IDX;
+    return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_LOAD_IDX || op == OP_STORE_IDX
+        || op == OP_LOAD_IDX2D || op == OP_STORE_IDX2D;
 }
 
 // True for opcodes whose arg is a plain immediate value with no lookup -
@@ -128,7 +131,11 @@ static void mark_jump_targets(void) {
 static void disassemble(FILE *out) {
     if (sym_count > 0) {
         for (int i = 0; i < sym_count; i++) {
-            if (sym_table[i].is_array) {
+            if (sym_table[i].is_array && sym_table[i].is_2d) {
+                fprintf(out, ".array2d %s %d %d %d %d %s\n", sym_table[i].name,
+                        sym_table[i].array_lower, sym_table[i].array_upper,
+                        sym_table[i].array_lower2, sym_table[i].array_upper2, type_name(sym_table[i].type));
+            } else if (sym_table[i].is_array) {
                 fprintf(out, ".array %s %d %d %s\n", sym_table[i].name,
                         sym_table[i].array_lower, sym_table[i].array_upper, type_name(sym_table[i].type));
             } else {

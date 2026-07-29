@@ -140,6 +140,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "ord") == 0) token.type = TOKEN_ORD;
         else if (strcasecmp(token.text, "chr") == 0) token.type = TOKEN_CHR;
         else if (strcasecmp(token.text, "length") == 0) token.type = TOKEN_LENGTH;
+        else if (strcasecmp(token.text, "low") == 0) token.type = TOKEN_LOW;
+        else if (strcasecmp(token.text, "high") == 0) token.type = TOKEN_HIGH;
         else if (strcasecmp(token.text, "copy") == 0) token.type = TOKEN_COPY;
         else if (strcasecmp(token.text, "pos") == 0) token.type = TOKEN_POS;
         else if (strcasecmp(token.text, "upcase") == 0) token.type = TOKEN_UPCASE;

@@ -67,12 +67,24 @@ ASTNode *create_node(NodeType type) {
     return node;
 }
 
-static int find_var(const char *name) {
+// Soft lookup - returns -1 if `name` isn't a declared global variable,
+// rather than erroring. Used where the caller needs to check "is this a
+// global X" before deciding how to proceed (see try_get_array_bounds
+// below), as opposed to find_var()'s "this MUST be declared, error
+// immediately if not" contract.
+static int find_var_soft(const char *name) {
     for (int i = 0; i < sym_count; i++) {
         if (strcmp(sym_table[i].name, name) == 0) return i;
     }
-    compile_error(token.line, "Unknown identifier '%s'", name);
     return -1;
+}
+
+static int find_var(const char *name) {
+    int idx = find_var_soft(name);
+    if (idx == -1) {
+        compile_error(token.line, "Unknown identifier '%s'", name);
+    }
+    return idx;
 }
 
 static void add_var(const char *name, DataType type) {
@@ -114,6 +126,40 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     sym_table[sym_count].array_lower = lower;
     sym_table[sym_count].array_upper = upper;
     sym_table[sym_count].array_base = array_mem_count;
+    sym_table[sym_count].is_2d = 0; // defensive reset (see comment above the Symbol struct)
+    array_mem_count += size;
+    sym_count++;
+}
+
+// Same as add_array_var(), but for a 2D array ('name: array[lo1..hi1,
+// lo2..hi2] of type'). Bounds must already be validated (lower <= upper,
+// each dimension) by the caller. Reserves dim1_size * dim2_size elements
+// - the whole flattened, row-major region - from the same shared
+// array-memory pool every array (1D or 2D) draws from.
+static void add_array_var_2d(const char *name, DataType elem_type, int lower, int upper, int lower2, int upper2) {
+    for (int i = 0; i < sym_count; i++) {
+        if (strcmp(sym_table[i].name, name) == 0) {
+            compile_error(token.line, "Duplicate variable declaration '%s'", name);
+        }
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    int dim1_size = upper - lower + 1;
+    int dim2_size = upper2 - lower2 + 1;
+    int size = dim1_size * dim2_size;
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = elem_type;
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = lower;
+    sym_table[sym_count].array_upper = upper;
+    sym_table[sym_count].array_base = array_mem_count;
+    sym_table[sym_count].is_2d = 1;
+    sym_table[sym_count].array_lower2 = lower2;
+    sym_table[sym_count].array_upper2 = upper2;
     array_mem_count += size;
     sym_count++;
 }
@@ -166,6 +212,50 @@ static int find_local(const char *name) {
         if (strcmp(current_locals[i].name, name) == 0) return i;
     }
     return -1;
+}
+
+// Checks whether `name` refers to a 1D array - global, local (which
+// reuses the mangled-global mechanism, so its bounds live in sym_table[]
+// too), or a by-reference array parameter (whose OWN declared bounds are
+// used - guaranteed to match whatever array is actually passed, since
+// this compiler requires an array argument to exactly match the
+// parameter's declared bounds at every call site). If so, writes its
+// bounds to *lower/*upper and returns 1; otherwise returns 0 without
+// touching them. Doesn't consume any tokens - this is a pure name
+// lookup, used to peek whether low()/high()/length()'s argument is a
+// bare array name before deciding how to parse the rest of the call.
+// 2D arrays are explicitly rejected with a compile error rather than
+// silently returning one dimension's bounds - there's no defined answer
+// yet for "which dimension" here.
+static int try_get_array_bounds(const char *name, int *lower, int *upper) {
+    int local_idx = find_local(name);
+    if (local_idx != -1) {
+        if (current_locals[local_idx].is_array) {
+            int sym_idx = current_locals[local_idx].array_sym_idx;
+            if (sym_table[sym_idx].is_2d) {
+                compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", name);
+            }
+            *lower = sym_table[sym_idx].array_lower;
+            *upper = sym_table[sym_idx].array_upper;
+            return 1;
+        }
+        if (current_locals[local_idx].is_array_ref) {
+            *lower = current_locals[local_idx].array_lower;
+            *upper = current_locals[local_idx].array_upper;
+            return 1;
+        }
+        return 0; // a local, but not an array
+    }
+    int global_idx = find_var_soft(name);
+    if (global_idx != -1 && sym_table[global_idx].is_array) {
+        if (sym_table[global_idx].is_2d) {
+            compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", name);
+        }
+        *lower = sym_table[global_idx].array_lower;
+        *upper = sym_table[global_idx].array_upper;
+        return 1;
+    }
+    return 0;
 }
 
 static int add_local(const char *name, DataType type) {
@@ -488,9 +578,50 @@ static ASTNode *factor(void) {
         node->left = x;
         node->right = one;
         return node;
-    } else if (token.type == TOKEN_LENGTH || token.type == TOKEN_UPCASE ||
-               token.type == TOKEN_UPPERCASE || token.type == TOKEN_LOWERCASE) {
-        // Unary string builtins: length(x), upcase(x), uppercase(x), lowercase(x)
+    } else if (token.type == TOKEN_LENGTH) {
+        // length(arr) - a plain array name resolves to a compile-time
+        // constant (arr's declared bounds are always known at compile
+        // time), same as low()/high() below. length(s) for a string/char
+        // expression still needs the existing runtime OP_LENGTH, since a
+        // string's actual length varies at runtime.
+        match(TOKEN_LENGTH);
+        match(TOKEN_LPAREN);
+        int lower, upper;
+        if (token.type == TOKEN_IDENTIFIER && try_get_array_bounds(token.text, &lower, &upper)) {
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_RPAREN);
+            ASTNode *node = create_node(NODE_NUMBER);
+            node->data.num_value = upper - lower + 1;
+            node->expression_type = TYPE_INTEGER;
+            return node;
+        }
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_LENGTH;
+        node->left = expression();
+        match(TOKEN_RPAREN);
+        return node;
+    } else if (token.type == TOKEN_LOW || token.type == TOKEN_HIGH) {
+        // low(arr)/high(arr) - arr's declared bounds, as a compile-time
+        // constant. Only supports arrays (not e.g. an ordinal type name)
+        // in this increment.
+        TokenType kind = token.type;
+        match(kind);
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "'%s' requires a plain array name", kind == TOKEN_LOW ? "low" : "high");
+        }
+        int lower, upper;
+        if (!try_get_array_bounds(token.text, &lower, &upper)) {
+            compile_error(token.line, "'%s' requires an array argument", kind == TOKEN_LOW ? "low" : "high");
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_RPAREN);
+        ASTNode *node = create_node(NODE_NUMBER);
+        node->data.num_value = (kind == TOKEN_LOW) ? lower : upper;
+        node->expression_type = TYPE_INTEGER;
+        return node;
+    } else if (token.type == TOKEN_UPCASE || token.type == TOKEN_UPPERCASE || token.type == TOKEN_LOWERCASE) {
+        // Unary string builtins: upcase(x), uppercase(x), lowercase(x)
         TokenType op = token.type;
         match(op);
         match(TOKEN_LPAREN);
@@ -659,6 +790,17 @@ static ASTNode *factor(void) {
                 compile_error(token.line, "Array '%s' must be indexed", sym_table[idx].name);
             }
             match(TOKEN_LBRACKET);
+            if (sym_table[idx].is_2d) {
+                ASTNode *node = create_node(NODE_ARRAY_ACCESS_2D);
+                node->line = line;
+                node->data.var_idx = idx;
+                node->left = expression(); // first index
+                match(TOKEN_COMMA);
+                node->right = expression(); // second index
+                node->expression_type = sym_table[idx].type;
+                match(TOKEN_RBRACKET);
+                return node;
+            }
             ASTNode *node = create_node(NODE_ARRAY_ACCESS);
             node->line = line;
             node->data.var_idx = idx;
@@ -778,6 +920,18 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 int lower = parse_int_literal();
                 match(TOKEN_DOTDOT);
                 int upper = parse_int_literal();
+                int is_2d = 0;
+                int lower2 = 0, upper2 = 0;
+                if (token.type == TOKEN_COMMA) {
+                    match(TOKEN_COMMA);
+                    lower2 = parse_int_literal();
+                    match(TOKEN_DOTDOT);
+                    upper2 = parse_int_literal();
+                    if (upper2 < lower2) {
+                        compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper2, lower2);
+                    }
+                    is_2d = 1;
+                }
                 match(TOKEN_RBRACKET);
                 if (upper < lower) {
                     compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
@@ -792,7 +946,11 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 else compile_error(token.line, "Unknown array element type");
 
                 for (int i = 0; i < count; i++) {
-                    add_array_var(temporary_names[i], elem_type, lower, upper);
+                    if (is_2d) {
+                        add_array_var_2d(temporary_names[i], elem_type, lower, upper, lower2, upper2);
+                    } else {
+                        add_array_var(temporary_names[i], elem_type, lower, upper);
+                    }
                 }
             } else {
                 DataType target_type = TYPE_UNKNOWN;
@@ -1164,23 +1322,36 @@ static ASTNode *statement(void) {
             return stmt;
         }
 
-        ASTNode *stmt = create_node(NODE_ASSIGN);
         int idx = find_var(token.text);
-        stmt->data.var_idx = idx;
         match(TOKEN_IDENTIFIER);
         if (sym_table[idx].is_array) {
             if (token.type != TOKEN_LBRACKET) {
                 compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
             }
             match(TOKEN_LBRACKET);
+            if (sym_table[idx].is_2d) {
+                ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_2D);
+                stmt->data.var_idx = idx;
+                stmt->left = expression();  // first index
+                match(TOKEN_COMMA);
+                stmt->right = expression(); // second index
+                match(TOKEN_RBRACKET);
+                match(TOKEN_ASSIGN);
+                stmt->extra = expression(); // value
+                return stmt;
+            }
+            ASTNode *stmt = create_node(NODE_ASSIGN);
+            stmt->data.var_idx = idx;
             stmt->left = expression();  // index
             match(TOKEN_RBRACKET);
             match(TOKEN_ASSIGN);
             stmt->right = expression(); // value
-        } else {
-            match(TOKEN_ASSIGN);
-            stmt->left = expression();  // value
+            return stmt;
         }
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = idx;
+        match(TOKEN_ASSIGN);
+        stmt->left = expression();  // value
         return stmt;
     }
 

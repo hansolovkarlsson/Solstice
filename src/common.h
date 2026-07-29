@@ -43,6 +43,7 @@ typedef enum {
     TOKEN_ORD, TOKEN_CHR,
     TOKEN_CHARCODE, // '#NNN' - a numeric char-code literal, e.g. #13
     TOKEN_LENGTH, TOKEN_COPY, TOKEN_POS,
+    TOKEN_LOW, TOKEN_HIGH,
     TOKEN_UPCASE, TOKEN_UPPERCASE, TOKEN_LOWERCASE,
     TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
     TOKEN_EOF
@@ -71,9 +72,15 @@ typedef struct {
     char name[MAX_NAME];
     DataType type;   // element type when is_array is set, else the scalar's type
     int is_array;
-    int array_lower; // inclusive
+    int array_lower; // inclusive. For a 2D array, the FIRST dimension's bounds.
     int array_upper; // inclusive
-    int array_base;  // base offset into the shared array memory region
+    int array_base;  // base offset into the shared array memory region -
+                      // for a 2D array, the base of the whole flattened,
+                      // row-major region (size = dim1_size * dim2_size)
+    int is_2d;        // 0 for an ordinary 1D array (the existing, default
+                      // case - the fields below are unused); 1 for 2D
+    int array_lower2; // only meaningful if is_2d: the SECOND dimension's bounds
+    int array_upper2;
 } Symbol;
 
 typedef enum {
@@ -210,7 +217,16 @@ typedef enum {
     OP_LEFT,      // Pop count, then a string_pool[] index. Push a new
                   // interned string of the first `count` characters,
                   // clamped to the string's actual length (never errors).
-    OP_RIGHT      // Same as OP_LEFT, but the *last* `count` characters.
+    OP_RIGHT,     // Same as OP_LEFT, but the *last* `count` characters.
+    OP_LOAD_IDX2D,  // arg = array's symbol index. Pop the second runtime
+                    // index, then the first (pushed first-then-second, so
+                    // second ends up on top); bounds-check each against
+                    // its own dimension; push the element at the row-
+                    // major offset (i - lower1) * dim2_size + (j - lower2).
+    OP_STORE_IDX2D  // arg = array's symbol index. Pop a value, then the
+                    // second index, then the first (value pushed last by
+                    // codegen, so it's on top); bounds-check; store at
+                    // the same row-major offset OP_LOAD_IDX2D computes.
 } Opcode;
 
 typedef struct {
@@ -296,9 +312,16 @@ typedef enum {
                        // left = index expression, expression_type =
                        // TYPE_CHAR. Read-only (not a valid assignment
                        // target) - see docs for why.
-    NODE_LOCAL_STRING_INDEX  // Same as above, but s is a parameter/local
+    NODE_LOCAL_STRING_INDEX, // Same as above, but s is a parameter/local
                        // string/char variable. data.var_idx = s's frame
                        // slot.
+    NODE_ARRAY_ACCESS_2D, // 'arr[i, j]' as an expression, for a GLOBAL 2D
+                       // array. data.var_idx = the array's symbol index.
+                       // left = first index, right = second index.
+    NODE_ARRAY_ASSIGN_2D  // 'arr[i, j] := val' for a GLOBAL 2D array.
+                       // data.var_idx = the array's symbol index.
+                       // left = first index, right = second index,
+                       // extra = value expression.
 } NodeType;
 
 typedef struct ASTNode {

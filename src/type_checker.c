@@ -311,6 +311,30 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_ARRAY_ACCESS_2D:
+            if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array indices must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_ARRAY_ASSIGN_2D: {
+            if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array indices must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            Symbol *sym = &sym_table[node->data.var_idx];
+            if (!(is_string_type(node->extra->expression_type) && is_string_type(sym->type))
+                && node->extra->expression_type != sym->type) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
+                        get_current_filename(), node->line, sym->name);
+                fatal_abort();
+            }
+            break;
+        }
+
         case NODE_CALL: {
             // Argument count is already guaranteed correct by the parser
             // (it errors immediately at the call site if it doesn't match
