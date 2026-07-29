@@ -122,7 +122,9 @@ scalars under recursion and mutual recursion via `forward` declarations
 [docs/LANGUAGE.md](docs/LANGUAGE.md#functions), and
 [docs/LANGUAGE.md](docs/LANGUAGE.md#array-parameters-and-local-arrays)).
 Also working: bitwise `and`/`or`/`xor`/`not` and `shl`/`shr` on integers,
-and the built-ins `abs`/`sqr`/`odd`/`succ`/`pred`/`inc`/`dec` (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#built-in-functions-and-procedures)).
+the built-ins `abs`/`sqr`/`odd`/`succ`/`pred`/`inc`/`dec`/`ord`/`chr`,
+and `#NNN` char-code literals (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#built-in-functions-and-procedures)
+and [docs/LANGUAGE.md](docs/LANGUAGE.md#char)).
 
 Not yet implemented: multi-dimensional arrays.

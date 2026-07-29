@@ -440,7 +440,8 @@ static ASTNode *factor(void) {
         node->op = op;
         node->left = factor();
         return node;
-    } else if (token.type == TOKEN_ABS || token.type == TOKEN_SQR) {
+    } else if (token.type == TOKEN_ABS || token.type == TOKEN_SQR ||
+               token.type == TOKEN_ORD || token.type == TOKEN_CHR) {
         TokenType op = token.type;
         match(op);
         match(TOKEN_LPAREN);
@@ -509,6 +510,23 @@ static ASTNode *factor(void) {
         node->data.var_idx = intern_string(token.string_value); // pool index
         node->expression_type = TYPE_STRING;
         match(TOKEN_STRING);
+        return node;
+    } else if (token.type == TOKEN_CHARCODE) {
+        // #NNN - a dedicated char literal, distinct from a quoted string
+        // literal: it's TYPE_CHAR from the moment it's parsed (an
+        // ordinary 'x' string literal is TYPE_STRING, only usable as a
+        // char via the general char/string interop rules). 0 can't be
+        // represented - string_pool[] entries are null-terminated C
+        // strings, and a "one-character string" containing a NUL byte
+        // would actually be an empty string.
+        if (token.value < 1 || token.value > 255) {
+            compile_error(token.line, "Character code %d out of range (1..255)", token.value);
+        }
+        char buf[2] = { (char)token.value, '\0' };
+        ASTNode *node = create_node(NODE_STRING);
+        node->data.var_idx = intern_string(buf);
+        node->expression_type = TYPE_CHAR;
+        match(TOKEN_CHARCODE);
         return node;
     } else if (token.type == TOKEN_IDENTIFIER) {
         int line = token.line;

@@ -70,6 +70,20 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 node->expression_type = TYPE_INTEGER;
+            } else if (node->op == TOKEN_ORD) {
+                if (!is_string_type(node->left->expression_type)) {
+                    fprintf(stderr, "%s:%d: Type Error: 'ord' requires a char or string argument\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                node->expression_type = TYPE_INTEGER;
+            } else if (node->op == TOKEN_CHR) {
+                if (node->left->expression_type != TYPE_INTEGER) {
+                    fprintf(stderr, "%s:%d: Type Error: 'chr' requires an integer argument\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                node->expression_type = TYPE_CHAR;
             }
             break;
 

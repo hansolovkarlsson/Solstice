@@ -40,6 +40,8 @@ typedef enum {
     TOKEN_SHL, TOKEN_SHR,
     TOKEN_INC, TOKEN_DEC,
     TOKEN_ABS, TOKEN_SQR, TOKEN_ODD, TOKEN_SUCC, TOKEN_PRED,
+    TOKEN_ORD, TOKEN_CHR,
+    TOKEN_CHARCODE, // '#NNN' - a numeric char-code literal, e.g. #13
     TOKEN_EOF
 } TokenType;
 
@@ -94,6 +96,14 @@ typedef enum {
                   // first real use is 'sqr(x)' (evaluate x once, DUP,
                   // multiply) rather than evaluating x's bytecode twice.
     OP_ABS,       // Pop a value; push its absolute value.
+    OP_ORD,       // Pop a string_pool[] index; validate it refers to
+                  // exactly one character (same check as storing into a
+                  // char slot); push that character's byte value (0..255).
+    OP_CHR,       // Pop an integer (1..255 - 0 can't be represented, since
+                  // string_pool[] entries are null-terminated C strings);
+                  // intern the single-character string for that byte
+                  // value (reusing an existing pool entry if there is
+                  // one) and push its index.
     OP_PRINT,     // Pop a value; print it with NO trailing newline.
     OP_PRINT_BOOL, // Pop a value; print "TRUE" (nonzero) or "FALSE" (zero)
                   // with NO trailing newline - standard Pascal prints

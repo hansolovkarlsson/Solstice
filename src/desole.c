@@ -45,6 +45,8 @@ static const char *opcode_name(Opcode op) {
         case OP_SHR:   return "shr";
         case OP_DUP:   return "dup";
         case OP_ABS:   return "abs";
+        case OP_ORD:   return "ord";
+        case OP_CHR:   return "chr";
         case OP_PRINT: return "print";
         case OP_PRINT_BOOL: return "print_bool";
         case OP_READ:  return "read";

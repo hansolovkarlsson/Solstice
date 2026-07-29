@@ -1,5 +1,9 @@
 # To Do
 
+
+Array built-in functions as per standard Pascal
+
+
 Would like some built-in functions to:
 dump current stack
 dump current list of symbols

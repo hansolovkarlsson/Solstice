@@ -120,6 +120,8 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"SHR",       OP_SHR,       OPERAND_NONE},
     {"DUP",       OP_DUP,       OPERAND_NONE},
     {"ABS",       OP_ABS,       OPERAND_NONE},
+    {"ORD",       OP_ORD,       OPERAND_NONE},
+    {"CHR",       OP_CHR,       OPERAND_NONE},
     {"PRINT",     OP_PRINT,     OPERAND_NONE},
     {"PRINT_BOOL", OP_PRINT_BOOL, OPERAND_NONE},
     {"HALT",      OP_HALT,      OPERAND_NONE},

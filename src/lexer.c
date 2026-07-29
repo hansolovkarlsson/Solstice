@@ -137,7 +137,28 @@ void next_token(void) {
         else if (strcasecmp(token.text, "odd") == 0) token.type = TOKEN_ODD;
         else if (strcasecmp(token.text, "succ") == 0) token.type = TOKEN_SUCC;
         else if (strcasecmp(token.text, "pred") == 0) token.type = TOKEN_PRED;
+        else if (strcasecmp(token.text, "ord") == 0) token.type = TOKEN_ORD;
+        else if (strcasecmp(token.text, "chr") == 0) token.type = TOKEN_CHR;
         else token.type = TOKEN_IDENTIFIER;
+        return;
+    }
+
+    if (*src == '#') {
+        src++;
+        if (!isdigit(*src)) {
+            lexer_error("Expected a digit after '#' (a char-code literal, e.g. #13)");
+        }
+        int val = 0;
+        char *p = token.text;
+        *p++ = '#';
+        while (isdigit(*src)) {
+            val = val * 10 + (*src - '0');
+            if (p < token.text + MAX_NAME - 1) *p++ = *src;
+            src++;
+        }
+        *p = '\0';
+        token.type = TOKEN_CHARCODE;
+        token.value = val;
         return;
     }
 

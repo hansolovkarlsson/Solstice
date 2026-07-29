@@ -81,6 +81,8 @@ var
   inside a string is written as two consecutive quotes: `'it''s a test'`
   produces `it's a test`. String literals cannot span multiple lines.
   Maximum length is 255 characters.
+- **Char codes**: `#` followed by a decimal number `1..255`, e.g. `#65`
+  (the same character as `'A'`) — see [Char](#char).
 
 ## Operators
 
@@ -153,8 +155,11 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `pred(x)` | function | `x - 1`, for an integer |
 | `inc(x)`, `inc(x, n)` | statement | Adds `1` (or `n`) to `x` in place |
 | `dec(x)`, `dec(x, n)` | statement | Subtracts `1` (or `n`) from `x` in place |
+| `ord(c)` | function | A `char`'s byte value, as an integer — see [Char](#char) |
+| `chr(n)` | function | The `char` with byte value `n` — see [Char](#char) |
 
-- All seven currently work on `integer` only.
+- `abs`/`sqr`/`odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
+  `ord`/`chr` are the `char`/`integer` conversion pair.
 - `inc`/`dec`'s target `x` must be a plain integer variable — global or
   local, but not an array element. Real Pascal's `inc`/`dec` mutate their
   argument by reference (`var` parameter); this compiler doesn't support
@@ -325,12 +330,16 @@ var
 begin
     grade := 'A';
     writeln(grade);
+    writeln('ordinal value: ', ord(grade));   { 65 }
+    grade := chr(ord(grade) + 1);
+    writeln('next letter: ', grade);           { B }
+    writeln('newline via char code: ', 1, #10, 2);
 ```
 
 `char` is implemented as a `string` that's constrained to hold exactly
-one character — there's no separate literal syntax; a `char` value comes
-from any single-quoted literal (or string expression) that happens to be
-exactly one character long. This means:
+one character; a `char` value comes from any single-quoted literal (or
+string expression) that happens to be exactly one character long, or
+from a dedicated `#NNN` char-code literal (see below). This means:
 
 - `char` and `string` freely mix in assignment, comparison (`=`, `<>`,
   `<`, `>`, `<=`, `>=`, all lexicographic), and `+` concatenation (which
@@ -354,9 +363,42 @@ exactly one character long. This means:
   expressions at compile time.
 - `readln` into a `char` variable works the same way: reads a line, then
   requires it to be exactly one character.
-- There's no `ord`/`chr` (converting between a character and its integer
-  code) — those are conventionally built-in *functions*, and this
-  language doesn't have user-callable functions yet.
+
+### `ord` and `chr`
+
+- `ord(c)` — the character's byte value, as an `integer` (`0..255`).
+  Accepts anything `char`/`string`-typed, but requires the actual value
+  to be exactly one character, checked at runtime the same way
+  assignment into a `char` is.
+- `chr(n)` — the character with byte value `n`, as a `char`. `n` must be
+  `1..255` — **`chr(0)` is a runtime error**, not `chr(0) = ''` or a NUL
+  character: this compiler's strings are ordinary null-terminated C
+  strings under the hood, so a "one-character string containing byte 0"
+  isn't representable at all.
+- `ord`/`chr` are exact inverses over `1..255`: `chr(ord(c)) = c`, and
+  `ord(chr(n)) = n`.
+
+### `#NNN` char-code literals
+
+```pascal
+writeln('Hello' + #10 + 'World');   { Hello, then a newline, then World }
+c := #65;                            { same as c := 'A'; }
+```
+
+- `#` followed by a decimal number (`1..255`, same restriction as `chr`
+  and for the same reason) is a char literal denoting the character
+  with that byte value — standard Turbo Pascal/Delphi/Free Pascal syntax
+  (plain ISO Pascal doesn't have it). `#0` and anything above `#255` are
+  compile-time errors, since the value is always known at compile time.
+- Unlike a quoted literal like `'A'` — which is `string`-typed, and only
+  usable as a `char` through the general `char`/`string` interop rules
+  above — `#65` is `char`-typed from the moment it's parsed. In practice
+  this rarely matters (the two interoperate freely everywhere), but it's
+  what makes `#NNN` a genuinely distinct literal form rather than just
+  another way to write a string.
+- Real Pascal allows adjacent literals to run together with no `+`
+  needed (`'Hello'#13#10'World'` as a single literal). This compiler
+  doesn't — join them explicitly with `+`, as in the example above.
 
 ## Arrays
 
@@ -613,8 +655,6 @@ a crash.
 
 - Multi-dimensional arrays
 - `real`/floating-point numbers
-- `ord`/`chr` (now that user-defined functions exist, these could
-  plausibly be added as builtins - just not done yet)
 - Records, sets, enumerated types
 - Units/modules/`uses`
 

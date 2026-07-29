@@ -300,6 +300,25 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_ORD: {
+                int val = vm_pop(&sp);
+                vm_check_char(val, "'ord' argument");
+                int idx = vm_str_index(val);
+                vm_push(&sp, (unsigned char)string_pool[idx][0]);
+                break;
+            }
+
+            case OP_CHR: {
+                int n = vm_pop(&sp);
+                if (n < 1 || n > 255) {
+                    fprintf(stderr, "VM Runtime Error: 'chr' argument %d out of range (1..255)\n", n);
+                    fatal_abort();
+                }
+                char buf[2] = { (char)n, '\0' };
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
             case OP_MOD: {
                 int b = vm_pop(&sp);
                 int a = vm_pop(&sp);

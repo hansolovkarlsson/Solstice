@@ -205,6 +205,10 @@ void generate_code(ASTNode *node) {
             } else if (node->op == TOKEN_SQR) {
                 emit(OP_DUP, 0);
                 emit(OP_MUL, 0);
+            } else if (node->op == TOKEN_ORD) {
+                emit(OP_ORD, 0);
+            } else if (node->op == TOKEN_CHR) {
+                emit(OP_CHR, 0);
             }
             break;
 

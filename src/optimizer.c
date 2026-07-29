@@ -14,7 +14,9 @@ ASTNode *optimize_ast(ASTNode *node) {
     node->extra = optimize_ast(node->extra);
 
     if (node->type == NODE_UNARY_OP 
-        && (node->left->type == NODE_NUMBER || node->left->type == NODE_BOOLEAN)) {
+        && (node->left->type == NODE_NUMBER || node->left->type == NODE_BOOLEAN)
+        && (node->op == TOKEN_MINUS || node->op == TOKEN_NOT ||
+            node->op == TOKEN_ABS || node->op == TOKEN_SQR)) {
         int val = node->left->data.num_value;
         if (node->op == TOKEN_MINUS) {
             node->type = NODE_NUMBER;

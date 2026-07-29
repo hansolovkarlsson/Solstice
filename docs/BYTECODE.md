@@ -105,6 +105,8 @@ corruption.
 | `SHL` / `SHR` | Pop `b` (shift amount), pop `a`, push `a << b` / a *logical* (not sign-extending) `a >> b`. Runtime error if `b` is outside `0..31`, rather than the undefined behavior C's `<<`/`>>` give for an out-of-range shift. |
 | `DUP` | Duplicate the top of the stack (push a second copy). A generic primitive - first used by `sqr(x)` (evaluate `x` once, `DUP`, `MUL`), rather than evaluating `x`'s bytecode twice. |
 | `ABS` | Pop `a`, push its absolute value. |
+| `ORD` | Pop a `string_pool[]` index; validate it refers to exactly one character (same check as storing into a `char` slot); push that character's byte value (`0..255`). |
+| `CHR` | Pop an integer (`1..255` - `0` can't be represented, since `string_pool[]` entries are null-terminated C strings); intern the single-character string for that byte value (reusing an existing pool entry if there is one); push its index. |
 
 ### Strings
 
