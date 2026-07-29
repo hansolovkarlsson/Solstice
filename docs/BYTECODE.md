@@ -107,6 +107,13 @@ corruption.
 | `ABS` | Pop `a`, push its absolute value. |
 | `ORD` | Pop a `string_pool[]` index; validate it refers to exactly one character (same check as storing into a `char` slot); push that character's byte value (`0..255`). |
 | `CHR` | Pop an integer (`1..255` - `0` can't be represented, since `string_pool[]` entries are null-terminated C strings); intern the single-character string for that byte value (reusing an existing pool entry if there is one); push its index. |
+| `LENGTH` | Pop a `string_pool[]` index; push `strlen()` of it. |
+| `STR_CHAR_AT` | Pop a runtime (1-based) index, then a `string_pool[]` index. Bounds-checked (a runtime error if out of range) - unlike `COPY` below, string *indexing* is strict, matching real Pascal. Intern the single character at that position; push its index. |
+| `COPY` | Pop `count`, then `start`, then a `string_pool[]` index. Extracts the substring - *clamped*, not bounds-checked: an out-of-range `start` or a `count` running past the end just yields as much of the string as exists (possibly empty), matching real Pascal's `copy()` rather than this VM's usual strict-bounds convention. Intern the result; push its index. |
+| `POS` | Pop a haystack `string_pool[]` index, then a needle `string_pool[]` index (pushed needle-then-haystack). Push the needle's 1-based position in the haystack, or `0` if not found (an empty needle is defined as "not found"). |
+| `UPCASE_CHAR` | Pop a `string_pool[]` index (must be exactly one character); push the uppercased version if it's a lowercase letter, else push the same index back unchanged. |
+| `UPPERCASE_STR` / `LOWERCASE_STR` | Pop a `string_pool[]` index; push a new interned string with every letter case-converted. |
+| `LEFT` / `RIGHT` | Pop `count`, then a `string_pool[]` index; push a new interned string of the first/last `count` characters, clamped to the string's actual length (never errors). |
 
 ### Strings
 

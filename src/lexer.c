@@ -139,6 +139,16 @@ void next_token(void) {
         else if (strcasecmp(token.text, "pred") == 0) token.type = TOKEN_PRED;
         else if (strcasecmp(token.text, "ord") == 0) token.type = TOKEN_ORD;
         else if (strcasecmp(token.text, "chr") == 0) token.type = TOKEN_CHR;
+        else if (strcasecmp(token.text, "length") == 0) token.type = TOKEN_LENGTH;
+        else if (strcasecmp(token.text, "copy") == 0) token.type = TOKEN_COPY;
+        else if (strcasecmp(token.text, "pos") == 0) token.type = TOKEN_POS;
+        else if (strcasecmp(token.text, "upcase") == 0) token.type = TOKEN_UPCASE;
+        else if (strcasecmp(token.text, "uppercase") == 0) token.type = TOKEN_UPPERCASE;
+        else if (strcasecmp(token.text, "lowercase") == 0) token.type = TOKEN_LOWERCASE;
+        else if (strcasecmp(token.text, "mid") == 0) token.type = TOKEN_MID;
+        else if (strcasecmp(token.text, "left") == 0) token.type = TOKEN_LEFT;
+        else if (strcasecmp(token.text, "right") == 0) token.type = TOKEN_RIGHT;
+        else if (strcasecmp(token.text, "inpos") == 0) token.type = TOKEN_INPOS;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

@@ -235,6 +235,82 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_BUILTIN_CALL:
+            switch (node->op) {
+                case TOKEN_LENGTH:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'length' requires a char or string argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_INTEGER;
+                    break;
+                case TOKEN_COPY:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'copy'/'mid' requires a char or string first argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    if (node->right->expression_type != TYPE_INTEGER || node->extra->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'copy'/'mid' requires integer start/count arguments\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_STRING;
+                    break;
+                case TOKEN_POS:
+                    if (!is_string_type(node->left->expression_type) || !is_string_type(node->right->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'pos'/'inpos' requires char or string arguments\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_INTEGER;
+                    break;
+                case TOKEN_UPCASE:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'upcase' requires a char or string argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_CHAR;
+                    break;
+                case TOKEN_UPPERCASE:
+                case TOKEN_LOWERCASE:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'uppercase'/'lowercase' requires a char or string argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_STRING;
+                    break;
+                case TOKEN_LEFT:
+                case TOKEN_RIGHT:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'left'/'right' requires a char or string first argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    if (node->right->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'left'/'right' requires an integer count argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_STRING;
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case NODE_STRING_INDEX:
+        case NODE_LOCAL_STRING_INDEX:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: String index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_CALL: {
             // Argument count is already guaranteed correct by the parser
             // (it errors immediately at the call site if it doesn't match

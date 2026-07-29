@@ -319,6 +319,132 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_LENGTH: {
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                vm_push(&sp, (int)strlen(string_pool[idx]));
+                break;
+            }
+
+            case OP_STR_CHAR_AT: {
+                int runtime_index = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                int len = (int)strlen(string_pool[idx]);
+                if (runtime_index < 1 || runtime_index > len) {
+                    fprintf(stderr, "VM Runtime Error: String index %d out of range (1..%d)\n", runtime_index, len);
+                    fatal_abort();
+                }
+                char buf[2] = { string_pool[idx][runtime_index - 1], '\0' };
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_COPY: {
+                int count = vm_pop(&sp);
+                int start = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                int len = (int)strlen(string_pool[idx]);
+                // Lenient/clamping, matching real Pascal's copy() - never
+                // errors, just returns as much as actually exists.
+                if (start < 1) start = 1;
+                char buf[MAX_STRING_LEN];
+                int buf_len = 0;
+                if (start <= len && count > 0) {
+                    int avail = len - start + 1;
+                    int actual = count < avail ? count : avail;
+                    if (actual > MAX_STRING_LEN - 1) actual = MAX_STRING_LEN - 1;
+                    memcpy(buf, string_pool[idx] + (start - 1), actual);
+                    buf_len = actual;
+                }
+                buf[buf_len] = '\0';
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_POS: {
+                int haystack_val = vm_pop(&sp); // pushed second (right) - on top
+                int needle_val = vm_pop(&sp);   // pushed first (left)
+                int n_idx = vm_str_index(needle_val);
+                int h_idx = vm_str_index(haystack_val);
+                if (string_pool[n_idx][0] == '\0') {
+                    vm_push(&sp, 0); // empty needle - defined as "not found"
+                } else {
+                    const char *found = strstr(string_pool[h_idx], string_pool[n_idx]);
+                    vm_push(&sp, found ? (int)(found - string_pool[h_idx]) + 1 : 0);
+                }
+                break;
+            }
+
+            case OP_UPCASE_CHAR: {
+                int val = vm_pop(&sp);
+                vm_check_char(val, "'upcase' argument");
+                int idx = vm_str_index(val);
+                char c = string_pool[idx][0];
+                if (c >= 'a' && c <= 'z') {
+                    char buf[2] = { (char)(c - 'a' + 'A'), '\0' };
+                    vm_push(&sp, vm_intern_string(buf));
+                } else {
+                    vm_push(&sp, val);
+                }
+                break;
+            }
+
+            case OP_UPPERCASE_STR: {
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                char buf[MAX_STRING_LEN];
+                int i = 0;
+                for (; string_pool[idx][i] != '\0' && i < MAX_STRING_LEN - 1; i++) {
+                    char c = string_pool[idx][i];
+                    buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+                }
+                buf[i] = '\0';
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_LOWERCASE_STR: {
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                char buf[MAX_STRING_LEN];
+                int i = 0;
+                for (; string_pool[idx][i] != '\0' && i < MAX_STRING_LEN - 1; i++) {
+                    char c = string_pool[idx][i];
+                    buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+                }
+                buf[i] = '\0';
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_LEFT: {
+                int count = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                int len = (int)strlen(string_pool[idx]);
+                int actual = count < 0 ? 0 : (count < len ? count : len);
+                char buf[MAX_STRING_LEN];
+                memcpy(buf, string_pool[idx], actual);
+                buf[actual] = '\0';
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_RIGHT: {
+                int count = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                int idx = vm_str_index(val);
+                int len = (int)strlen(string_pool[idx]);
+                int actual = count < 0 ? 0 : (count < len ? count : len);
+                char buf[MAX_STRING_LEN];
+                memcpy(buf, string_pool[idx] + (len - actual), actual);
+                buf[actual] = '\0';
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
             case OP_MOD: {
                 int b = vm_pop(&sp);
                 int a = vm_pop(&sp);

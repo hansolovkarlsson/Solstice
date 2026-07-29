@@ -488,6 +488,62 @@ static ASTNode *factor(void) {
         node->left = x;
         node->right = one;
         return node;
+    } else if (token.type == TOKEN_LENGTH || token.type == TOKEN_UPCASE ||
+               token.type == TOKEN_UPPERCASE || token.type == TOKEN_LOWERCASE) {
+        // Unary string builtins: length(x), upcase(x), uppercase(x), lowercase(x)
+        TokenType op = token.type;
+        match(op);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = op;
+        node->left = expression();
+        match(TOKEN_RPAREN);
+        return node;
+    } else if (token.type == TOKEN_POS || token.type == TOKEN_INPOS) {
+        // pos(needle, haystack) / inpos(needle, haystack) - inpos is just
+        // pos under a different name (the two are semantically identical
+        // since char and string share the same representation).
+        match(token.type);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_POS;
+        node->left = expression();
+        match(TOKEN_COMMA);
+        node->right = expression();
+        match(TOKEN_RPAREN);
+        return node;
+    } else if (token.type == TOKEN_COPY || token.type == TOKEN_MID) {
+        // copy(s, start, count) / mid(s, start, count) - mid is an alias
+        // for copy (same operation, different conventional name).
+        match(token.type);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_COPY;
+        node->left = expression();
+        match(TOKEN_COMMA);
+        node->right = expression();
+        match(TOKEN_COMMA);
+        node->extra = expression();
+        match(TOKEN_RPAREN);
+        return node;
+    } else if (token.type == TOKEN_LEFT || token.type == TOKEN_RIGHT) {
+        // left(s, n) / right(s, n) - NOT desugared to copy(): right(s, n)
+        // would need both s and n each twice ('copy(s, length(s)-n+1,
+        // n)'), and this AST has no safe way to share a subtree (reusing
+        // the same node pointer twice would double-evaluate it, and later
+        // double-free it) - so these get their own dedicated opcodes
+        // instead, computed by the VM from a single evaluation of each
+        // argument.
+        TokenType op = token.type;
+        match(op);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = op;
+        node->left = expression();
+        match(TOKEN_COMMA);
+        node->right = expression();
+        match(TOKEN_RPAREN);
+        return node;
     } else if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         ASTNode *node = expression();
@@ -563,6 +619,17 @@ static ASTNode *factor(void) {
                 return node;
             }
             match(TOKEN_IDENTIFIER);
+            if ((current_locals[local_idx].type == TYPE_STRING || current_locals[local_idx].type == TYPE_CHAR)
+                && token.type == TOKEN_LBRACKET) {
+                match(TOKEN_LBRACKET);
+                ASTNode *node = create_node(NODE_LOCAL_STRING_INDEX);
+                node->line = line;
+                node->data.var_idx = local_idx;
+                node->left = expression(); // index
+                node->expression_type = TYPE_CHAR;
+                match(TOKEN_RBRACKET);
+                return node;
+            }
             ASTNode *node = create_node(NODE_LOCAL_VAR);
             node->line = line;
             node->data.var_idx = local_idx;
@@ -601,6 +668,16 @@ static ASTNode *factor(void) {
             return node;
         }
         if (token.type == TOKEN_LBRACKET) {
+            if (sym_table[idx].type == TYPE_STRING || sym_table[idx].type == TYPE_CHAR) {
+                match(TOKEN_LBRACKET);
+                ASTNode *node = create_node(NODE_STRING_INDEX);
+                node->line = line;
+                node->data.var_idx = idx;
+                node->left = expression(); // index
+                node->expression_type = TYPE_CHAR;
+                match(TOKEN_RBRACKET);
+                return node;
+            }
             compile_error(token.line, "'%s' is not an array, cannot be indexed", sym_table[idx].name);
         }
         ASTNode *node = create_node(NODE_VARIABLE);

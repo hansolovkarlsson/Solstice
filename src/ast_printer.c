@@ -247,6 +247,38 @@ void print_ast(ASTNode *node, int indent) {
         case NODE_ARRAY_REF:
             printf("[Array Ref] -> sym_table index %d\n", node->data.var_idx);
             break;
+
+        case NODE_BUILTIN_CALL: {
+            printf("[Builtin Call] (op=%d)\n", node->op);
+            print_indent(indent + 1);
+            printf("Arg 1:\n");
+            print_ast(node->left, indent + 2);
+            if (node->right) {
+                print_indent(indent + 1);
+                printf("Arg 2:\n");
+                print_ast(node->right, indent + 2);
+            }
+            if (node->extra) {
+                print_indent(indent + 1);
+                printf("Arg 3:\n");
+                print_ast(node->extra, indent + 2);
+            }
+            break;
+        }
+
+        case NODE_STRING_INDEX:
+            printf("[String Index] -> sym_table index %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            break;
+
+        case NODE_LOCAL_STRING_INDEX:
+            printf("[Local String Index] -> slot %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            break;
     }
 }
 

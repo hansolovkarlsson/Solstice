@@ -42,6 +42,9 @@ typedef enum {
     TOKEN_ABS, TOKEN_SQR, TOKEN_ODD, TOKEN_SUCC, TOKEN_PRED,
     TOKEN_ORD, TOKEN_CHR,
     TOKEN_CHARCODE, // '#NNN' - a numeric char-code literal, e.g. #13
+    TOKEN_LENGTH, TOKEN_COPY, TOKEN_POS,
+    TOKEN_UPCASE, TOKEN_UPPERCASE, TOKEN_LOWERCASE,
+    TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
     TOKEN_EOF
 } TokenType;
 
@@ -171,9 +174,43 @@ typedef enum {
                       // baked into the instruction - needed for array
                       // parameters, since different calls can pass
                       // different arrays.
-    OP_STORE_IDX_DYN  // Pop a value, then a runtime index, then a runtime
+    OP_STORE_IDX_DYN, // Pop a value, then a runtime index, then a runtime
                       // array reference. Same as OP_STORE_IDX, but "which
                       // array" comes from the stack.
+    OP_LENGTH,    // Pop a string_pool[] index; push strlen() of it.
+    OP_STR_CHAR_AT, // Pop a runtime (1-based) index, then a string_pool[]
+                  // index. Bounds-check the index against the string's
+                  // actual length (a runtime error if out of range,
+                  // unlike OP_COPY below - this matches real Pascal,
+                  // where indexing is strict but copy() is forgiving).
+                  // Intern the single character at that position as a
+                  // new 1-character string; push its index.
+    OP_COPY,      // Pop count, then start, then a string_pool[] index
+                  // (pushed in that order: string, start, count).
+                  // Extracts the substring - *clamped*, not bounds-
+                  // checked: an out-of-range start or a count that runs
+                  // past the end just yields as much of the string as
+                  // actually exists (possibly empty), matching real
+                  // Pascal's copy() rather than this VM's usual strict-
+                  // bounds-error convention. Interns the result; pushes
+                  // its index.
+    OP_POS,       // Pop a haystack string_pool[] index, then a needle
+                  // string_pool[] index (pushed needle-then-haystack).
+                  // Push the needle's first 1-based position in the
+                  // haystack, or 0 if not found (an empty needle is
+                  // defined as "not found", avoiding an ambiguous
+                  // "found at every position" result).
+    OP_UPCASE_CHAR,  // Pop a string_pool[] index (must be exactly one
+                     // character); push the uppercased version (a new
+                     // interned string) if it's a lowercase letter, else
+                     // push the same index back unchanged.
+    OP_UPPERCASE_STR, // Pop a string_pool[] index; push a new interned
+                     // string with every lowercase letter uppercased.
+    OP_LOWERCASE_STR, // Same as above, lowercasing every uppercase letter.
+    OP_LEFT,      // Pop count, then a string_pool[] index. Push a new
+                  // interned string of the first `count` characters,
+                  // clamped to the string's actual length (never errors).
+    OP_RIGHT      // Same as OP_LEFT, but the *last* `count` characters.
 } Opcode;
 
 typedef struct {
@@ -231,7 +268,7 @@ typedef enum {
     NODE_REF_ARRAY_ASSIGN, // 'arr[i] := val' for a by-reference array
                        // parameter. data.var_idx = the parameter's local
                        // slot. left = index expr, right = value expr.
-    NODE_ARRAY_REF     // Pushes a global (or mangled-local, which is just
+    NODE_ARRAY_REF,    // Pushes a global (or mangled-local, which is just
                        // a hidden global) array's sym_table[] index as a
                        // compile-time-known literal - used when passing
                        // such an array as an argument to an array-
@@ -244,6 +281,24 @@ typedef enum {
                        // literal to it, and the array's own assignments
                        // would then look unused and get eliminated, even
                        // though this is the only place they're ever read.
+    NODE_BUILTIN_CALL, // length/copy/pos/upcase/uppercase/lowercase/left/
+                       // right, distinguished by node->op (TOKEN_LENGTH,
+                       // TOKEN_COPY, etc. - mid/inpos are aliased onto
+                       // TOKEN_COPY/TOKEN_POS at parse time, since they're
+                       // identical operations under a different name).
+                       // Arguments are left/right/extra (up to 3, however
+                       // many that builtin takes) - NOT chained via
+                       // ->next like NODE_CALL's user-function arguments,
+                       // since every builtin here has a small, fixed
+                       // arity, unlike a general call.
+    NODE_STRING_INDEX,       // 's[i]' where s is a GLOBAL string/char
+                       // variable. data.var_idx = s's sym_table index,
+                       // left = index expression, expression_type =
+                       // TYPE_CHAR. Read-only (not a valid assignment
+                       // target) - see docs for why.
+    NODE_LOCAL_STRING_INDEX  // Same as above, but s is a parameter/local
+                       // string/char variable. data.var_idx = s's frame
+                       // slot.
 } NodeType;
 
 typedef struct ASTNode {

@@ -1,6 +1,9 @@
 # To Do
 
 
+I could name the project Ouroboros, seems like there are very vague use of it in programming environment
+
+
 Array built-in functions as per standard Pascal
 
 

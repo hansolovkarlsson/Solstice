@@ -157,6 +157,9 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `dec(x)`, `dec(x, n)` | statement | Subtracts `1` (or `n`) from `x` in place |
 | `ord(c)` | function | A `char`'s byte value, as an integer — see [Char](#char) |
 | `chr(n)` | function | The `char` with byte value `n` — see [Char](#char) |
+| `length(s)`, `s[i]` | function / indexing | String length and character access — see [String](#string) |
+| `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
+| `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 
 - `abs`/`sqr`/`odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
   `ord`/`chr` are the `char`/`integer` conversion pair.
@@ -321,6 +324,80 @@ following `readln` of any type starts cleanly on the next line).
 last one's trailing `;` is optional) into a single statement — usable
 anywhere a single statement is expected (loop/if bodies, or the whole
 program body).
+
+## String
+
+```pascal
+var
+    name: string;
+    initial: char;
+begin
+    name := 'Ada Lovelace';
+    writeln('length: ', length(name));
+    writeln('first char: ', name[1]);
+    writeln('uppercase: ', uppercase(name));
+    writeln('surname: ', copy(name, pos(' ', name) + 1, length(name)));
+    initial := upcase(name[1]);
+    writeln('initial: ', initial);
+end.
+```
+
+### `length` and indexing
+
+- `length(s)` — the number of characters, as an `integer`.
+- `s[i]` — the character at 1-based position `i`, as a `char`. Only
+  works on a plain `string`/`char` *variable* (global or local) — not on
+  an array element, a function's result, or any other expression; this
+  matches how array indexing is also restricted to a plain array name in
+  this language, not general expressions.
+- Unlike `copy` below, **indexing is strict**: `i` outside `1..length(s)`
+  is a runtime error, not a clamped or empty result. This mirrors real
+  Pascal, where indexing and `copy` genuinely have different bounds
+  behavior.
+- `s[i]` is **read-only** — `s[i] := 'x'` is a compile-time error. This
+  compiler's strings are deduplicated in a shared pool (see
+  [docs/BYTECODE.md](BYTECODE.md)), so two variables holding equal
+  string values can be the *same* underlying entry; mutating a character
+  in place would silently corrupt every other variable sharing that
+  entry. Build a new string instead (e.g. `s := copy(s,1,i-1) + 'x' +
+  copy(s,i+1,length(s));`).
+
+### `copy`, `pos`, and the BASIC-style extras
+
+| Function | Meaning |
+|---|---|
+| `copy(s, start, count)` | The substring starting at 1-based `start`, up to `count` characters |
+| `pos(needle, s)` | 1-based position of `needle` in `s`, or `0` if not found |
+| `mid(s, start, count)` | Same as `copy` — a more BASIC-flavored name for the same operation |
+| `left(s, n)` | The first `n` characters of `s` |
+| `right(s, n)` | The last `n` characters of `s` |
+| `inpos(needle, s)` | Same as `pos` — finds a character (or substring) inside `s` |
+
+- **`copy`/`mid`/`left`/`right` are lenient, never runtime errors**: an
+  out-of-range `start` or a `count` that runs past the end of the string
+  just yields as much of the string as actually exists (possibly an
+  empty string) — this matches real Pascal's `copy`, which is
+  deliberately forgiving so patterns like "give me the last 10
+  characters, or the whole string if it's shorter" don't need a bounds
+  check first.
+- `mid`, `left`, `right`, and `inpos` aren't ISO Pascal or even standard
+  Turbo Pascal/Delphi — they're BASIC-style names included as
+  convenience aliases/equivalents of `copy`/`pos`. `length`, `copy`,
+  `pos`, and `upcase` (below) are the ISO-standard ones.
+- `pos`/`inpos` with an empty needle is defined as "not found" (`0`),
+  avoiding the ambiguous question of what position an empty string
+  would be "found at."
+
+### Case conversion
+
+- `upcase(c)` — ISO standard. Takes a single `char` (or a `string`
+  that's exactly one character, via the usual `char`/`string` interop),
+  returns the uppercased `char`, or the same value unchanged if it isn't
+  a lowercase letter.
+- `uppercase(s)` / `lowercase(s)` — whole-`string` case conversion.
+  These aren't ISO standard, but are standard in Turbo Pascal/Delphi/Free
+  Pascal. Only affects `a`-`z`/`A`-`Z`; anything else in the string is
+  left as-is.
 
 ## Char
 

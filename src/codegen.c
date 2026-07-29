@@ -401,6 +401,44 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_BUILTIN_CALL:
+            generate_code(node->left);
+            if (node->op == TOKEN_LENGTH) {
+                emit(OP_LENGTH, 0);
+            } else if (node->op == TOKEN_UPCASE) {
+                emit(OP_UPCASE_CHAR, 0);
+            } else if (node->op == TOKEN_UPPERCASE) {
+                emit(OP_UPPERCASE_STR, 0);
+            } else if (node->op == TOKEN_LOWERCASE) {
+                emit(OP_LOWERCASE_STR, 0);
+            } else if (node->op == TOKEN_POS) {
+                generate_code(node->right);
+                emit(OP_POS, 0);
+            } else if (node->op == TOKEN_LEFT) {
+                generate_code(node->right);
+                emit(OP_LEFT, 0);
+            } else if (node->op == TOKEN_RIGHT) {
+                generate_code(node->right);
+                emit(OP_RIGHT, 0);
+            } else if (node->op == TOKEN_COPY) {
+                generate_code(node->right);
+                generate_code(node->extra);
+                emit(OP_COPY, 0);
+            }
+            break;
+
+        case NODE_STRING_INDEX:
+            emit(OP_LOAD, node->data.var_idx);
+            generate_code(node->left);
+            emit(OP_STR_CHAR_AT, 0);
+            break;
+
+        case NODE_LOCAL_STRING_INDEX:
+            emit(OP_LOAD_LOCAL, node->data.var_idx);
+            generate_code(node->left);
+            emit(OP_STR_CHAR_AT, 0);
+            break;
+
         case NODE_CALL:
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg);
