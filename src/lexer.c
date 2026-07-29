@@ -128,6 +128,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "real") == 0) token.type = TOKEN_REAL_TYPE;
         else if (strcasecmp(token.text, "trunc") == 0) token.type = TOKEN_TRUNC;
         else if (strcasecmp(token.text, "round") == 0) token.type = TOKEN_ROUND;
+        else if (strcasecmp(token.text, "type") == 0) token.type = TOKEN_TYPE;
+        else if (strcasecmp(token.text, "record") == 0) token.type = TOKEN_RECORD;
         else if (strcasecmp(token.text, "procedure") == 0) token.type = TOKEN_PROCEDURE;
         else if (strcasecmp(token.text, "forward") == 0) token.type = TOKEN_FORWARD;
         else if (strcasecmp(token.text, "function") == 0) token.type = TOKEN_FUNCTION;

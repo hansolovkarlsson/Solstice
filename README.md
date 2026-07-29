@@ -110,11 +110,39 @@ test_recovery.c   Demonstrates that a fatal compile error doesn't kill the proce
 
 ## Status
 
-Working: `if`/`while`/`repeat`/`for`, `integer`/`boolean`/`string` types,
-string concatenation and comparison, one-dimensional arrays,
+Working: `if`/`while`/`repeat`/`for` (with `break`/`continue`),
+`integer`/`real`/`boolean`/`string`/`char` types, string concatenation and
+comparison (including ordering), one-dimensional arrays,
 `write`/`writeln`/`readln`, full expression precedence, dead-code
-elimination and constant folding.
+elimination and constant folding, and procedures and functions with
+by-value scalar parameters, local variables, by-reference array
+parameters, and local arrays — including correct per-call isolation for
+scalars under recursion and mutual recursion via `forward` declarations
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedures),
+[docs/LANGUAGE.md](docs/LANGUAGE.md#functions), and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-parameters-and-local-arrays)).
+Also working: bitwise `and`/`or`/`xor`/`not` and `shl`/`shr` on integers,
+the built-ins `abs`/`sqr`/`odd`/`succ`/`pred`/`inc`/`dec`/`ord`/`chr`,
+`#NNN` char-code literals, and string handling — `length`, `s[i]`
+indexing, `copy`/`pos`/`mid`/`left`/`right`/`inpos`, and
+`upcase`/`uppercase`/`lowercase` (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#built-in-functions-and-procedures),
+[docs/LANGUAGE.md](docs/LANGUAGE.md#char), and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#string)). Also working:
+two-dimensional arrays and `low`/`high`/`length` for arrays, resolved
+entirely at compile time (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#two-dimensional-arrays) and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#low-high-length)). Also working: the
+`real` type (a 32-bit float), with automatic integer↔real widening,
+`trunc`/`round`, and `/` now real Pascal's actual always-real division
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#real)). Also working: records
+(`type TPoint = record x, y: integer; end;`), with whole-record
+assignment, implemented as pure compile-time sugar over ordinary global
+variables — zero new bytecode instructions anywhere in the feature (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#records)).
 
-Not yet implemented: procedures/functions (and therefore no call stack in
-SolVM yet), string ordering comparisons (`<`/`>`), multi-dimensional
-arrays, `//` line comments (only `{ }` block comments exist today).
+Not yet implemented: three-or-more-dimensional arrays, array
+parameters/locals for 2D arrays specifically, dynamic arrays (so no
+array `copy`/slicing), `write`/`writeln` field-width/precision syntax
+(`writeln(x:10:2)`), and records as array elements, record
+parameters/locals, nested records, or record comparison.

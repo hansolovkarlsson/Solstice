@@ -7,4 +7,6 @@ else
 fi
 BASEFILE="${FILENAME%.*}"
 
-../bin/desole $VERBOSE "$BASEFILE.bin" "$BASEFILE.disasm"
+desole $VERBOSE "$BASEFILE.bin" "$BASEFILE.disasm"
+cat "$BASEFILE.disasm"
+

@@ -48,6 +48,74 @@ static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
 static int in_procedure = 0;
 
+// Records are implemented as pure syntactic sugar over ordinary global
+// variables - a record variable doesn't get one storage location of its
+// own at all. Instead, declaring 'var p: TPerson' creates one ordinary
+// hidden global per field (mangled "p__fieldname", via add_var()/
+// add_array_var() exactly as if the user had declared each field
+// separately), and 'p.field' just resolves, at parse time, to a
+// reference to that mangled symbol. This is the same trick this project
+// already uses for local arrays (see add_local_array) - and the payoff
+// is the same: field access, whole-field type checking, codegen, dead-
+// code elimination, and the -v dump all already work per-symbol, so they
+// all work for record fields too, with zero new runtime machinery. The
+// real cost is that this doesn't generalize to anything needing a
+// genuinely runtime-selectable record (arrays of records, by-reference
+// record parameters) - not needed for this feature's current scope, but
+// would need a real rethink (an addressing model, like arrays use) if
+// ever added.
+#define MAX_RECORD_TYPES 20
+#define MAX_RECORD_FIELDS 16
+#define MAX_RECORD_VARS 50
+
+typedef struct {
+    char name[MAX_NAME];
+    DataType type;
+    int is_array;
+    int array_lower, array_upper; // only meaningful if is_array
+} RecordField;
+
+typedef struct {
+    char name[MAX_NAME];
+    RecordField fields[MAX_RECORD_FIELDS];
+    int field_count;
+} RecordTypeDef;
+static RecordTypeDef record_types[MAX_RECORD_TYPES];
+static int record_type_count = 0;
+
+typedef struct {
+    char name[MAX_NAME];       // the record VARIABLE's own name, e.g. "p"
+    int record_type_idx;       // which record_types[] entry it's an instance of
+    int field_sym_idx[MAX_RECORD_FIELDS]; // sym_table[] index of each
+                                // field's mangled global, in the record
+                                // type's declared field order
+} RecordVarDef;
+static RecordVarDef record_vars[MAX_RECORD_VARS];
+static int record_var_count = 0;
+
+static int find_record_type(const char *name) {
+    for (int i = 0; i < record_type_count; i++) {
+        if (strcmp(record_types[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+static int find_record_var(const char *name) {
+    for (int i = 0; i < record_var_count; i++) {
+        if (strcmp(record_vars[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+// -1 if record_types[record_type_idx] has no field with this name.
+static int find_record_field(int record_type_idx, const char *field_name) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        if (strcmp(rt->fields[i].name, field_name) == 0) return i;
+    }
+    return -1;
+}
+
 // The proc_table index of the function whose body is currently being
 // parsed, or -1 if we're not inside a function body (either not inside
 // any procedure/function at all, or inside a plain procedure). Used to
@@ -173,6 +241,44 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
     sym_table[sym_count].array_upper2 = upper2;
     array_mem_count += size;
     sym_count++;
+}
+
+// Declares a GLOBAL record variable of the given record type: creates one
+// ordinary hidden global symbol per field (mangled "name__fieldname"),
+// via add_var()/add_array_var() exactly as if the user had declared each
+// field as its own separate global variable. See the comment above
+// RecordTypeDef for why this makes field access, type checking, codegen,
+// and DCE all work for free, with zero new runtime machinery.
+static void add_record_var(const char *name, int record_type_idx) {
+    if (find_var_soft(name) != -1 || find_record_var(name) != -1) {
+        compile_error(token.line, "Duplicate variable declaration '%s'", name);
+    }
+    if (record_var_count >= MAX_RECORD_VARS) {
+        compile_error(token.line, "Too many record variables (limit is %d)", MAX_RECORD_VARS);
+    }
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    RecordVarDef *rv = &record_vars[record_var_count];
+    strcpy(rv->name, name);
+    rv->record_type_idx = record_type_idx;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        // "name__fieldname" - checked explicitly rather than letting
+        // snprintf silently truncate, which could make two different
+        // field manglings collide.
+        if (strlen(name) + 2 + strlen(f->name) >= MAX_NAME) {
+            compile_error(token.line, "Record variable/field name '%s.%s' too long (limit is %d characters combined)",
+                          name, f->name, MAX_NAME - 3);
+        }
+        char mangled[2 * MAX_NAME];
+        snprintf(mangled, sizeof(mangled), "%s__%s", name, f->name);
+        if (f->is_array) {
+            add_array_var(mangled, f->type, f->array_lower, f->array_upper);
+        } else {
+            add_var(mangled, f->type);
+        }
+        rv->field_sym_idx[i] = sym_count - 1; // add_var/add_array_var just incremented sym_count
+    }
+    record_var_count++;
 }
 
 // Soft lookup - returns -1 rather than erroring, since the caller needs
@@ -534,6 +640,58 @@ static ASTNode *parse_call_arguments(int proc_idx) {
     return arg_head;
 }
 
+// Given an already-resolved GLOBAL symbol index, parses whatever follows
+// (array indexing, 2D array indexing, string indexing) and builds the
+// appropriate expression node. Shared between plain global-variable
+// resolution and record field access - a record field is just a global
+// symbol under a mangled name, so once its index is resolved, everything
+// past that point (is it an array? a string that can be indexed? a plain
+// scalar?) is identical to resolving any other global variable.
+static ASTNode *parse_global_symbol_reference(int idx, int line) {
+    if (sym_table[idx].is_array) {
+        if (token.type != TOKEN_LBRACKET) {
+            compile_error(token.line, "Array '%s' must be indexed", sym_table[idx].name);
+        }
+        match(TOKEN_LBRACKET);
+        if (sym_table[idx].is_2d) {
+            ASTNode *node = create_node(NODE_ARRAY_ACCESS_2D);
+            node->line = line;
+            node->data.var_idx = idx;
+            node->left = expression(); // first index
+            match(TOKEN_COMMA);
+            node->right = expression(); // second index
+            node->expression_type = sym_table[idx].type;
+            match(TOKEN_RBRACKET);
+            return node;
+        }
+        ASTNode *node = create_node(NODE_ARRAY_ACCESS);
+        node->line = line;
+        node->data.var_idx = idx;
+        node->left = expression(); // index
+        node->expression_type = sym_table[idx].type;
+        match(TOKEN_RBRACKET);
+        return node;
+    }
+    if (token.type == TOKEN_LBRACKET) {
+        if (sym_table[idx].type == TYPE_STRING || sym_table[idx].type == TYPE_CHAR) {
+            match(TOKEN_LBRACKET);
+            ASTNode *node = create_node(NODE_STRING_INDEX);
+            node->line = line;
+            node->data.var_idx = idx;
+            node->left = expression(); // index
+            node->expression_type = TYPE_CHAR;
+            match(TOKEN_RBRACKET);
+            return node;
+        }
+        compile_error(token.line, "'%s' is not an array, cannot be indexed", sym_table[idx].name);
+    }
+    ASTNode *node = create_node(NODE_VARIABLE);
+    node->line = line;
+    node->data.var_idx = idx;
+    node->expression_type = sym_table[idx].type;
+    return node;
+}
+
 static ASTNode *factor(void) {
     if (token.type == TOKEN_MINUS || token.type == TOKEN_NOT) {
         TokenType op = token.type;
@@ -737,6 +895,24 @@ static ASTNode *factor(void) {
     } else if (token.type == TOKEN_IDENTIFIER) {
         int line = token.line;
 
+        int rv_idx = find_record_var(token.text);
+        if (rv_idx != -1) {
+            char rec_name[MAX_NAME];
+            strcpy(rec_name, token.text);
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_PERIOD);
+            if (token.type != TOKEN_IDENTIFIER) {
+                compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+            }
+            RecordVarDef *rv = &record_vars[rv_idx];
+            int field_idx = find_record_field(rv->record_type_idx, token.text);
+            if (field_idx == -1) {
+                compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+            }
+            match(TOKEN_IDENTIFIER);
+            return parse_global_symbol_reference(rv->field_sym_idx[field_idx], line);
+        }
+
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
             if (current_locals[local_idx].is_array) {
@@ -804,48 +980,7 @@ static ASTNode *factor(void) {
 
         int idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
-        if (sym_table[idx].is_array) {
-            if (token.type != TOKEN_LBRACKET) {
-                compile_error(token.line, "Array '%s' must be indexed", sym_table[idx].name);
-            }
-            match(TOKEN_LBRACKET);
-            if (sym_table[idx].is_2d) {
-                ASTNode *node = create_node(NODE_ARRAY_ACCESS_2D);
-                node->line = line;
-                node->data.var_idx = idx;
-                node->left = expression(); // first index
-                match(TOKEN_COMMA);
-                node->right = expression(); // second index
-                node->expression_type = sym_table[idx].type;
-                match(TOKEN_RBRACKET);
-                return node;
-            }
-            ASTNode *node = create_node(NODE_ARRAY_ACCESS);
-            node->line = line;
-            node->data.var_idx = idx;
-            node->left = expression(); // index
-            node->expression_type = sym_table[idx].type;
-            match(TOKEN_RBRACKET);
-            return node;
-        }
-        if (token.type == TOKEN_LBRACKET) {
-            if (sym_table[idx].type == TYPE_STRING || sym_table[idx].type == TYPE_CHAR) {
-                match(TOKEN_LBRACKET);
-                ASTNode *node = create_node(NODE_STRING_INDEX);
-                node->line = line;
-                node->data.var_idx = idx;
-                node->left = expression(); // index
-                node->expression_type = TYPE_CHAR;
-                match(TOKEN_RBRACKET);
-                return node;
-            }
-            compile_error(token.line, "'%s' is not an array, cannot be indexed", sym_table[idx].name);
-        }
-        ASTNode *node = create_node(NODE_VARIABLE);
-        node->line = line;
-        node->data.var_idx = idx;
-        node->expression_type = sym_table[idx].type;
-        return node;
+        return parse_global_symbol_reference(idx, line);
     }
     compile_error(token.line, "Invalid factor entry");
     return NULL;
@@ -897,6 +1032,92 @@ static ASTNode *expression(void) {
     return node;
 }
 
+// Parses a 'type' section: one or more 'TypeName = record ... end;'
+// declarations. Only record types exist right now - there's no type
+// aliasing ('type TAge = integer;') and no nested records (a field can't
+// itself be a record type).
+static void parse_type_section(void) {
+    match(TOKEN_TYPE);
+    while (token.type == TOKEN_IDENTIFIER) {
+        if (record_type_count >= MAX_RECORD_TYPES) {
+            compile_error(token.line, "Too many record types (limit is %d)", MAX_RECORD_TYPES);
+        }
+        char type_name[MAX_NAME];
+        strcpy(type_name, token.text);
+        if (find_record_type(type_name) != -1) {
+            compile_error(token.line, "Duplicate type declaration '%s'", type_name);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_EQ);
+        match(TOKEN_RECORD);
+
+        RecordTypeDef *rt = &record_types[record_type_count];
+        strcpy(rt->name, type_name);
+        rt->field_count = 0;
+
+        while (token.type == TOKEN_IDENTIFIER) {
+            #define MAX_FIELD_NAMES_PER_LINE 10
+            char field_names[MAX_FIELD_NAMES_PER_LINE][MAX_NAME];
+            int fcount = 0;
+            strcpy(field_names[fcount++], token.text);
+            match(TOKEN_IDENTIFIER);
+            while (token.type == TOKEN_COMMA) {
+                match(TOKEN_COMMA);
+                if (fcount >= MAX_FIELD_NAMES_PER_LINE) {
+                    compile_error(token.line, "Too many field names on one line (limit is %d)", MAX_FIELD_NAMES_PER_LINE);
+                }
+                strcpy(field_names[fcount++], token.text);
+                match(TOKEN_IDENTIFIER);
+            }
+            match(TOKEN_COLON);
+
+            int is_array = 0;
+            int lower = 0, upper = 0;
+            if (token.type == TOKEN_ARRAY) {
+                match(TOKEN_ARRAY);
+                match(TOKEN_LBRACKET);
+                lower = parse_int_literal();
+                match(TOKEN_DOTDOT);
+                upper = parse_int_literal();
+                match(TOKEN_RBRACKET);
+                if (upper < lower) {
+                    compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+                }
+                match(TOKEN_OF);
+                is_array = 1;
+            }
+            DataType field_type = TYPE_UNKNOWN;
+            if (token.type == TOKEN_INTEGER) { field_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
+            else if (token.type == TOKEN_BOOLEAN) { field_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
+            else if (token.type == TOKEN_STRING_TYPE) { field_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
+            else if (token.type == TOKEN_CHAR_TYPE) { field_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
+            else if (token.type == TOKEN_REAL_TYPE) { field_type = TYPE_REAL; match(TOKEN_REAL_TYPE); }
+            else compile_error(token.line, "Unknown field type (records can't contain other records yet)");
+            match(TOKEN_SEMI);
+
+            for (int i = 0; i < fcount; i++) {
+                if (rt->field_count >= MAX_RECORD_FIELDS) {
+                    compile_error(token.line, "Too many fields in record '%s' (limit is %d)", rt->name, MAX_RECORD_FIELDS);
+                }
+                if (find_record_field(record_type_count, field_names[i]) != -1) {
+                    compile_error(token.line, "Duplicate field '%s' in record '%s'", field_names[i], rt->name);
+                }
+                RecordField *f = &rt->fields[rt->field_count];
+                strcpy(f->name, field_names[i]);
+                f->type = field_type;
+                f->is_array = is_array;
+                f->array_lower = lower;
+                f->array_upper = upper;
+                rt->field_count++;
+            }
+        }
+
+        match(TOKEN_END);
+        match(TOKEN_SEMI);
+        record_type_count++;
+    }
+}
+
 ASTNode *parse_ast(const char *source, const char *filename) {
     current_filename = filename ? filename : "<source>";
     sym_count = 0;
@@ -908,10 +1129,16 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     current_local_count = 0;
     in_procedure = 0;
     current_function_idx = -1;
+    record_type_count = 0;
+    record_var_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
     match(TOKEN_SEMI);
+
+    if (token.type == TOKEN_TYPE) {
+        parse_type_section();
+    }
 
     if (token.type == TOKEN_VAR) {
         match(TOKEN_VAR);
@@ -933,7 +1160,13 @@ ASTNode *parse_ast(const char *source, const char *filename) {
             }
             match(TOKEN_COLON);
 
-            if (token.type == TOKEN_ARRAY) {
+            if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+                int record_type_idx = find_record_type(token.text);
+                match(TOKEN_IDENTIFIER);
+                for (int i = 0; i < count; i++) {
+                    add_record_var(temporary_names[i], record_type_idx);
+                }
+            } else if (token.type == TOKEN_ARRAY) {
                 match(TOKEN_ARRAY);
                 match(TOKEN_LBRACKET);
                 int lower = parse_int_literal();
@@ -1275,12 +1508,125 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     return write_node;
 }
 
+// Given an already-resolved GLOBAL symbol index, parses whatever follows
+// (array indexing, 2D array indexing) plus ':=' and the value expression,
+// and builds the appropriate assignment node. Shared between plain
+// global-variable assignment and record field assignment - mirrors
+// parse_global_symbol_reference on the read side.
+static ASTNode *parse_global_assignment(int idx) {
+    if (sym_table[idx].is_array) {
+        if (token.type != TOKEN_LBRACKET) {
+            compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
+        }
+        match(TOKEN_LBRACKET);
+        if (sym_table[idx].is_2d) {
+            ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_2D);
+            stmt->data.var_idx = idx;
+            stmt->left = expression();  // first index
+            match(TOKEN_COMMA);
+            stmt->right = expression(); // second index
+            match(TOKEN_RBRACKET);
+            match(TOKEN_ASSIGN);
+            stmt->extra = expression(); // value
+            return stmt;
+        }
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = idx;
+        stmt->left = expression();  // index
+        match(TOKEN_RBRACKET);
+        match(TOKEN_ASSIGN);
+        stmt->right = expression(); // value
+        return stmt;
+    }
+    ASTNode *stmt = create_node(NODE_ASSIGN);
+    stmt->data.var_idx = idx;
+    match(TOKEN_ASSIGN);
+    stmt->left = expression();  // value
+    return stmt;
+}
+
+// 'p2 := p1;' where p2 (already resolved) and p1 must be record variables
+// of the same record type. Desugars into N ordinary field assignments
+// (p2.f1 := p1.f1; p2.f2 := p1.f2; ...) chained via ->next, wrapped in a
+// NODE_COMPOUND - this compiler has no single "copy this whole record"
+// opcode, or need for one, since a record isn't one runtime value at all,
+// just N ordinary variables under mangled names. The NODE_COMPOUND
+// wrapper matters structurally: statement_list() treats whatever
+// statement() returns as a single node and manages its ->next itself, so
+// returning a multi-node chain directly would have its own internal
+// links silently overwritten - wrapping keeps the chain intact via the
+// compound's ->left while still presenting a single well-behaved node.
+static ASTNode *parse_whole_record_assignment(int dest_rv_idx) {
+    RecordVarDef *dest_rv = &record_vars[dest_rv_idx];
+    match(TOKEN_ASSIGN);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a record variable of the same type as '%s'", dest_rv->name);
+    }
+    int src_rv_idx = find_record_var(token.text);
+    if (src_rv_idx == -1) {
+        compile_error(token.line, "'%s' is not a record variable", token.text);
+    }
+    RecordVarDef *src_rv = &record_vars[src_rv_idx];
+    if (src_rv->record_type_idx != dest_rv->record_type_idx) {
+        compile_error(token.line, "Cannot assign '%s' (type '%s') to '%s' (type '%s') - different record types",
+                      src_rv->name, record_types[src_rv->record_type_idx].name,
+                      dest_rv->name, record_types[dest_rv->record_type_idx].name);
+    }
+    match(TOKEN_IDENTIFIER);
+
+    RecordTypeDef *rt = &record_types[dest_rv->record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        if (rt->fields[i].is_array) {
+            compile_error(token.line, "Cannot assign whole record '%s': field '%s' is an array, and this compiler doesn't support whole-array assignment",
+                          rt->name, rt->fields[i].name);
+        }
+    }
+
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    for (int i = 0; i < rt->field_count; i++) {
+        ASTNode *assign = create_node(NODE_ASSIGN);
+        assign->data.var_idx = dest_rv->field_sym_idx[i];
+        ASTNode *value = create_node(NODE_VARIABLE);
+        value->data.var_idx = src_rv->field_sym_idx[i];
+        value->expression_type = sym_table[src_rv->field_sym_idx[i]].type;
+        assign->left = value;
+        if (!head) head = assign; else tail->next = assign;
+        tail = assign;
+    }
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = head; // NULL for a (degenerate) empty record - generate_code(NULL) safely no-ops
+    return compound;
+}
+
 static ASTNode *statement(void) {
     if (token.type == TOKEN_BEGIN) {
         return compound_statement();
     }
 
     if (token.type == TOKEN_IDENTIFIER) {
+        int rv_idx = find_record_var(token.text);
+        if (rv_idx != -1) {
+            char rec_name[MAX_NAME];
+            strcpy(rec_name, token.text);
+            match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_PERIOD) {
+                match(TOKEN_PERIOD);
+                if (token.type != TOKEN_IDENTIFIER) {
+                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+                }
+                RecordVarDef *rv = &record_vars[rv_idx];
+                int field_idx = find_record_field(rv->record_type_idx, token.text);
+                if (field_idx == -1) {
+                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+                }
+                match(TOKEN_IDENTIFIER);
+                return parse_global_assignment(rv->field_sym_idx[field_idx]);
+            }
+            // No '.field' - this is a whole-record assignment: 'p2 := p1;'
+            return parse_whole_record_assignment(rv_idx);
+        }
+
         if (current_function_idx != -1 && strcmp(token.text, proc_table[current_function_idx].name) == 0) {
             // Assigning to the function's own name sets its return value.
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
@@ -1345,35 +1691,7 @@ static ASTNode *statement(void) {
 
         int idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
-        if (sym_table[idx].is_array) {
-            if (token.type != TOKEN_LBRACKET) {
-                compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
-            }
-            match(TOKEN_LBRACKET);
-            if (sym_table[idx].is_2d) {
-                ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_2D);
-                stmt->data.var_idx = idx;
-                stmt->left = expression();  // first index
-                match(TOKEN_COMMA);
-                stmt->right = expression(); // second index
-                match(TOKEN_RBRACKET);
-                match(TOKEN_ASSIGN);
-                stmt->extra = expression(); // value
-                return stmt;
-            }
-            ASTNode *stmt = create_node(NODE_ASSIGN);
-            stmt->data.var_idx = idx;
-            stmt->left = expression();  // index
-            match(TOKEN_RBRACKET);
-            match(TOKEN_ASSIGN);
-            stmt->right = expression(); // value
-            return stmt;
-        }
-        ASTNode *stmt = create_node(NODE_ASSIGN);
-        stmt->data.var_idx = idx;
-        match(TOKEN_ASSIGN);
-        stmt->left = expression();  // value
-        return stmt;
+        return parse_global_assignment(idx);
     }
 
     if (token.type == TOKEN_INC || token.type == TOKEN_DEC) {

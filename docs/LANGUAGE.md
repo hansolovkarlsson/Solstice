@@ -13,6 +13,8 @@ variables).
 
 ```pascal
 program Name;
+type
+    { record type declarations, if any - see Records }
 var
     { declarations }
 begin
@@ -22,6 +24,8 @@ end.
 
 - The program name is required but otherwise unused (no significance
   beyond documentation).
+- The `type` section is optional, and only declares record types — see
+  [Records](#records).
 - The `var` section is optional — omit it entirely if the program declares
   no variables.
 - The final `.` after `end` is required.
@@ -50,8 +54,9 @@ y := 2; // this too, to end of line
 | String | `string` | `'hello'`, `'it''s here'` | Doubled `''` is an escaped literal quote |
 | Char | `char` | `'a'`, `'!'`, `'x'` | See [Char](#char) below - a single-quoted literal of length exactly 1 |
 | Array | `array[lower..upper] of T` | — | `T` is `integer`, `real`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
+| Record | `type TName = record ... end;` | — | User-defined; see [Records](#records) |
 
-There are no user-defined (`record`/`enum`) types.
+There are no enumerated types or sets.
 
 ## Variable declarations
 
@@ -656,6 +661,104 @@ end.
   their own feature).
 - Stored row-major, in the same shared array-memory pool 1D arrays use.
 
+## Records
+
+```pascal
+type
+    TPoint = record
+        x, y: integer;
+    end;
+var
+    origin, p: TPoint;
+begin
+    origin.x := 0;
+    origin.y := 0;
+
+    p.x := 3;
+    p.y := 4;
+    writeln('p = (', p.x, ', ', p.y, ')');
+
+    p := origin;   { whole-record assignment - copies every field }
+    writeln('p after p := origin: (', p.x, ', ', p.y, ')');
+end.
+```
+
+### The `type` section
+
+A `type` section, if present, comes after `program Name;` and before
+`var` (standard Pascal ordering). It holds one or more record type
+declarations:
+
+```pascal
+type
+    TPerson = record
+        age: integer;
+        height: real;
+        name: string;
+    end;
+```
+
+- A field's type can be `integer`, `real`, `boolean`, `string`, `char`,
+  or a 1D array of any of those — anything a plain variable can be,
+  except another record (no nesting yet - see below).
+- Multiple field names sharing one type can be comma-separated, same as
+  `var` (`x, y: integer;`).
+- There's no type aliasing (`type TAge = integer;`) — `type` only
+  declares record types.
+
+### How this is implemented
+
+A record variable doesn't get one storage location of its own at all.
+`var p: TPerson;` actually creates one ordinary hidden global variable
+per field (internally named `p__age`, `p__height`, `p__name`, and so
+on), and `p.age` just resolves, at compile time, to a reference to that
+hidden variable — indistinguishable, from that point on, from any other
+plain global. This is the same trick this compiler already uses for
+local arrays (see [Array parameters and local arrays](#array-parameters-and-local-arrays)).
+
+The payoff: field access, type checking, dead-code elimination, and the
+`-v` diagnostic dump all already work per-variable, so they all work for
+record fields too, with no new runtime mechanism at all — there isn't a
+single new bytecode instruction anywhere in this feature. You can see
+this directly by disassembling any program using records: field
+references show up as ordinary `.var p__age integer` declarations and
+`LOAD`/`STORE p__age` instructions, exactly as if you'd declared `p__age`
+as a separate global yourself.
+
+The cost of this approach is that it doesn't generalize to anything
+needing a genuinely runtime-selectable record — see "What's not
+supported yet" below.
+
+### Whole-record assignment
+
+`p2 := p1;` (no `.field`, both plain record variables of the *same*
+record type) copies every field individually — this compiler has no
+single "copy this whole record" operation, or need for one, since a
+record isn't one runtime value to begin with, just several ordinary
+variables under generated names. The two sides must be declared with the
+exact same record type (structurally identical but differently-named
+record types are not interchangeable).
+
+If any field is an array, whole-record assignment is a compile-time
+error instead: this compiler doesn't support whole-array assignment at
+all (see [Arrays](#arrays)), so there'd be no correct way to copy that
+field as part of copying the whole record. Copy such fields (and any
+others) individually instead.
+
+### What's not supported yet
+
+- **Records as array elements, or an array as a field's own bounds
+  varying per record** — the whole "mangled hidden global per field"
+  approach assumes exactly one, statically-known storage location per
+  field. `people[i].age`, where `i` is a runtime value, doesn't fit that
+  model — it would need a genuine addressing scheme, similar to how
+  arrays themselves work, not just sugar over existing globals.
+- **Record parameters or local records** — matching how arrays
+  themselves started global-only before parameters/locals became their
+  own feature.
+- **Nested records** — a field can't itself be a record type.
+- **Record comparison** (`p1 = p2`) — not defined.
+
 ## Procedures
 
 ```pascal
@@ -891,7 +994,10 @@ a crash.
   arrays specifically (1D supports both already) — see
   [Two-dimensional arrays](#two-dimensional-arrays) above
 - `write`/`writeln` field-width/precision syntax (`writeln(x:10:2)`)
-- Records, sets, enumerated types
+- Records as array elements, record parameters/locals, nested records,
+  and record comparison (plain record variables and whole-record
+  assignment work — see [Records](#records) above)
+- Sets, enumerated types
 - Units/modules/`uses`
 
 See the project README's Status section for the current plan.

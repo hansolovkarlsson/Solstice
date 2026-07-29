@@ -7,4 +7,5 @@ else
 fi
 BASEFILE="${FILENAME%.*}"
 
-../bin/solvm $VERBOSE "$BASEFILE.bin"
+solas $VERBOSE "$BASEFILE.sasm" "$BASEFILE.bin"
+solvm $VERBOSE "$BASEFILE.bin"

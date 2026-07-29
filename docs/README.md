@@ -135,9 +135,14 @@ entirely at compile time (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#low-high-length)). Also working: the
 `real` type (a 32-bit float), with automatic integer↔real widening,
 `trunc`/`round`, and `/` now real Pascal's actual always-real division
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#real)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#real)). Also working: records
+(`type TPoint = record x, y: integer; end;`), with whole-record
+assignment, implemented as pure compile-time sugar over ordinary global
+variables — zero new bytecode instructions anywhere in the feature (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#records)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no
-array `copy`/slicing), and `write`/`writeln` field-width/precision
-syntax (`writeln(x:10:2)`).
+array `copy`/slicing), `write`/`writeln` field-width/precision syntax
+(`writeln(x:10:2)`), and records as array elements, record
+parameters/locals, nested records, or record comparison.
