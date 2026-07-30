@@ -88,6 +88,7 @@ make clean      # remove binaries and object files
 - **[docs/BYTECODE.md](docs/BYTECODE.md)** — SolVM's architecture, the full opcode reference, and the `.bin` file format.
 - **[docs/ASSEMBLER.md](docs/ASSEMBLER.md)** — `solas`/`desole` syntax reference and usage guide.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the compiler pipeline and project are put together internally; start here if you're extending the codebase.
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** — the detailed, checklist-level plan behind the summary below.
 
 ## Project layout
 
@@ -113,10 +114,11 @@ test_recovery.c   Demonstrates that a fatal compile error doesn't kill the proce
 
 ## Roadmap
 
-The first goal is to finish `pascalc` to the point of Wirth/standard
-Pascal compatibility, while expanding SolVM and `solas`/`desole` in
-parallel wherever new language features demand new bytecode capability.
-From there, the plan is:
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full, checklist-level
+breakdown. In short: the first goal is to finish `pascalc` to the point
+of Wirth/standard Pascal compatibility, while expanding SolVM and
+`solas`/`desole` in parallel wherever new language features demand new
+bytecode capability. From there, the plan is:
 
 - Grow Pascal into an object-oriented dialect, and possibly add C-style
   `enum`/`union` concepts.

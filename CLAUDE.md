@@ -290,11 +290,12 @@ opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
 - [docs/BYTECODE.md](docs/BYTECODE.md) — SolVM architecture, full opcode reference, `.bin` file format.
 - [docs/ASSEMBLER.md](docs/ASSEMBLER.md) — `solas`/`desole` `.sasm` syntax and usage.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internals and extension checklist; start here before structural changes.
-- Root [README.md](README.md) — current feature status (working / not yet implemented) and project layout table.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — the authoritative, checklist-level project plan: current-phase tasks plus later phases (OOP Pascal, further front ends, Phoenix). Keep it updated as work lands — this is the one place tracking what's actually left to do, superseding the old `notes/todo.md`.
+- Root [README.md](README.md) — current feature status (working / not yet implemented), project layout table, and a one-paragraph roadmap summary that links to docs/ROADMAP.md.
 
 ## Repo layout beyond `src/`
 
 - `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/`, `examples/test/` — `.pas`/`.sasm` sample and test programs, grouped by purpose (`test/` = regression tests, `doc/` = examples referenced from `docs/`, `tech/` = misc technical exercises, `audit/` = audit-driven test programs).
-- `notes/` — the author's own design notes and to-do list (not authoritative spec).
+- `notes/` — the author's own freeform design notes (naming ideas, musings); not authoritative — the actual plan lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 - `chats/` — saved transcripts from other AI assistants used during design.
 - `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `*.c`/`*.h`/`Makefile` → `src/`, `*.sasm` → `examples/asm/`, `doc_*.pas` → `examples/doc/`, `test_*.pas` → `examples/test/`). Not part of the build.
