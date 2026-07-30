@@ -1,0 +1,82 @@
+.var price real
+.var i integer
+.var s string
+.var b boolean
+
+    push 1100952371 ; 0000
+    store price ; 0001
+    push_str "[" ; 0002
+    print_str ; 0003
+    load price ; 0004
+    push 0 ; 0005
+    push 2 ; 0006
+    fprint_padded_precise ; 0007
+    push_str "]" ; 0008
+    print_str ; 0009
+    newline ; 0010
+    push_str "[" ; 0011
+    print_str ; 0012
+    load price ; 0013
+    push 10 ; 0014
+    push 2 ; 0015
+    fprint_padded_precise ; 0016
+    push_str "]" ; 0017
+    print_str ; 0018
+    newline ; 0019
+    push 42 ; 0020
+    store i ; 0021
+    push_str "[" ; 0022
+    print_str ; 0023
+    load i ; 0024
+    push 5 ; 0025
+    print_padded ; 0026
+    push_str "]" ; 0027
+    print_str ; 0028
+    newline ; 0029
+    push_str "[" ; 0030
+    print_str ; 0031
+    load i ; 0032
+    print ; 0033
+    push_str "]" ; 0034
+    print_str ; 0035
+    newline ; 0036
+    push_str "hi" ; 0037
+    store s ; 0038
+    push_str "[" ; 0039
+    print_str ; 0040
+    load s ; 0041
+    push 6 ; 0042
+    print_str_padded ; 0043
+    push_str "]" ; 0044
+    print_str ; 0045
+    newline ; 0046
+    push 1 ; 0047
+    store b ; 0048
+    push_str "[" ; 0049
+    print_str ; 0050
+    load b ; 0051
+    push 8 ; 0052
+    print_bool_padded ; 0053
+    push_str "]" ; 0054
+    print_str ; 0055
+    newline ; 0056
+    push_str "[" ; 0057
+    print_str ; 0058
+    load price ; 0059
+    push 10 ; 0060
+    fprint_padded ; 0061
+    push_str "]" ; 0062
+    print_str ; 0063
+    newline ; 0064
+    load i ; 0065
+    push 4 ; 0066
+    print_padded ; 0067
+    load price ; 0068
+    push 8 ; 0069
+    push 2 ; 0070
+    fprint_padded_precise ; 0071
+    load s ; 0072
+    push 5 ; 0073
+    print_str_padded ; 0074
+    newline ; 0075
+    halt ; 0076

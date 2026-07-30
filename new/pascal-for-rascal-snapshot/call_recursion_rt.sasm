@@ -1,0 +1,21 @@
+.var n integer
+
+    push 5 ; 0000
+    store n ; 0001
+    call L4 ; 0002
+    halt ; 0003
+L4:
+    load n ; 0004
+    print ; 0005
+    newline ; 0006
+    load n ; 0007
+    push 0 ; 0008
+    gt ; 0009
+    jz L16 ; 0010
+    load n ; 0011
+    push 1 ; 0012
+    sub ; 0013
+    store n ; 0014
+    call L4 ; 0015
+L16:
+    ret ; 0016

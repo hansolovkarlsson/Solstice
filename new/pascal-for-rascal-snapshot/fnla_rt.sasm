@@ -1,0 +1,62 @@
+.var x integer
+
+    jmp L17 ; 0000
+L1:
+    enter 2 ; 0001
+    store_local 0 ; 0002
+    load_local 0 ; 0003
+    load_local 0 ; 0004
+    mul ; 0005
+    store_local 1 ; 0006
+    load_local 1 ; 0007
+    ret ; 0008
+L9:
+    enter 2 ; 0009
+    store_local 0 ; 0010
+    load_local 0 ; 0011
+    push 1 ; 0012
+    add ; 0013
+    store_local 1 ; 0014
+    load_local 1 ; 0015
+    ret ; 0016
+L17:
+    push 3 ; 0017
+    call L1 ; 0018
+    print ; 0019
+    push_str " and " ; 0020
+    print_str ; 0021
+    push 4 ; 0022
+    call L1 ; 0023
+    print ; 0024
+    newline ; 0025
+    push 2 ; 0026
+    call L1 ; 0027
+    print ; 0028
+    push_str " " ; 0029
+    print_str ; 0030
+    push 3 ; 0031
+    call L1 ; 0032
+    print ; 0033
+    push_str " " ; 0034
+    print_str ; 0035
+    push 4 ; 0036
+    call L1 ; 0037
+    print ; 0038
+    newline ; 0039
+    push 3 ; 0040
+    call L1 ; 0041
+    call L9 ; 0042
+    store x ; 0043
+    push_str "addOne(sq(3)) = " ; 0044
+    print_str ; 0045
+    load x ; 0046
+    print ; 0047
+    newline ; 0048
+    push 2 ; 0049
+    call L1 ; 0050
+    push 3 ; 0051
+    call L1 ; 0052
+    add ; 0053
+    print ; 0054
+    newline ; 0055
+    halt ; 0056

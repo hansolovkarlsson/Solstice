@@ -1,0 +1,39 @@
+.var greeting string
+.var name string
+.var same boolean
+
+    push_str "Hello" ; 0000
+    store greeting ; 0001
+    push_str "World" ; 0002
+    store name ; 0003
+    load greeting ; 0004
+    print_str ; 0005
+    load name ; 0006
+    print_str ; 0007
+    push_str "Hello, World!" ; 0008
+    print_str ; 0009
+    load greeting ; 0010
+    push_str "Hello" ; 0011
+    seq ; 0012
+    store same ; 0013
+    load same ; 0014
+    print ; 0015
+    load greeting ; 0016
+    load name ; 0017
+    seq ; 0018
+    store same ; 0019
+    load same ; 0020
+    print ; 0021
+    load name ; 0022
+    push_str "World" ; 0023
+    seq ; 0024
+    not ; 0025
+    jz L30 ; 0026
+    push_str "mismatch" ; 0027
+    print_str ; 0028
+    jmp L32 ; 0029
+L30:
+    push_str "match" ; 0030
+    print_str ; 0031
+L32:
+    halt ; 0032

@@ -1,0 +1,6 @@
+    call f
+    halt
+f:
+    enter 2
+    load_local 5
+    ret

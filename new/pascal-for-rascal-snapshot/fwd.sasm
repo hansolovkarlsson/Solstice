@@ -1,0 +1,6 @@
+    push 42
+    store x
+    load x
+    print
+    halt
+.var x integer

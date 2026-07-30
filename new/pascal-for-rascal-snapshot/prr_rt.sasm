@@ -1,0 +1,8 @@
+.var p__x integer
+.var p__y integer
+
+    read p__x ; 0000
+    load p__x ; 0001
+    print ; 0002
+    newline ; 0003
+    halt ; 0004

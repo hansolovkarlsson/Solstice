@@ -1,0 +1,52 @@
+.array s__scores 1 5 integer
+.var i integer
+.var __for_tmp2 integer
+.var __for_tmp3 integer
+
+    push 1 ; 0000
+    store i ; 0001
+    push 5 ; 0002
+    store __for_tmp2 ; 0003
+L4:
+    load i ; 0004
+    load __for_tmp2 ; 0005
+    lte ; 0006
+    jz L18 ; 0007
+    load i ; 0008
+    load i ; 0009
+    load i ; 0010
+    mul ; 0011
+    store_idx s__scores ; 0012
+    load i ; 0013
+    push 1 ; 0014
+    add ; 0015
+    store i ; 0016
+    jmp L4 ; 0017
+L18:
+    push_str "length: " ; 0018
+    print_str ; 0019
+    push 5 ; 0020
+    print ; 0021
+    newline ; 0022
+    push 1 ; 0023
+    store i ; 0024
+    push 5 ; 0025
+    store __for_tmp3 ; 0026
+L27:
+    load i ; 0027
+    load __for_tmp3 ; 0028
+    lte ; 0029
+    jz L41 ; 0030
+    load i ; 0031
+    load_idx s__scores ; 0032
+    print ; 0033
+    push_str " " ; 0034
+    print_str ; 0035
+    load i ; 0036
+    push 1 ; 0037
+    add ; 0038
+    store i ; 0039
+    jmp L27 ; 0040
+L41:
+    newline ; 0041
+    halt ; 0042

@@ -1,0 +1,111 @@
+.array nums 1 5 integer
+.var total integer
+.var i integer
+.var __for_tmp3 integer
+.var __for_tmp4 integer
+
+    jmp L48 ; 0000
+L1:
+    enter 4 ; 0001
+    store_local 0 ; 0002
+    push 0 ; 0003
+    store_local 1 ; 0004
+    push 1 ; 0005
+    store_local 2 ; 0006
+L7:
+    load_local 2 ; 0007
+    push 5 ; 0008
+    lte ; 0009
+    jz L22 ; 0010
+    load_local 1 ; 0011
+    load_local 0 ; 0012
+    load_local 2 ; 0013
+    load_idx_dyn ; 0014
+    add ; 0015
+    store_local 1 ; 0016
+    load_local 2 ; 0017
+    push 1 ; 0018
+    add ; 0019
+    store_local 2 ; 0020
+    jmp L7 ; 0021
+L22:
+    load_local 1 ; 0022
+    store_local 3 ; 0023
+    load_local 3 ; 0024
+    ret ; 0025
+L26:
+    enter 2 ; 0026
+    store_local 0 ; 0027
+    push 1 ; 0028
+    store_local 1 ; 0029
+L30:
+    load_local 1 ; 0030
+    push 5 ; 0031
+    lte ; 0032
+    jz L47 ; 0033
+    load_local 0 ; 0034
+    load_local 1 ; 0035
+    load_local 0 ; 0036
+    load_local 1 ; 0037
+    load_idx_dyn ; 0038
+    push 2 ; 0039
+    mul ; 0040
+    store_idx_dyn ; 0041
+    load_local 1 ; 0042
+    push 1 ; 0043
+    add ; 0044
+    store_local 1 ; 0045
+    jmp L30 ; 0046
+L47:
+    ret ; 0047
+L48:
+    push 1 ; 0048
+    store i ; 0049
+    push 5 ; 0050
+    store __for_tmp3 ; 0051
+L52:
+    load i ; 0052
+    load __for_tmp3 ; 0053
+    lte ; 0054
+    jz L64 ; 0055
+    load i ; 0056
+    load i ; 0057
+    store_idx nums ; 0058
+    load i ; 0059
+    push 1 ; 0060
+    add ; 0061
+    store i ; 0062
+    jmp L52 ; 0063
+L64:
+    push 0 ; 0064
+    call L1 ; 0065
+    store total ; 0066
+    push_str "sum 1..5 = " ; 0067
+    print_str ; 0068
+    load total ; 0069
+    print ; 0070
+    newline ; 0071
+    push 0 ; 0072
+    call L26 ; 0073
+    push 1 ; 0074
+    store i ; 0075
+    push 5 ; 0076
+    store __for_tmp4 ; 0077
+L78:
+    load i ; 0078
+    load __for_tmp4 ; 0079
+    lte ; 0080
+    jz L92 ; 0081
+    load i ; 0082
+    load_idx nums ; 0083
+    print ; 0084
+    push_str " " ; 0085
+    print_str ; 0086
+    load i ; 0087
+    push 1 ; 0088
+    add ; 0089
+    store i ; 0090
+    jmp L78 ; 0091
+L92:
+    newline ; 0092
+    halt ; 0093

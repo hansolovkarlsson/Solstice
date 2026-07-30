@@ -1,0 +1,29 @@
+.var c__i integer
+.var c__total integer
+.var __for_tmp2 integer
+
+    push 0 ; 0000
+    store c__total ; 0001
+    push 1 ; 0002
+    store c__i ; 0003
+    push 5 ; 0004
+    store __for_tmp2 ; 0005
+L6:
+    load c__i ; 0006
+    load __for_tmp2 ; 0007
+    lte ; 0008
+    jz L19 ; 0009
+    load c__total ; 0010
+    load c__i ; 0011
+    add ; 0012
+    store c__total ; 0013
+    load c__i ; 0014
+    push 1 ; 0015
+    add ; 0016
+    store c__i ; 0017
+    jmp L6 ; 0018
+L19:
+    load c__total ; 0019
+    print ; 0020
+    newline ; 0021
+    halt ; 0022

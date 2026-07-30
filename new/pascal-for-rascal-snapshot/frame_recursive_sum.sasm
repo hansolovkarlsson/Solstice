@@ -1,0 +1,25 @@
+; sum(n) = n + sum(n-1), sum(0) = 0
+; convention: caller pushes n, calls; callee leaves the result on the
+; operand stack before ret.
+    push 5
+    call sum
+    print       ; expect 15 = 1+2+3+4+5
+    newline
+    halt
+sum:
+    enter 1          ; local 0 = n
+    store_local 0
+    load_local 0
+    push 0
+    eq
+    jz recurse
+    push 0           ; base case: sum(0) = 0
+    ret
+recurse:
+    load_local 0     ; n - kept on the operand stack across the recursive call
+    load_local 0
+    push 1
+    sub              ; n - 1
+    call sum         ; recursive call - its own independent frame
+    add              ; n + sum(n-1)
+    ret

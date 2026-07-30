@@ -1,0 +1,78 @@
+.var s string
+
+    push_str "Hello, World!" ; 0000
+    store s ; 0001
+    push_str "length: " ; 0002
+    print_str ; 0003
+    load s ; 0004
+    length ; 0005
+    print ; 0006
+    newline ; 0007
+    push_str "pos: " ; 0008
+    print_str ; 0009
+    push_str "World" ; 0010
+    load s ; 0011
+    pos ; 0012
+    print ; 0013
+    newline ; 0014
+    push_str "pos not found: " ; 0015
+    print_str ; 0016
+    push_str "xyz" ; 0017
+    load s ; 0018
+    pos ; 0019
+    print ; 0020
+    newline ; 0021
+    push_str "copy: " ; 0022
+    print_str ; 0023
+    load s ; 0024
+    push 8 ; 0025
+    push 5 ; 0026
+    copy ; 0027
+    print_str ; 0028
+    newline ; 0029
+    push_str "copy clamped: " ; 0030
+    print_str ; 0031
+    load s ; 0032
+    push 8 ; 0033
+    push 100 ; 0034
+    copy ; 0035
+    print_str ; 0036
+    newline ; 0037
+    push_str "copy oob start: " ; 0038
+    print_str ; 0039
+    load s ; 0040
+    push 100 ; 0041
+    push 5 ; 0042
+    copy ; 0043
+    print_str ; 0044
+    newline ; 0045
+    push_str "mid: " ; 0046
+    print_str ; 0047
+    load s ; 0048
+    push 1 ; 0049
+    push 5 ; 0050
+    copy ; 0051
+    print_str ; 0052
+    newline ; 0053
+    push_str "left: " ; 0054
+    print_str ; 0055
+    load s ; 0056
+    push 5 ; 0057
+    left ; 0058
+    print_str ; 0059
+    newline ; 0060
+    push_str "right: " ; 0061
+    print_str ; 0062
+    load s ; 0063
+    push 6 ; 0064
+    right ; 0065
+    print_str ; 0066
+    newline ; 0067
+    push_str "inpos: " ; 0068
+    print_str ; 0069
+    push_str "l" ; 0070
+    load s ; 0071
+    pos ; 0072
+    print ; 0073
+    newline ; 0074
+    halt ; 0075

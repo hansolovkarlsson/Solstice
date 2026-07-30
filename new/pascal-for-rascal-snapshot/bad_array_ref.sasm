@@ -1,0 +1,3 @@
+push 1
+load_idx nosucharray
+halt

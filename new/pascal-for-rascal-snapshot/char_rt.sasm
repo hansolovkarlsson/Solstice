@@ -1,0 +1,99 @@
+.var c1 char
+.var c2 char
+.var s string
+.array letters 1 5 char
+.var i integer
+.var __for_tmp5 integer
+
+    push_str "a" ; 0000
+    store c1 ; 0001
+    push_str "b" ; 0002
+    store c2 ; 0003
+    load c1 ; 0004
+    print_str ; 0005
+    newline ; 0006
+    load c2 ; 0007
+    print_str ; 0008
+    newline ; 0009
+    load c1 ; 0010
+    load c2 ; 0011
+    scmp ; 0012
+    push 0 ; 0013
+    lt ; 0014
+    jz L19 ; 0015
+    push_str "a < b: true" ; 0016
+    print_str ; 0017
+    newline ; 0018
+L19:
+    load c1 ; 0019
+    push_str "a" ; 0020
+    seq ; 0021
+    jz L26 ; 0022
+    push_str "c1 = a: true" ; 0023
+    print_str ; 0024
+    newline ; 0025
+L26:
+    load c1 ; 0026
+    load c2 ; 0027
+    seq ; 0028
+    not ; 0029
+    jz L34 ; 0030
+    push_str "c1 <> c2: true" ; 0031
+    print_str ; 0032
+    newline ; 0033
+L34:
+    load c1 ; 0034
+    load c2 ; 0035
+    sconcat ; 0036
+    store s ; 0037
+    push_str "concat: " ; 0038
+    print_str ; 0039
+    load s ; 0040
+    print_str ; 0041
+    newline ; 0042
+    push_str "x" ; 0043
+    load c1 ; 0044
+    sconcat ; 0045
+    store s ; 0046
+    push_str "mixed concat: " ; 0047
+    print_str ; 0048
+    load s ; 0049
+    print_str ; 0050
+    newline ; 0051
+    push 1 ; 0052
+    push_str "H" ; 0053
+    store_idx letters ; 0054
+    push 2 ; 0055
+    push_str "e" ; 0056
+    store_idx letters ; 0057
+    push 3 ; 0058
+    push_str "l" ; 0059
+    store_idx letters ; 0060
+    push 4 ; 0061
+    push_str "l" ; 0062
+    store_idx letters ; 0063
+    push 5 ; 0064
+    push_str "o" ; 0065
+    store_idx letters ; 0066
+    push 1 ; 0067
+    store i ; 0068
+    push 5 ; 0069
+    store __for_tmp5 ; 0070
+L71:
+    load i ; 0071
+    load __for_tmp5 ; 0072
+    lte ; 0073
+    jz L83 ; 0074
+    load i ; 0075
+    load_idx letters ; 0076
+    print_str ; 0077
+    load i ; 0078
+    push 1 ; 0079
+    add ; 0080
+    store i ; 0081
+    jmp L71 ; 0082
+L83:
+    newline ; 0083
+    load s ; 0084
+    store c1 ; 0085
+    halt ; 0086

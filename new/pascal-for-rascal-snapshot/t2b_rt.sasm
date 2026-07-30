@@ -1,0 +1,130 @@
+.array2d grid 1 3 1 4 integer
+.var i integer
+.var j integer
+.var total integer
+.var __for_tmp4 integer
+.var __for_tmp5 integer
+.var __for_tmp6 integer
+.var __for_tmp7 integer
+.var __for_tmp8 integer
+.var __for_tmp9 integer
+
+    push 1 ; 0000
+    store i ; 0001
+    push 3 ; 0002
+    store __for_tmp4 ; 0003
+L4:
+    load i ; 0004
+    load __for_tmp4 ; 0005
+    lte ; 0006
+    jz L34 ; 0007
+    push 1 ; 0008
+    store j ; 0009
+    push 4 ; 0010
+    store __for_tmp5 ; 0011
+L12:
+    load j ; 0012
+    load __for_tmp5 ; 0013
+    lte ; 0014
+    jz L29 ; 0015
+    load i ; 0016
+    load j ; 0017
+    load i ; 0018
+    push 10 ; 0019
+    mul ; 0020
+    load j ; 0021
+    add ; 0022
+    store_idx2d grid ; 0023
+    load j ; 0024
+    push 1 ; 0025
+    add ; 0026
+    store j ; 0027
+    jmp L12 ; 0028
+L29:
+    load i ; 0029
+    push 1 ; 0030
+    add ; 0031
+    store i ; 0032
+    jmp L4 ; 0033
+L34:
+    push 1 ; 0034
+    store i ; 0035
+    push 3 ; 0036
+    store __for_tmp6 ; 0037
+L38:
+    load i ; 0038
+    load __for_tmp6 ; 0039
+    lte ; 0040
+    jz L67 ; 0041
+    push 1 ; 0042
+    store j ; 0043
+    push 4 ; 0044
+    store __for_tmp7 ; 0045
+L46:
+    load j ; 0046
+    load __for_tmp7 ; 0047
+    lte ; 0048
+    jz L61 ; 0049
+    load i ; 0050
+    load j ; 0051
+    load_idx2d grid ; 0052
+    print ; 0053
+    push_str " " ; 0054
+    print_str ; 0055
+    load j ; 0056
+    push 1 ; 0057
+    add ; 0058
+    store j ; 0059
+    jmp L46 ; 0060
+L61:
+    newline ; 0061
+    load i ; 0062
+    push 1 ; 0063
+    add ; 0064
+    store i ; 0065
+    jmp L38 ; 0066
+L67:
+    push 0 ; 0067
+    store total ; 0068
+    push 1 ; 0069
+    store i ; 0070
+    push 3 ; 0071
+    store __for_tmp8 ; 0072
+L73:
+    load i ; 0073
+    load __for_tmp8 ; 0074
+    lte ; 0075
+    jz L101 ; 0076
+    push 1 ; 0077
+    store j ; 0078
+    push 4 ; 0079
+    store __for_tmp9 ; 0080
+L81:
+    load j ; 0081
+    load __for_tmp9 ; 0082
+    lte ; 0083
+    jz L96 ; 0084
+    load total ; 0085
+    load i ; 0086
+    load j ; 0087
+    load_idx2d grid ; 0088
+    add ; 0089
+    store total ; 0090
+    load j ; 0091
+    push 1 ; 0092
+    add ; 0093
+    store j ; 0094
+    jmp L81 ; 0095
+L96:
+    load i ; 0096
+    push 1 ; 0097
+    add ; 0098
+    store i ; 0099
+    jmp L73 ; 0100
+L101:
+    push_str "total = " ; 0101
+    print_str ; 0102
+    load total ; 0103
+    print ; 0104
+    newline ; 0105
+    halt ; 0106

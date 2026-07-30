@@ -1,0 +1,39 @@
+.var c char
+
+    push_str "A" ; 0000
+    ord ; 0001
+    print ; 0002
+    newline ; 0003
+    push_str "a" ; 0004
+    ord ; 0005
+    print ; 0006
+    newline ; 0007
+    push 65 ; 0008
+    chr ; 0009
+    print_str ; 0010
+    newline ; 0011
+    push 97 ; 0012
+    chr ; 0013
+    store c ; 0014
+    load c ; 0015
+    print_str ; 0016
+    newline ; 0017
+    push 200 ; 0018
+    chr ; 0019
+    ord ; 0020
+    print ; 0021
+    newline ; 0022
+    push_str "A" ; 0023
+    store c ; 0024
+    load c ; 0025
+    print_str ; 0026
+    newline ; 0027
+    push_str "a" ; 0028
+    print_str ; 0029
+    newline ; 0030
+    push_str "Hi" ; 0031
+    push_str "!" ; 0032
+    sconcat ; 0033
+    print_str ; 0034
+    newline ; 0035
+    halt ; 0036

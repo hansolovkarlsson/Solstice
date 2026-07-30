@@ -1,0 +1,13 @@
+.var x integer
+    push 42
+    store x
+    call greet
+    push 100
+    store x
+    call greet
+    halt
+greet:
+    load x
+    print
+    newline
+    ret

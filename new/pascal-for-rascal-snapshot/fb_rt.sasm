@@ -1,0 +1,53 @@
+.var result boolean
+
+    jmp L29 ; 0000
+L1:
+    enter 1 ; 0001
+    store_local 0 ; 0002
+    load_local 0 ; 0003
+    push 0 ; 0004
+    eq ; 0005
+    jz L10 ; 0006
+    push 0 ; 0007
+    store result ; 0008
+    jmp L14 ; 0009
+L10:
+    load_local 0 ; 0010
+    push 1 ; 0011
+    sub ; 0012
+    call L15 ; 0013
+L14:
+    ret ; 0014
+L15:
+    enter 1 ; 0015
+    store_local 0 ; 0016
+    load_local 0 ; 0017
+    push 0 ; 0018
+    eq ; 0019
+    jz L24 ; 0020
+    push 1 ; 0021
+    store result ; 0022
+    jmp L28 ; 0023
+L24:
+    load_local 0 ; 0024
+    push 1 ; 0025
+    sub ; 0026
+    call L1 ; 0027
+L28:
+    ret ; 0028
+L29:
+    push 10 ; 0029
+    call L15 ; 0030
+    push_str "10 is even: " ; 0031
+    print_str ; 0032
+    load result ; 0033
+    print ; 0034
+    newline ; 0035
+    push 10 ; 0036
+    call L1 ; 0037
+    push_str "10 is odd: " ; 0038
+    print_str ; 0039
+    load result ; 0040
+    print ; 0041
+    newline ; 0042
+    halt ; 0043

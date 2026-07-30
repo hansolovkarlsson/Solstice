@@ -1,0 +1,5 @@
+.array nums 1 3 integer
+    push 99
+    push 5
+    store_idx nums
+    halt

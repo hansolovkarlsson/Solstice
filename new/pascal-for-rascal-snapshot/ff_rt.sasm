@@ -1,0 +1,59 @@
+.var i integer
+.var __for_tmp1 integer
+
+    jmp L29 ; 0000
+L1:
+    enter 2 ; 0001
+    store_local 0 ; 0002
+    load_local 0 ; 0003
+    call L8 ; 0004
+    store_local 1 ; 0005
+    load_local 1 ; 0006
+    ret ; 0007
+L8:
+    enter 2 ; 0008
+    store_local 0 ; 0009
+    load_local 0 ; 0010
+    push 1 ; 0011
+    lte ; 0012
+    jz L17 ; 0013
+    load_local 0 ; 0014
+    store_local 1 ; 0015
+    jmp L27 ; 0016
+L17:
+    load_local 0 ; 0017
+    push 1 ; 0018
+    sub ; 0019
+    call L1 ; 0020
+    load_local 0 ; 0021
+    push 2 ; 0022
+    sub ; 0023
+    call L1 ; 0024
+    add ; 0025
+    store_local 1 ; 0026
+L27:
+    load_local 1 ; 0027
+    ret ; 0028
+L29:
+    push 0 ; 0029
+    store i ; 0030
+    push 9 ; 0031
+    store __for_tmp1 ; 0032
+L33:
+    load i ; 0033
+    load __for_tmp1 ; 0034
+    lte ; 0035
+    jz L47 ; 0036
+    load i ; 0037
+    call L1 ; 0038
+    print ; 0039
+    push_str " " ; 0040
+    print_str ; 0041
+    load i ; 0042
+    push 1 ; 0043
+    add ; 0044
+    store i ; 0045
+    jmp L33 ; 0046
+L47:
+    newline ; 0047
+    halt ; 0048

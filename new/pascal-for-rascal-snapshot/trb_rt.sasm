@@ -1,0 +1,85 @@
+.var x real
+.var y real
+.var z real
+.var i integer
+
+    push 1078523331 ; 0000
+    store x ; 0001
+    push_str "x = " ; 0002
+    print_str ; 0003
+    load x ; 0004
+    fprint ; 0005
+    newline ; 0006
+    push 1073741824 ; 0007
+    store y ; 0008
+    load x ; 0009
+    load y ; 0010
+    fadd ; 0011
+    store z ; 0012
+    push_str "x + y = " ; 0013
+    print_str ; 0014
+    load z ; 0015
+    fprint ; 0016
+    newline ; 0017
+    push_str "x - y = " ; 0018
+    print_str ; 0019
+    load x ; 0020
+    load y ; 0021
+    fsub ; 0022
+    fprint ; 0023
+    newline ; 0024
+    push_str "x * y = " ; 0025
+    print_str ; 0026
+    load x ; 0027
+    load y ; 0028
+    fmul ; 0029
+    fprint ; 0030
+    newline ; 0031
+    push_str "x / y = " ; 0032
+    print_str ; 0033
+    load x ; 0034
+    load y ; 0035
+    fdiv ; 0036
+    fprint ; 0037
+    newline ; 0038
+    push_str "5 / 2 = " ; 0039
+    print_str ; 0040
+    push 5 ; 0041
+    int_to_real ; 0042
+    push 2 ; 0043
+    int_to_real ; 0044
+    fdiv ; 0045
+    fprint ; 0046
+    newline ; 0047
+    push_str "10 div 3 = " ; 0048
+    print_str ; 0049
+    push 3 ; 0050
+    print ; 0051
+    newline ; 0052
+    push 3 ; 0053
+    store i ; 0054
+    push_str "i + x = " ; 0055
+    print_str ; 0056
+    load i ; 0057
+    int_to_real ; 0058
+    load x ; 0059
+    fadd ; 0060
+    fprint ; 0061
+    newline ; 0062
+    push_str "x + i = " ; 0063
+    print_str ; 0064
+    load x ; 0065
+    load i ; 0066
+    int_to_real ; 0067
+    fadd ; 0068
+    fprint ; 0069
+    newline ; 0070
+    push 5 ; 0071
+    int_to_real ; 0072
+    store x ; 0073
+    push_str "x after x:=5 = " ; 0074
+    print_str ; 0075
+    load x ; 0076
+    fprint ; 0077
+    newline ; 0078
+    halt ; 0079

@@ -1,0 +1,105 @@
+.var i integer
+.var j integer
+.array __local_arr2 1 5 integer
+.var __for_tmp3 integer
+.var __for_tmp4 integer
+.var __for_tmp5 integer
+
+    jmp L87 ; 0000
+L1:
+    enter 2 ; 0001
+    push 1 ; 0002
+    push 5 ; 0003
+    store_idx __local_arr2 ; 0004
+    push 2 ; 0005
+    push 3 ; 0006
+    store_idx __local_arr2 ; 0007
+    push 3 ; 0008
+    push 4 ; 0009
+    store_idx __local_arr2 ; 0010
+    push 4 ; 0011
+    push 1 ; 0012
+    store_idx __local_arr2 ; 0013
+    push 5 ; 0014
+    push 2 ; 0015
+    store_idx __local_arr2 ; 0016
+    push 1 ; 0017
+    store i ; 0018
+    push 4 ; 0019
+    store __for_tmp3 ; 0020
+L21:
+    load i ; 0021
+    load __for_tmp3 ; 0022
+    lte ; 0023
+    jz L67 ; 0024
+    push 1 ; 0025
+    store j ; 0026
+    push 5 ; 0027
+    load i ; 0028
+    sub ; 0029
+    store __for_tmp4 ; 0030
+L31:
+    load j ; 0031
+    load __for_tmp4 ; 0032
+    lte ; 0033
+    jz L62 ; 0034
+    load j ; 0035
+    load_idx __local_arr2 ; 0036
+    load j ; 0037
+    push 1 ; 0038
+    add ; 0039
+    load_idx __local_arr2 ; 0040
+    gt ; 0041
+    jz L57 ; 0042
+    load j ; 0043
+    load_idx __local_arr2 ; 0044
+    store_local 1 ; 0045
+    load j ; 0046
+    load j ; 0047
+    push 1 ; 0048
+    add ; 0049
+    load_idx __local_arr2 ; 0050
+    store_idx __local_arr2 ; 0051
+    load j ; 0052
+    push 1 ; 0053
+    add ; 0054
+    load_local 1 ; 0055
+    store_idx __local_arr2 ; 0056
+L57:
+    load j ; 0057
+    push 1 ; 0058
+    add ; 0059
+    store j ; 0060
+    jmp L31 ; 0061
+L62:
+    load i ; 0062
+    push 1 ; 0063
+    add ; 0064
+    store i ; 0065
+    jmp L21 ; 0066
+L67:
+    push 1 ; 0067
+    store i ; 0068
+    push 5 ; 0069
+    store __for_tmp5 ; 0070
+L71:
+    load i ; 0071
+    load __for_tmp5 ; 0072
+    lte ; 0073
+    jz L85 ; 0074
+    load i ; 0075
+    load_idx __local_arr2 ; 0076
+    print ; 0077
+    push_str " " ; 0078
+    print_str ; 0079
+    load i ; 0080
+    push 1 ; 0081
+    add ; 0082
+    store i ; 0083
+    jmp L71 ; 0084
+L85:
+    newline ; 0085
+    ret ; 0086
+L87:
+    call L1 ; 0087
+    halt ; 0088
