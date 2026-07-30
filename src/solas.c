@@ -128,6 +128,7 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"FEXP",      OP_FEXP,      OPERAND_NONE},
     {"FLN",       OP_FLN,       OPERAND_NONE},
     {"FPOWER",    OP_FPOWER,    OPERAND_NONE},
+    {"STR_CHAR_REPLACE", OP_STR_CHAR_REPLACE, OPERAND_NONE},
     {"ORD",       OP_ORD,       OPERAND_NONE},
     {"CHR",       OP_CHR,       OPERAND_NONE},
     {"LENGTH",       OP_LENGTH,       OPERAND_NONE},

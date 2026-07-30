@@ -496,6 +496,25 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_STR_CHAR_REPLACE: {
+                int new_char_val = vm_pop(&sp);   // pushed last - on top
+                int runtime_index = vm_pop(&sp);
+                int old_str_val = vm_pop(&sp);    // pushed first (the preceding LOAD/LOAD_LOCAL)
+                vm_check_char(new_char_val, "string character assignment");
+                int old_idx = vm_str_index(old_str_val);
+                int len = (int)strlen(string_pool[old_idx]);
+                if (runtime_index < 1 || runtime_index > len) {
+                    fprintf(stderr, "VM Runtime Error: String index %d out of range (1..%d)\n", runtime_index, len);
+                    fatal_abort();
+                }
+                char buf[MAX_STRING_LEN];
+                strcpy(buf, string_pool[old_idx]);
+                int new_char_idx = vm_str_index(new_char_val);
+                buf[runtime_index - 1] = string_pool[new_char_idx][0];
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
             case OP_COPY: {
                 int count = vm_pop(&sp);
                 int start = vm_pop(&sp);

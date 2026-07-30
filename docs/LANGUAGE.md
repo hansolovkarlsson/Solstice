@@ -533,13 +533,34 @@ end.
   is a runtime error, not a clamped or empty result. This mirrors real
   Pascal, where indexing and `copy` genuinely have different bounds
   behavior.
-- `s[i]` is **read-only** — `s[i] := 'x'` is a compile-time error. This
-  compiler's strings are deduplicated in a shared pool (see
+- `s[i] := val` — assigns a single character (`val` must be exactly one
+  character, checked at runtime the same way any other char-typed
+  storage is) at 1-based position `i`, also strict like the read side
+  (`i` outside `1..length(s)` is a runtime error). Works on a plain
+  `string`/`char` variable, global or local — same restriction as
+  reading `s[i]`.
+
+  This compiler's strings are deduplicated in a shared pool (see
   [docs/BYTECODE.md](BYTECODE.md)), so two variables holding equal
-  string values can be the *same* underlying entry; mutating a character
-  in place would silently corrupt every other variable sharing that
-  entry. Build a new string instead (e.g. `s := copy(s,1,i-1) + 'x' +
-  copy(s,i+1,length(s));`).
+  string values can be the *same* underlying entry — naively mutating a
+  character in place would corrupt every other variable sharing it.
+  `s[i] := val` avoids this by copy-on-write under the hood: it builds
+  an entirely new string with that one character replaced, interns it
+  (reusing an existing pool entry if one already matches), and only then
+  points `s` at the result — `s` and any other variable that happened to
+  share its old value are never mutated in place, only ever reassigned
+  to point somewhere new. For example:
+
+  ```pascal
+  var s, t: string;
+  begin
+      s := 'Hello';
+      t := 'Hello';   { t shares the same pooled entry as s }
+      s[1] := 'J';
+      writeln(s);      { Jello }
+      writeln(t);      { Hello - unaffected }
+  end.
+  ```
 
 ### `copy`, `pos`, and the BASIC-style extras
 

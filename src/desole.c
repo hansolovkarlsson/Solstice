@@ -53,6 +53,7 @@ static const char *opcode_name(Opcode op) {
         case OP_FEXP:    return "fexp";
         case OP_FLN:     return "fln";
         case OP_FPOWER:  return "fpower";
+        case OP_STR_CHAR_REPLACE: return "str_char_replace";
         case OP_ORD:   return "ord";
         case OP_CHR:   return "chr";
         case OP_LENGTH:        return "length";

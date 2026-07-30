@@ -358,6 +358,34 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         return node;
     }
 
+    if (node->type == NODE_STRING_INDEX_ASSIGN) {
+        int var_idx = node->data.var_idx;
+        node->next = sweep_dead_assignments(node->next);
+
+        if (!var_used_tracker[var_idx]) {
+            if (verbose_mode) {
+                printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
+                       sym_table[var_idx].name);
+            }
+
+            ASTNode *next_cached = node->next;
+            node->left = optimize_ast(node->left);
+            free_ast(node->left);
+            node->left = NULL;
+            node->right = optimize_ast(node->right);
+            free_ast(node->right);
+            node->right = NULL;
+            node->next = NULL;
+            free(node);
+
+            return next_cached;
+        }
+
+        node->left = sweep_dead_assignments(node->left);
+        node->right = sweep_dead_assignments(node->right);
+        return node;
+    }
+
     node->left = sweep_dead_assignments(node->left);
     node->right = sweep_dead_assignments(node->right);
     node->next = sweep_dead_assignments(node->next);

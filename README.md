@@ -152,6 +152,10 @@ and `**` (right-associative, tighter-binding than `*`/`/`) — domain
 errors (`sqrt(-1)`, `ln(0)`, etc.) are caught uniformly at runtime, or at
 compile time when foldable (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#math-functions-pi-and-exponentiation)).
+Also working: `s[i] := val` string character mutation, via copy-on-write
+under the hood so it's safe even when the string pool's deduplication
+means another variable shares the same underlying entry (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#string)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no

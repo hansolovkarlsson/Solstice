@@ -425,6 +425,20 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_STRING_INDEX_ASSIGN:
+        case NODE_LOCAL_STRING_INDEX_ASSIGN:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: String index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (!is_string_type(node->right->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign a non-char/string value to a string character\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_ARRAY_ACCESS_2D:
             if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
                 fprintf(stderr, "%s:%d: Type Error: Array indices must be integer\n",

@@ -519,6 +519,24 @@ void generate_code(ASTNode *node) {
             emit(OP_STR_CHAR_AT, 0);
             break;
 
+        case NODE_STRING_INDEX_ASSIGN:
+            emit(OP_LOAD, node->data.var_idx);   // old value
+            generate_code(node->left);            // index
+            generate_code(node->right);           // new character
+            emit(OP_STR_CHAR_REPLACE, 0);
+            emit(OP_STORE, node->data.var_idx);
+            generate_code(node->next);
+            break;
+
+        case NODE_LOCAL_STRING_INDEX_ASSIGN:
+            emit(OP_LOAD_LOCAL, node->data.var_idx);
+            generate_code(node->left);
+            generate_code(node->right);
+            emit(OP_STR_CHAR_REPLACE, 0);
+            emit(OP_STORE_LOCAL, node->data.var_idx);
+            generate_code(node->next);
+            break;
+
         case NODE_ARRAY_ACCESS_2D:
             generate_code(node->left);  // first index
             generate_code(node->right); // second index

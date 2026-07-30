@@ -313,6 +313,32 @@ void print_ast(ASTNode *node, int indent) {
             print_ast(node->left, indent + 2);
             break;
 
+        case NODE_STRING_INDEX_ASSIGN:
+            printf("[String Index Assignment] -> sym_table index %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_LOCAL_STRING_INDEX_ASSIGN:
+            printf("[Local String Index Assignment] -> slot %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_ARRAY_ACCESS_2D:
             printf("[2D Array Access] -> Array: %s\n", sym_table[node->data.var_idx].name);
             print_indent(indent + 1);

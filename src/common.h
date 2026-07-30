@@ -309,7 +309,7 @@ typedef enum {
                   // caught this one uniform way, rather than needing a
                   // separate domain precondition check per function),
                   // pushes the result.
-    OP_FPOWER     // Pop the exponent, then the base (both reinterpreted
+    OP_FPOWER,    // Pop the exponent, then the base (both reinterpreted
                   // as float); push base^exponent via powf, with the
                   // same NaN/infinite result check as the functions
                   // above (e.g. a negative base with a non-integer
@@ -317,6 +317,21 @@ typedef enum {
                   // power(base, exp) function and the '**' operator -
                   // they compute exactly the same thing, just with
                   // different surface syntax.
+    OP_STR_CHAR_REPLACE // Pop a new character (must be exactly one
+                  // character - a runtime error otherwise, same check as
+                  // any other char-typed storage), then a runtime
+                  // (1-based) index, then a string_pool[] index (the
+                  // string's *old* value); bounds-check the index
+                  // strictly (an out-of-range index is a runtime error,
+                  // matching read-side indexing, not the lenient
+                  // clamping copy()/left()/right() use); build a new
+                  // string with that one character replaced; intern it;
+                  // push its index. Deliberately doesn't know or care
+                  // whether the string being mutated lives in a global
+                  // variable or a local frame slot - codegen surrounds
+                  // this with an ordinary LOAD/LOAD_LOCAL beforehand and
+                  // STORE/STORE_LOCAL afterward, so this one opcode
+                  // covers both cases with no duplication.
 } Opcode;
 
 typedef struct {
@@ -430,13 +445,22 @@ typedef enum {
                        // so nothing that inspects node type - constant
                        // folding, in particular - can mistake a real
                        // literal's bit pattern for a plain integer value.
-    NODE_INT_TO_REAL   // Implicit widening: left is an integer-typed
+    NODE_INT_TO_REAL,  // Implicit widening: left is an integer-typed
                        // expression; this node's own value is its real
                        // equivalent. Inserted by the type checker
                        // wherever Pascal's automatic int->real widening
                        // applies (mixed arithmetic, assigning an integer
                        // to a real variable) - codegen never has to
                        // decide this itself, it just sees the wrapper.
+    NODE_STRING_INDEX_ASSIGN,       // 's[i] := val' where s is a GLOBAL
+                       // string/char variable. data.var_idx = s's
+                       // sym_table index, left = index expression,
+                       // right = the new character (must be exactly one
+                       // character - checked at runtime, same as any
+                       // other char-typed storage in this VM).
+    NODE_LOCAL_STRING_INDEX_ASSIGN  // Same as above, but s is a
+                       // parameter/local string/char variable.
+                       // data.var_idx = s's frame slot.
 } NodeType;
 
 typedef struct ASTNode {

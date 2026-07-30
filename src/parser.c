@@ -1582,6 +1582,16 @@ static ASTNode *parse_global_assignment(int idx) {
         stmt->right = expression(); // value
         return stmt;
     }
+    if (token.type == TOKEN_LBRACKET && (sym_table[idx].type == TYPE_STRING || sym_table[idx].type == TYPE_CHAR)) {
+        match(TOKEN_LBRACKET);
+        ASTNode *stmt = create_node(NODE_STRING_INDEX_ASSIGN);
+        stmt->data.var_idx = idx;
+        stmt->left = expression();  // index
+        match(TOKEN_RBRACKET);
+        match(TOKEN_ASSIGN);
+        stmt->right = expression(); // new character
+        return stmt;
+    }
     ASTNode *stmt = create_node(NODE_ASSIGN);
     stmt->data.var_idx = idx;
     match(TOKEN_ASSIGN);
@@ -1734,10 +1744,20 @@ static ASTNode *statement(void) {
                 stmt->right = expression(); // value
                 return stmt;
             }
+            match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_LBRACKET && (current_locals[local_idx].type == TYPE_STRING || current_locals[local_idx].type == TYPE_CHAR)) {
+                match(TOKEN_LBRACKET);
+                ASTNode *stmt = create_node(NODE_LOCAL_STRING_INDEX_ASSIGN);
+                stmt->data.var_idx = local_idx;
+                stmt->left = expression();  // index
+                match(TOKEN_RBRACKET);
+                match(TOKEN_ASSIGN);
+                stmt->right = expression(); // new character
+                return stmt;
+            }
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
             stmt->data.var_idx = local_idx;
             stmt->expression_type = current_locals[local_idx].type; // target type, for the type checker
-            match(TOKEN_IDENTIFIER);
             match(TOKEN_ASSIGN);
             stmt->left = expression();
             return stmt;
