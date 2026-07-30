@@ -348,6 +348,18 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_LOCAL_READLN: {
+            Opcode op;
+            if (node->expression_type == TYPE_CHAR) op = OP_READ_LOCAL_CHAR;
+            else if (is_string_type(node->expression_type)) op = OP_READ_LOCAL_STR;
+            else if (node->expression_type == TYPE_BOOLEAN) op = OP_READ_LOCAL_BOOL;
+            else if (node->expression_type == TYPE_REAL) op = OP_READ_LOCAL_REAL;
+            else op = OP_READ_LOCAL_INT;
+            emit(op, node->data.var_idx);
+            generate_code(node->next);
+            break;
+        }
+
         // if <cond> then <then> [else <else>]
         //     <cond>
         //     JZ else_or_end     ; patched below
@@ -459,6 +471,44 @@ void generate_code(ASTNode *node) {
             emit(OP_PUSH, 1);
             emit(descending ? OP_SUB : OP_ADD, 0);
             emit(OP_STORE, loop_var);
+            emit(OP_JMP, loop_start);
+
+            code[jz_idx].arg = code_idx;       // JZ lands here: past the loop
+            patch_loop(continue_target, code_idx);
+            pop_loop();
+            generate_code(node->next);
+            break;
+        }
+
+        case NODE_LOCAL_FOR: {
+            push_loop();
+            int loop_var = node->data.var_idx;
+            int descending = (node->op == TOKEN_DOWNTO);
+
+            generate_code(node->left);         // start bound
+            emit(OP_STORE_LOCAL, loop_var);
+
+            // node->right is already a NODE_LOCAL_VAR referencing the
+            // hidden end-bound slot - the caching itself was desugared
+            // entirely at parse time (see parser.c's NODE_FOR handling),
+            // so generating it here just loads the already-cached value;
+            // no add_temp_var/extra STORE needed the way NODE_FOR needs
+            // above for the global case.
+            int loop_start = code_idx;
+            emit(OP_LOAD_LOCAL, loop_var);
+            generate_code(node->right);
+            emit(descending ? OP_GTE : OP_LTE, 0);
+            int jz_idx = code_idx;
+            emit(OP_JZ, 0);                    // placeholder, patched below
+
+            generate_code(node->extra);        // body
+
+            int continue_target = code_idx;    // the increment step starts here
+
+            emit(OP_LOAD_LOCAL, loop_var);
+            emit(OP_PUSH, 1);
+            emit(descending ? OP_SUB : OP_ADD, 0);
+            emit(OP_STORE_LOCAL, loop_var);
             emit(OP_JMP, loop_start);
 
             code[jz_idx].arg = code_idx;       // JZ lands here: past the loop

@@ -295,6 +295,25 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_LOCAL_FOR:
+            // The loop variable's own type was already validated at
+            // parse time (current_locals[] - a parser-only structure -
+            // isn't accessible from this pass). 'right' is always a
+            // NODE_LOCAL_VAR reference to an integer hidden slot by
+            // construction, so only 'left' (the start bound, an
+            // arbitrary user expression) genuinely needs checking here.
+            if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: 'for' loop bounds must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_LOCAL_READLN:
+            // Valid by construction - the parser only builds this node
+            // for an already-resolved local variable of a known type.
+            break;
+
         case NODE_ARRAY_ACCESS:
             if (node->left->expression_type != TYPE_INTEGER) {
                 fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",

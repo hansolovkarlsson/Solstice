@@ -155,7 +155,12 @@ compile time when foldable (see
 Also working: `s[i] := val` string character mutation, via copy-on-write
 under the hood so it's safe even when the string pool's deduplication
 means another variable shares the same underlying entry (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#string)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#string)). Also working: `for` loop
+counters and `readln` targets can now be a parameter/local variable, not
+just global — including full per-call recursion safety for a local loop
+counter's cached end bound (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#for-loops) and
+[docs/LANGUAGE.md](docs/LANGUAGE.md#readln)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no

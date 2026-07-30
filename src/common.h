@@ -317,7 +317,7 @@ typedef enum {
                   // power(base, exp) function and the '**' operator -
                   // they compute exactly the same thing, just with
                   // different surface syntax.
-    OP_STR_CHAR_REPLACE // Pop a new character (must be exactly one
+    OP_STR_CHAR_REPLACE, // Pop a new character (must be exactly one
                   // character - a runtime error otherwise, same check as
                   // any other char-typed storage), then a runtime
                   // (1-based) index, then a string_pool[] index (the
@@ -332,6 +332,17 @@ typedef enum {
                   // this with an ordinary LOAD/LOAD_LOCAL beforehand and
                   // STORE/STORE_LOCAL afterward, so this one opcode
                   // covers both cases with no duplication.
+    OP_READ_LOCAL_INT, OP_READ_LOCAL_BOOL, OP_READ_LOCAL_REAL,
+    OP_READ_LOCAL_STR, OP_READ_LOCAL_CHAR // arg = frame slot. Each reads
+                  // one line of stdin, parses/validates it exactly like
+                  // OP_READ's corresponding branch (see vm.c), and
+                  // stores the result directly into the frame slot -
+                  // separate opcodes per type, unlike OP_READ's single
+                  // opcode with a sym_table[]-driven runtime type
+                  // dispatch, because a local frame slot has no
+                  // equivalent runtime type tag to dispatch on; codegen
+                  // picks the right one at compile time, where the
+                  // local's declared type is already known.
 } Opcode;
 
 typedef struct {
@@ -458,9 +469,35 @@ typedef enum {
                        // right = the new character (must be exactly one
                        // character - checked at runtime, same as any
                        // other char-typed storage in this VM).
-    NODE_LOCAL_STRING_INDEX_ASSIGN  // Same as above, but s is a
+    NODE_LOCAL_STRING_INDEX_ASSIGN, // Same as above, but s is a
                        // parameter/local string/char variable.
                        // data.var_idx = s's frame slot.
+    NODE_LOCAL_FOR,    // 'for i := start to/downto end do body' where i
+                       // is a parameter/local variable. data.var_idx =
+                       // i's frame slot, op = TOKEN_TO/TOKEN_DOWNTO,
+                       // left = start bound, extra = body - all exactly
+                       // like NODE_FOR. The one structural difference:
+                       // right is always a NODE_LOCAL_VAR referencing a
+                       // hidden local slot that's already been assigned
+                       // the end bound's value, rather than the raw end-
+                       // bound expression itself. That caching is
+                       // desugared entirely at parse time (an ordinary
+                       // NODE_LOCAL_ASSIGN emitted just before this node,
+                       // both wrapped in a NODE_COMPOUND) precisely so
+                       // the hidden slot gets reserved during parsing,
+                       // before the enclosing procedure's local count is
+                       // finalized and ENTER is emitted - reserving it
+                       // later, during codegen, would be too late. The
+                       // payoff: codegen for this node needs zero special
+                       // end-bound-caching logic at all, unlike NODE_FOR.
+    NODE_LOCAL_READLN  // 'readln(x)' where x is a parameter/local
+                       // variable. data.var_idx = x's frame slot,
+                       // expression_type = x's declared type (set by the
+                       // parser, since codegen needs to pick one of the
+                       // OP_READ_LOCAL_* opcodes below at compile time -
+                       // unlike OP_READ's runtime type dispatch via
+                       // sym_table[], a local frame slot carries no
+                       // runtime type information to dispatch on at all).
 } NodeType;
 
 typedef struct ASTNode {

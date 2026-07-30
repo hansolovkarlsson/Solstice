@@ -64,7 +64,9 @@ then one `NEWLINE` only for `writeln`.
 
 ### Full mnemonic list
 
-`PUSH`, `LOAD`, `STORE`, `READ`, `ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`,
+`PUSH`, `LOAD`, `STORE`, `READ`, `READ_LOCAL_INT`, `READ_LOCAL_BOOL`,
+`READ_LOCAL_REAL`, `READ_LOCAL_STR`, `READ_LOCAL_CHAR`,
+`ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`,
 `GT`, `AND`, `OR`, `NOT`, `LTE`, `GTE`, `NEQ`, `NEG`, `MOD`, `XOR`,
 `BAND`, `BOR`, `BXOR`, `BNOT`, `SHL`, `SHR`, `DUP`, `ABS`, `FABS`,
 `FSQRT`, `FSIN`, `FCOS`, `FARCTAN`, `FEXP`, `FLN`, `FPOWER`, `ORD`, `CHR`,

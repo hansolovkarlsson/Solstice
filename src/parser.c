@@ -1702,13 +1702,23 @@ static ASTNode *statement(void) {
         }
 
         if (current_function_idx != -1 && strcmp(token.text, proc_table[current_function_idx].name) == 0) {
-            // Assigning to the function's own name sets its return value.
-            ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
-            stmt->data.var_idx = proc_table[current_function_idx].return_slot;
-            stmt->expression_type = proc_table[current_function_idx].return_type;
             match(TOKEN_IDENTIFIER);
-            match(TOKEN_ASSIGN);
-            stmt->left = expression();
+            if (token.type == TOKEN_ASSIGN) {
+                // Assigning to the function's own name sets its return value.
+                ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
+                stmt->data.var_idx = proc_table[current_function_idx].return_slot;
+                stmt->expression_type = proc_table[current_function_idx].return_type;
+                match(TOKEN_ASSIGN);
+                stmt->left = expression();
+                return stmt;
+            }
+            // Otherwise this is a recursive self-call used as a statement
+            // (discarding the return value) - same shape as calling any
+            // other procedure/function by name.
+            ASTNode *stmt = create_node(NODE_CALL);
+            stmt->data.var_idx = current_function_idx;
+            stmt->op = TOKEN_PROCEDURE; // marks statement context: discard an unused function result
+            stmt->left = parse_call_arguments(current_function_idx);
             return stmt;
         }
 
@@ -1809,16 +1819,24 @@ static ASTNode *statement(void) {
     if (token.type == TOKEN_READLN) {
         match(TOKEN_READLN);
         match(TOKEN_LPAREN);
-        ASTNode *stmt = create_node(NODE_READLN);
-        if (token.type == TOKEN_IDENTIFIER) {
-            if (find_local(token.text) != -1) {
-                compile_error(token.line, "readln into a parameter or local variable is not yet supported");
-            }
-            stmt->data.var_idx = find_var(token.text);
-            match(TOKEN_IDENTIFIER);
-        } else {
+        if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "readln expects a variable identifier");
         }
+        int local_idx = find_local(token.text);
+        if (local_idx != -1) {
+            if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
+                compile_error(token.line, "readln into an array is not supported");
+            }
+            ASTNode *stmt = create_node(NODE_LOCAL_READLN);
+            stmt->data.var_idx = local_idx;
+            stmt->expression_type = current_locals[local_idx].type;
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_RPAREN);
+            return stmt;
+        }
+        ASTNode *stmt = create_node(NODE_READLN);
+        stmt->data.var_idx = find_var(token.text);
+        match(TOKEN_IDENTIFIER);
         match(TOKEN_RPAREN);
         return stmt;
     }
@@ -1848,14 +1866,57 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_FOR) {
-        ASTNode *stmt = create_node(NODE_FOR);
         match(TOKEN_FOR);
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "'for' expects a variable identifier");
         }
-        if (find_local(token.text) != -1) {
-            compile_error(token.line, "'for' loop variable must be a global variable (parameters/locals not yet supported)");
+        int local_idx = find_local(token.text);
+        if (local_idx != -1) {
+            if (current_locals[local_idx].type != TYPE_INTEGER) {
+                compile_error(token.line, "'for' loop variable must be integer");
+            }
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_ASSIGN);
+            ASTNode *start_bound = expression();
+            TokenType dir;
+            if (token.type == TOKEN_TO) { match(TOKEN_TO); dir = TOKEN_TO; }
+            else if (token.type == TOKEN_DOWNTO) { match(TOKEN_DOWNTO); dir = TOKEN_DOWNTO; }
+            else { compile_error(token.line, "'for' expects 'to' or 'downto'"); dir = TOKEN_TO; }
+            ASTNode *end_bound = expression();
+            match(TOKEN_DO);
+
+            // Cache the end bound in a hidden local, reserved now (during
+            // parsing) rather than later - the enclosing procedure's
+            // local count must be finalized before ENTER is emitted, so
+            // a new slot can't be added once codegen has started.
+            char hidden_name[MAX_NAME];
+            snprintf(hidden_name, MAX_NAME, "__for_tmp_local%d", current_local_count);
+            int end_slot = add_local(hidden_name, TYPE_INTEGER);
+
+            ASTNode *cache_assign = create_node(NODE_LOCAL_ASSIGN);
+            cache_assign->data.var_idx = end_slot;
+            cache_assign->expression_type = TYPE_INTEGER;
+            cache_assign->left = end_bound;
+
+            ASTNode *for_node = create_node(NODE_LOCAL_FOR);
+            for_node->data.var_idx = local_idx;
+            for_node->op = dir;
+            for_node->left = start_bound;
+            ASTNode *end_ref = create_node(NODE_LOCAL_VAR);
+            end_ref->data.var_idx = end_slot;
+            end_ref->expression_type = TYPE_INTEGER;
+            for_node->right = end_ref;
+
+            loop_depth++;
+            for_node->extra = statement();   // body
+            loop_depth--;
+
+            cache_assign->next = for_node;
+            ASTNode *compound = create_node(NODE_COMPOUND);
+            compound->left = cache_assign;
+            return compound;
         }
+        ASTNode *stmt = create_node(NODE_FOR);
         stmt->data.var_idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
         match(TOKEN_ASSIGN);

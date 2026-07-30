@@ -915,6 +915,84 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_READ_LOCAL_INT: {
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                printf("> ");
+                int input_val;
+                if (scanf("%d", &input_val) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
+                    fatal_abort();
+                }
+                int c;
+                while ((c = getchar()) != '\n' && c != EOF) { }
+                vm_frame_stack[slot] = input_val;
+                break;
+            }
+
+            case OP_READ_LOCAL_BOOL: {
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                printf("> ");
+                int input_val;
+                if (scanf("%d", &input_val) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
+                    fatal_abort();
+                }
+                int c;
+                while ((c = getchar()) != '\n' && c != EOF) { }
+                if (input_val != 0 && input_val != 1) {
+                    fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1), got %d\n", input_val);
+                    fatal_abort();
+                }
+                vm_frame_stack[slot] = input_val;
+                break;
+            }
+
+            case OP_READ_LOCAL_REAL: {
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                printf("> ");
+                float input_val;
+                if (scanf("%f", &input_val) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Invalid real input\n");
+                    fatal_abort();
+                }
+                int c;
+                while ((c = getchar()) != '\n' && c != EOF) { }
+                vm_frame_stack[slot] = float_to_bits(input_val);
+                break;
+            }
+
+            case OP_READ_LOCAL_STR: {
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                printf("> ");
+                char line[MAX_STRING_LEN];
+                if (!fgets(line, sizeof(line), stdin)) {
+                    fprintf(stderr, "VM Runtime Error: Invalid string input\n");
+                    fatal_abort();
+                }
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+                vm_frame_stack[slot] = vm_intern_string(line);
+                break;
+            }
+
+            case OP_READ_LOCAL_CHAR: {
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                printf("> ");
+                char line[MAX_STRING_LEN];
+                if (!fgets(line, sizeof(line), stdin)) {
+                    fprintf(stderr, "VM Runtime Error: Invalid string input\n");
+                    fatal_abort();
+                }
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+                if (strlen(line) != 1) {
+                    fprintf(stderr, "VM Runtime Error: readln expected a single character, got \"%s\"\n", line);
+                    fatal_abort();
+                }
+                vm_frame_stack[slot] = vm_intern_string(line);
+                break;
+            }
+
             default:
                 fprintf(stderr, "VM Runtime Error: Invalid opcode encountered (op=%d) at ip=%d\n", instr.op, ip - 1);
                 fatal_abort();

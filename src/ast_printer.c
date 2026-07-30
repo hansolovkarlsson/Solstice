@@ -207,6 +207,30 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_LOCAL_FOR:
+            printf("[Local For] -> slot %d (%s)\n", node->data.var_idx,
+                   node->op == TOKEN_DOWNTO ? "downto" : "to");
+            print_indent(indent + 1);
+            printf("From:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("To:\n");
+            print_ast(node->right, indent + 2);
+            print_indent(indent + 1);
+            printf("Do:\n");
+            print_ast(node->extra, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_LOCAL_READLN:
+            printf("[Local ReadLn] -> slot %d\n", node->data.var_idx);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_ARRAY_ACCESS:
             printf("[Array Access] -> Array: %s\n", sym_table[node->data.var_idx].name);
             print_indent(indent + 1);

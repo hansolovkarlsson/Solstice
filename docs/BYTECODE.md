@@ -149,6 +149,7 @@ corruption.
 | `PRINT_BOOL` | Pop a value; print `TRUE` (nonzero) or `FALSE` (zero) — **no trailing newline**. |
 | `NEWLINE` | Print `\n`. No stack interaction. `writeln` emits exactly one of these, after all its arguments; `write` never does. |
 | `READ` | Prompt (`> `) and read from stdin into `vm_vars[arg]`. Behavior depends on the variable's declared type: integer reads with `scanf("%d")`; boolean does the same but aborts unless the value is `0` or `1`; string reads a full line via `fgets`. Either integer/boolean path flushes the rest of the input line afterward, so a following string `READ` isn't handed a stray empty line. |
+| `READ_LOCAL_INT` / `READ_LOCAL_BOOL` / `READ_LOCAL_REAL` / `READ_LOCAL_STR` / `READ_LOCAL_CHAR` | `arg` = frame slot. Same read/parse/validate behavior as the corresponding branch of `READ`, but writing into `vm_frame_stack[]` via `vm_local_index()` instead of `vm_vars[]`. Separate opcodes per type, unlike `READ`'s single opcode with a `sym_table[]`-driven runtime type dispatch, because a local frame slot carries no equivalent runtime type tag to dispatch on - codegen picks the right one at compile time, where the local's declared type is already known. |
 
 ### Control flow
 

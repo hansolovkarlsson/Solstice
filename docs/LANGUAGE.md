@@ -277,6 +277,25 @@ for i := 10 downto 1 do
 - After the loop, the loop variable holds one past the last value used
   (`n + 1` for `to`, `n - 1` for `downto`) — don't rely on its exact value
   after the loop without checking.
+- The loop variable can be a global, or a parameter/local variable of a
+  procedure or function:
+
+  ```pascal
+  function sumTo(n: integer): integer;
+  var i, total: integer;
+  begin
+      total := 0;
+      for i := 1 to n do
+          total := total + i;
+      sumTo := total;
+  end;
+  ```
+
+  A local loop variable gets the same per-call isolation any other local
+  does — including the end bound's cached value, so a recursive function
+  with its own `for` loop works correctly no matter how deep the
+  recursion goes; each call's loop is fully independent of every other
+  active call's.
 
 ### `break` and `continue`
 
@@ -366,6 +385,20 @@ readln(name);   { string: reads a full line }
 Each call prints a `> ` prompt, then reads from standard input. Reading an
 integer or boolean also consumes the rest of that input line (so a
 following `readln` of any type starts cleanly on the next line).
+
+`readln`'s target can be a global, or a parameter/local variable:
+
+```pascal
+procedure greet;
+var name: string;
+begin
+    readln(name);
+    writeln('Hello, ', name);
+end;
+```
+
+`readln` into an array (global or local) isn't supported — only a plain
+scalar variable.
 
 ### Compound statements
 
@@ -917,10 +950,6 @@ end.
 - **A procedure can call any procedure declared earlier** (or itself)
   without anything special. Calling one declared *later* requires a
   `forward` declaration first — see below.
-- Not yet supported, with a clear compile error if attempted:
-  `readln` into a parameter or local variable, and using one as a `for`
-  loop's counter. Both work fine as ordinary expressions/assignments —
-  just not in those two specific positions yet.
 - A procedure's name and a variable's name share one namespace — you
   can't declare a procedure with the same name as an existing global
   variable, or vice versa.

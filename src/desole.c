@@ -68,6 +68,11 @@ static const char *opcode_name(Opcode op) {
         case OP_PRINT: return "print";
         case OP_PRINT_BOOL: return "print_bool";
         case OP_READ:  return "read";
+        case OP_READ_LOCAL_INT:  return "read_local_int";
+        case OP_READ_LOCAL_BOOL: return "read_local_bool";
+        case OP_READ_LOCAL_REAL: return "read_local_real";
+        case OP_READ_LOCAL_STR:  return "read_local_str";
+        case OP_READ_LOCAL_CHAR: return "read_local_char";
         case OP_HALT:  return "halt";
         case OP_JMP:   return "jmp";
         case OP_JZ:    return "jz";
