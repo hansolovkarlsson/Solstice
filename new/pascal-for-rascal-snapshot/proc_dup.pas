@@ -1,9 +1,0 @@
-program ProcDup;
-procedure foo;
-begin
-end;
-procedure foo;
-begin
-end;
-begin
-end.

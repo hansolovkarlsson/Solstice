@@ -1,3 +1,0 @@
-    push_str "she said "hi" to me"
-    print_str
-    halt

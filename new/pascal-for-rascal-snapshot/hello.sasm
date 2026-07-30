@@ -1,6 +1,0 @@
-.var msg string
-    push_str "Hello from solas!"
-    store msg
-    load msg
-    print_str
-    halt

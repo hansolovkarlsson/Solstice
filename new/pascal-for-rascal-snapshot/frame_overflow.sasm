@@ -1,4 +1,0 @@
-loop:
-    enter 20
-    call loop
-    ret

@@ -1,0 +1,264 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A Wirth-style Pascal compiler (`pascalc`) targeting a custom stack-based
+virtual machine (`solvm`), plus a matching assembler (`solas`) and
+disassembler (`desole`) for the VM's own bytecode format. Not aiming for
+P-Code or any existing VM compatibility — the bytecode format and machine
+are designed from scratch, purpose-built for this Pascal dialect.
+
+```
+ source.pas ──(pascalc)──> program.bin ──(solvm)──> runs it
+                                ▲
+                 source.sasm ──(solas)──┘
+                                │
+                            (desole)
+                                ▼
+                          readable .sasm
+```
+
+## Build
+
+All source lives in `src/`; there is no top-level Makefile.
+
+```sh
+cd src
+make            # builds pascalc, solvm, solas, desole, test_recovery
+make pascalc    # build just one binary
+make clean      # remove binaries and object files
+```
+
+Requires a C11 compiler (`cc`) and `make`. No external dependencies.
+Build flags: `-Wall -Wextra -std=c11 -g -fno-common`. Several switches
+over `NodeType`/`Opcode` deliberately omit a `default:` case so that a
+missing case is a compiler warning, not a silent gap — **keep the build
+warning-clean**; a new warning after adding a node/opcode means a case
+was missed, not a nuisance to suppress.
+
+`scripts/make.sh` (run from repo root, needs `config.sh` sourced first —
+see below) does the same build and copies the five binaries into `bin/`.
+
+### Running a compiled program
+
+```sh
+./pascalc examples/hello.pas hello.bin
+./solvm hello.bin
+```
+
+Every tool accepts an optional `-v` for verbose/debug output (compiler
+phase banners, AST dump, VM step banners, final variable-state dump).
+Without `-v` each tool prints only what it's actually supposed to produce
+(the compiled program's own `write`/`writeln` output, the disassembly
+listing, etc.) and stays silent otherwise.
+
+### Shell helpers
+
+`source config.sh` from repo root puts `bin/` and `scripts/` on `PATH`.
+Then:
+
+```sh
+pascal.sh foo.pas     # pascalc foo.pas foo.bin && solvm foo.bin (pass -v as $1 to verbose both)
+solas.sh foo.sasm     # solas foo.sasm foo.bin && solvm foo.bin
+desole.sh foo.bin     # desole foo.bin foo.disasm && cat foo.disasm
+solvm.sh foo.bin      # solvm foo.bin
+```
+
+## Testing
+
+There is no formal test framework or test runner script. `examples/test/`
+holds one small `.pas` (or `.sasm`) file per feature/regression, named
+`test_<feature>.pas`; verify a change by compiling and running the
+relevant file(s) and hand-checking output. The approach used throughout
+this project, in order:
+
+1. **Positive case**: write/find a small `.pas` program exercising the
+   feature, compile and run it, hand-verify the output (work it out, not
+   just eyeball it).
+2. **Error case**: for every new compile-time or runtime error path,
+   confirm the exact message and a clean exit — not a crash.
+3. **Round-trip through `solas`/`desole`** whenever new opcodes are
+   involved: disassemble the compiler's output, reassemble it, diff the
+   VM's output on both. This has caught real bugs (e.g. an opcode's
+   semantics changing without `desole`'s printer being updated).
+4. **Full regression pass** before considering a change done: re-run a
+   representative program from each earlier feature (control flow,
+   strings, `for`, arrays, error recovery).
+5. **`-Wall -Wextra` clean build, always.**
+
+`test_recovery` (in `src/`, built by `make`) demonstrates that a fatal
+compile error doesn't kill the host process — it compiles a broken
+program then two good ones in the same process and confirms the process
+survives and both good compiles still succeed.
+
+## Architecture
+
+Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — read it
+before making structural changes. Key points:
+
+### Pipeline
+
+```
+source.pas
+    │  lexer.c        source text -> Token stream
+    ▼
+parser.c              tokens -> AST (recursive descent, one ASTNode tree)
+    ▼
+type_checker.c         walks the AST, fills in ASTNode.expression_type
+    ▼
+optimizer.c             constant folding + dead-code elimination
+    ▼
+codegen.c               AST -> Instruction[] (code[]) + string pool/symbol table
+    ▼
+bytecode.c (save)       code[] + sym_table[] + string_pool[] -> .bin file
+```
+
+`pascalc.c` just drives these five stages in order. Everything after the
+lexer operates on the same in-memory `ASTNode` tree — there's no separate
+IR between AST and bytecode. `solvm` only links `bytecode.c` (load) +
+`vm.c`, never the frontend. `solas`/`desole` only link `bytecode.c`, and
+read/write `code[]`/`sym_table[]`/`string_pool[]` directly without ever
+building an AST. The Makefile's `FRONTEND_OBJS`/`VM_OBJS`/`SHARED_OBJS`
+split enforces this separation at the link level.
+
+### Global state, not parameters
+
+`code[]`, `code_idx`, `sym_table[]`, `sym_count`, `string_pool[]`,
+`string_count`, `array_mem_count`, `token` (declared in `common.h`) are
+plain globals, used directly by any module that includes `common.h`
+rather than threaded through function parameters. Deliberate, kept
+throughout for small function signatures. **The cost**: anything that
+populates this state at compile/assemble time must explicitly reset it
+first (`parse_ast()` and `assemble()` both zero `sym_count`, `code_idx`,
+`string_count`, `array_mem_count` at the top) or state leaks across
+compiles in the same process — this is exactly what `test_recovery`
+guards against.
+
+### Recoverable errors, never `exit()`
+
+Every fatal error path calls `fatal_abort()` (`error.c`), not `exit(1)`.
+If a recovery point is registered (`fatal_error_active = 1` after
+`setjmp(fatal_error_env)`), it `longjmp`s back instead of killing the
+process — this is what makes the compiler/VM embeddable in a long-lived
+host. Every CLI tool's `main()` follows:
+
+```c
+if (setjmp(fatal_error_env)) {
+    fprintf(stderr, "Compilation failed.\n");
+    return 1;
+}
+fatal_error_active = 1;
+... call into the compiler ...
+fatal_error_active = 0;
+```
+
+**If you add a new fatal error site, call `fatal_abort()`, never
+`exit()`** — an `exit()` anywhere outside `main()` breaks this silently.
+
+`verbose_mode` (also in `error.h`) is the other cross-cutting flag, set
+from each tool's `-v`. Convention: gate debug/progress narration behind
+`if (verbose_mode)`; never gate an error message or a compiled program's
+own `write`/`writeln` output.
+
+### The `ASTNode` struct: field reuse by convention
+
+```c
+typedef struct ASTNode {
+    NodeType type;
+    TokenType op;                // meaning depends on `type`
+    DataType expression_type;
+    int line;
+    union { int num_value; int var_idx; } data;   // meaning depends on `type`
+    struct ASTNode *left, *right, *next, *extra;   // meaning depends on `type`
+} ASTNode;
+```
+
+This struct hasn't grown since `if`/`while`/`repeat`. Every new node type
+has found a way to reuse the existing four pointers, `op`, and the `data`
+union — **check whether a new node type's needs fit the existing fields
+before adding a fifth pointer or a new union member**; so far every case
+has fit. Two recurring techniques: sibling lists threaded through each
+node's own `next` (statement lists, `write`/`writeln` argument lists —
+not a separate list structure), and reusing `op` as a discriminator that
+isn't literally an operator (`NODE_FOR` stores `TOKEN_TO`/`TOKEN_DOWNTO`
+there; `NODE_WRITELN` stores `TOKEN_WRITE`/`TOKEN_WRITELN`). See the
+field-meaning table in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
+the current per-node-type convention.
+
+### Adding a new AST-level feature: the checklist
+
+Every feature added so far (`if`/`while`/`repeat`, `for`, strings,
+arrays, records, `real`, procedures/functions) touched roughly this same
+set of files in this order — skipping one is exactly how real bugs got
+introduced (see the "Real bugs this pattern has caught" section of
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for three concrete examples
+worth reading before touching this path):
+
+1. **`common.h`** — new `TokenType`/`NodeType`/`Opcode` values (append,
+   don't renumber).
+2. **`lexer.c`** — new keyword(s)/token(s), if any.
+3. **`parser.c`** — build the new AST node(s); add to
+   `is_statement_start()` if it's a statement.
+4. **`type_checker.c`** — a `case` if it needs type-specific validation.
+   Check first whether the generic top-of-function recursion into
+   `left`/`right`/`next`/`extra` already covers the new node's children.
+5. **`optimizer.c`** — same generic-recursion check for `optimize_ast()`
+   and `mark_used_variables()`. A node type that introduces a variable
+   *reference* (like `NODE_ARRAY_ACCESS`) must be added explicitly to
+   `mark_used_variables()`, or dead-code elimination will wrongly treat
+   that variable as unused.
+6. **`ast_printer.c`** — a `case` for the new node type (no `default:` —
+   a missing case is a build warning, treat it as a hard stop).
+7. **`codegen.c`** — emit instructions; add new opcodes to `common.h`'s
+   `Opcode` enum first if needed.
+8. **`vm.c`** — implement any new opcode(s); bounds-check every array/
+   variable/string index it touches (see
+   [docs/BYTECODE.md](docs/BYTECODE.md)).
+9. **`solas.c` / `desole.c`** — add new mnemonics, *only if* new opcodes
+   were added. Purely-syntactic features lowering to existing opcodes
+   need no assembler/disassembler changes.
+
+### Why five binaries
+
+```
+pascalc  = pascalc.c + lexer/parser/type_checker/optimizer/codegen/ast_printer.c + bytecode.c + error.c
+solvm    = solvm.c   + vm.c                                                     + bytecode.c + error.c
+solas    = solas.c                                                              + bytecode.c + error.c
+desole   = desole.c                                                             + bytecode.c + error.c
+```
+
+`bytecode.c` (the `.bin` format + shared `code[]`/`sym_table[]`/
+`string_pool[]` state) and `error.c` (recoverable-error facility +
+`verbose_mode`) are the only things every binary shares.
+
+### SolVM memory model
+
+Six fixed-size storage regions (`common.h`'s `MAX_*` constants) — no
+dynamic allocation, no GC, no shared addressable memory between regions:
+`vm_stack[]` (evaluation stack), `vm_vars[]` (scalar variable slots),
+`vm_array_mem[]` (all arrays, contiguous, each `Symbol` carries its own
+base offset), `string_pool[]` (interned strings, can grow at runtime),
+`vm_call_stack[]` (one `{return_addr, saved_fp, saved_frame_sp}` per
+active call), `vm_frame_stack[]` (local variable slots per active call).
+Strings and `char` are both just `int` indices into `string_pool[]`;
+booleans are `0`/`1` ints — this is why `LOAD`/`STORE` work identically
+regardless of declared type, and only type-*interpreting* opcodes
+(`PRINT` vs `PRINT_STR`, `EQ` vs `SEQ`) need type-specific variants. Full
+opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
+
+## Documentation map
+
+- [docs/LANGUAGE.md](docs/LANGUAGE.md) — the accepted Pascal dialect: syntax, types, statements, operators, worked examples per feature.
+- [docs/BYTECODE.md](docs/BYTECODE.md) — SolVM architecture, full opcode reference, `.bin` file format.
+- [docs/ASSEMBLER.md](docs/ASSEMBLER.md) — `solas`/`desole` `.sasm` syntax and usage.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internals and extension checklist; start here before structural changes.
+- Root [README.md](README.md) — current feature status (working / not yet implemented) and project layout table.
+
+## Repo layout beyond `src/`
+
+- `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/`, `examples/test/` — `.pas`/`.sasm` sample and test programs, grouped by purpose (`test/` = regression tests, `doc/` = examples referenced from `docs/`, `tech/` = misc technical exercises, `audit/` = audit-driven test programs).
+- `notes/` — the author's own design notes and to-do list (not authoritative spec).
+- `chats/` — saved transcripts from other AI assistants used during design.
+- `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `*.c`/`*.h`/`Makefile` → `src/`, `*.sasm` → `examples/asm/`, `doc_*.pas` → `examples/doc/`, `test_*.pas` → `examples/test/`). Not part of the build.
