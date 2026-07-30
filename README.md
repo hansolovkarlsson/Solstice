@@ -1,12 +1,15 @@
-# Pascal → SolVM
+# Ouroboros
 
-A Wirth-style Pascal compiler targeting a custom stack-based virtual machine
-(**SolVM**), plus a matching assembler (**solas**) and disassembler
-(**desole**) for the VM's own bytecode.
+A multi-language toolchain built around one custom stack-based virtual
+machine (**SolVM**) and its bytecode format — designed from scratch, under
+its own control, so that multiple front-end languages can eventually
+target it, rather than aiming for P-Code or any existing VM's
+compatibility.
 
-This isn't aiming for P-Code or any existing VM compatibility — the whole
-point is a bytecode format and machine designed from scratch, under your
-own control, that a Pascal-like language happens to compile down to.
+The active work right now is a Wirth-style **Pascal** compiler
+(`pascalc`), developed in parallel with a matching assembler (**solas**)
+and disassembler (**desole**) for SolVM's own bytecode. See
+[Roadmap](#roadmap) below for where this is headed.
 
 ```
  source.pas ──(pascalc)──> program.bin ──(solvm)──> runs it
@@ -107,6 +110,27 @@ solas.c           Assembler (source + entry point, single file)
 desole.c          Disassembler (source + entry point, single file)
 test_recovery.c   Demonstrates that a fatal compile error doesn't kill the process
 ```
+
+## Roadmap
+
+The first goal is to finish `pascalc` to the point of Wirth/standard
+Pascal compatibility, while expanding SolVM and `solas`/`desole` in
+parallel wherever new language features demand new bytecode capability.
+From there, the plan is:
+
+- Grow Pascal into an object-oriented dialect, and possibly add C-style
+  `enum`/`union` concepts.
+- Grow SolVM and the assembler into general object-oriented support (and
+  other advanced features), so later languages share the same bytecode
+  primitives instead of each reinventing them.
+- Add further front ends over time — a **BASIC** compiler next (not
+  compatible with any one dialect, but drawing features across BASIC's
+  history, from early BASIC through Visual Basic/VB.NET), and further
+  out, more speculatively, **Prolog**, **LISP**, and **Smalltalk**.
+- Eventually, an original language of its own design, tentatively named
+  **Phoenix**, drawing on ideas from the above, with built-in GUI,
+  lightweight database handling, networking, and token/syntax parsing
+  support.
 
 ## Status
 
