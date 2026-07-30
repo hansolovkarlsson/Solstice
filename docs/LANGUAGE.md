@@ -13,6 +13,8 @@ variables).
 
 ```pascal
 program Name;
+const
+    { named constants, if any - see Constants }
 type
     { record type declarations, if any - see Records }
 var
@@ -24,6 +26,8 @@ end.
 
 - The program name is required but otherwise unused (no significance
   beyond documentation).
+- The `const` section is optional, and comes before `type`/`var` — see
+  [Constants](#constants).
 - The `type` section is optional, and only declares record types — see
   [Records](#records).
 - The `var` section is optional — omit it entirely if the program declares
@@ -76,6 +80,56 @@ var
   this dialect doesn't have anyway).
 - Total variable count (including compiler-internal temporaries — see
   [`for`](#for-loops)) is capped at 100 in one program.
+
+## Constants
+
+```pascal
+program Example;
+const
+    MaxScore = 100;
+    Pi2 = 3.14159 * 2;
+    Greeting = 'Hello';
+    Enabled = true;
+var
+    scores: array[1..MaxScore] of integer;
+begin
+    writeln(Greeting, ', area factor = ', Pi2:0:2);
+end.
+```
+
+- A `const` section, if present, comes right after `program Name;` and
+  before `type`/`var` (see [Program structure](#program-structure)).
+- Each constant's value must be a compile-time-constant expression —
+  arithmetic and comparisons on integer/real literals (`+ - * / div mod
+  and or xor shl shr ** = <> < > <= >=`, including unary `-`/`not`),
+  `pi`, and the built-in math functions all fold at compile time, exactly
+  as they do anywhere else in an expression (see
+  [Operators](#operators)). A constant can also just be a single string,
+  char, or boolean literal — but **string/char values cannot be built
+  from `+` concatenation**, since constant folding doesn't fold string
+  operations (only arithmetic/logical ones) — `const Greeting = 'Hello'
+  + ', World';` is a compile-time error ("not a compile-time constant
+  expression"), even though the same expression is fine as an ordinary
+  runtime computation elsewhere in a program.
+- A constant's expression can reference an **earlier** constant in the
+  same `const` section (`const A = 10; B = A * 2;`) — it can't reference
+  a variable or call a function/procedure, since nothing else has been
+  declared yet at the point `const` is parsed.
+- A constant has no storage of any kind — there's no `Symbol` for it, no
+  `vm_vars[]` slot, and it never appears in a disassembly listing. Every
+  reference to it compiles to exactly the same bytecode as if you'd
+  written its value inline (a plain `PUSH`/`PUSH_STR`) — see
+  [docs/ARCHITECTURE.md](ARCHITECTURE.md) for why this is the same
+  "resolve entirely at compile time" approach [Records](#records) use.
+- A constant can't be reassigned (`MaxScore := 5;` is a compile-time
+  error), and a constant's name shares the same namespace as variables
+  and procedures/functions — redeclaring it as any of those (or vice
+  versa) is a compile-time error.
+- **An integer constant can be used as an array bound**
+  (`array[1..MaxScore] of integer`, including both dimensions of a 2D
+  array) — the one place outside an ordinary expression a constant is
+  accepted, since array bounds must already be compile-time-constant
+  integers in this language (see [Arrays](#arrays)).
 
 ## Literals
 
@@ -723,8 +777,9 @@ var
     names: array[-5..5] of string;
 ```
 
-- Bounds are compile-time-constant integer literals (may be negative,
-  e.g. `array[-5..5]`); they can't be variables or general expressions.
+- Bounds are compile-time-constant integers (a literal, e.g.
+  `array[-5..5]`, or a named [constant](#constants), e.g.
+  `array[1..MaxScore]`); they can't be variables or general expressions.
 - `upper` must be `>= lower`.
 - Indexing (`scores[i]`) requires the index expression to be `integer`,
   and it's bounds-checked **at runtime** — an out-of-range index is a

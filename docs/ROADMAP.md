@@ -31,7 +31,13 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ### Language — type system
 
-- [ ] `const` declarations (named constants)
+- [x] `const` declarations (named constants) — resolved entirely at
+      parse time (no `Symbol`/runtime storage); usable anywhere an
+      expression is expected, and as an integer array bound. Known gap:
+      folding only covers arithmetic/logical expressions, not string
+      concatenation (`const S = 'a' + 'b';` isn't accepted yet, since
+      `optimizer.c` doesn't fold string ops) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#constants).
 - [ ] Enumerated types (`type TColor = (Red, Green, Blue);`)
 - [ ] Subrange types (`1..100`)
 - [ ] Type aliases (`type TAge = integer;`)

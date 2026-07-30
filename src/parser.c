@@ -5,6 +5,8 @@
 #include "parser.h"
 #include "lexer.h"
 #include "error.h"
+#include "type_checker.h"
+#include "optimizer.h"
 
 // Reinterprets a float's bits as an int-sized bit pattern - see vm.c for
 // the full explanation (this is how a 'real' value shares the same
@@ -47,6 +49,38 @@ typedef struct {
 static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
 static int in_procedure = 0;
+
+// Constants are the simplest possible compile-time-only feature: a
+// 'const Name = expr;' declaration never gets a Symbol/sym_table[] entry
+// or any runtime storage at all - the expression is fully resolved once,
+// right here during parsing (reusing the SAME type_check()/optimize_ast()
+// machinery the rest of the pipeline runs later, just invoked immediately
+// on this one small subtree), and the resulting literal value is stashed
+// in this parser-only table. From that point on, factor() resolves any
+// reference to a const name directly into a fresh literal AST node - the
+// same trick 'pi' already uses below - exactly as if the user had typed
+// the literal value inline. This is also why a const expression can only
+// reference other, earlier consts, never a variable or a function call:
+// nothing else has been declared yet at the point 'const' is parsed (it
+// comes before 'type'/'var'/procedures in program structure), so any
+// other identifier simply doesn't exist yet as far as the parser is
+// concerned - no separate check is needed to enforce this.
+#define MAX_CONSTS 50
+typedef struct {
+    char name[MAX_NAME];
+    DataType type;
+    int value; // raw int (TYPE_INTEGER/TYPE_BOOLEAN), a float bit pattern
+               // (TYPE_REAL), or a string_pool[] index (TYPE_STRING/TYPE_CHAR)
+} ConstDef;
+static ConstDef const_defs[MAX_CONSTS];
+static int const_def_count = 0;
+
+static int find_const(const char *name) {
+    for (int i = 0; i < const_def_count; i++) {
+        if (strcmp(const_defs[i].name, name) == 0) return i;
+    }
+    return -1;
+}
 
 // Records are implemented as pure syntactic sugar over ordinary global
 // variables - a record variable doesn't get one storage location of its
@@ -172,6 +206,9 @@ static void add_var(const char *name, DataType type) {
             compile_error(token.line, "Duplicate variable declaration '%s'", name);
         }
     }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
     if (sym_count >= MAX_SYMBOLS) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
     }
@@ -191,6 +228,9 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
         if (strcmp(sym_table[i].name, name) == 0) {
             compile_error(token.line, "Duplicate variable declaration '%s'", name);
         }
+    }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
     }
     if (sym_count >= MAX_SYMBOLS) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
@@ -220,6 +260,9 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
         if (strcmp(sym_table[i].name, name) == 0) {
             compile_error(token.line, "Duplicate variable declaration '%s'", name);
         }
+    }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
     }
     if (sym_count >= MAX_SYMBOLS) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
@@ -252,6 +295,9 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
 static void add_record_var(const char *name, int record_type_idx) {
     if (find_var_soft(name) != -1 || find_record_var(name) != -1) {
         compile_error(token.line, "Duplicate variable declaration '%s'", name);
+    }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
     }
     if (record_var_count >= MAX_RECORD_VARS) {
         compile_error(token.line, "Too many record variables (limit is %d)", MAX_RECORD_VARS);
@@ -304,6 +350,9 @@ static int add_proc(const char *name) {
         if (strcmp(sym_table[i].name, name) == 0) {
             compile_error(token.line, "'%s' is already declared as a variable", name);
         }
+    }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
     }
     if (proc_count >= MAX_PROCEDURES) {
         compile_error(token.line, "Too many procedure declarations (limit is %d)", MAX_PROCEDURES);
@@ -502,16 +551,28 @@ static int try_get_array_bounds_here(int *lower, int *upper) {
 }
 
 // Parses a compile-time-constant integer literal, e.g. for array bounds
-// (array[1..10], array[-5..5]). Not a general expression - array sizes
-// must be known at compile time in this language.
+// (array[1..10], array[-5..5], array[1..MaxSize]). Not a general
+// expression - array sizes must be known at compile time in this
+// language - but a reference to an integer 'const' is accepted here too
+// (it's just as compile-time-known as a literal), since this is the one
+// centralized function every array-bound call site already goes through.
 static int parse_int_literal(void) {
     int sign = 1;
     if (token.type == TOKEN_MINUS) {
         sign = -1;
         match(TOKEN_MINUS);
     }
+    if (token.type == TOKEN_IDENTIFIER) {
+        int const_idx = find_const(token.text);
+        if (const_idx == -1 || const_defs[const_idx].type != TYPE_INTEGER) {
+            compile_error(token.line, "Expected an integer literal or an integer constant");
+        }
+        int val = const_defs[const_idx].value * sign;
+        match(TOKEN_IDENTIFIER);
+        return val;
+    }
     if (token.type != TOKEN_NUMBER) {
-        compile_error(token.line, "Expected an integer literal");
+        compile_error(token.line, "Expected an integer literal or an integer constant");
     }
     int val = token.value * sign;
     match(TOKEN_NUMBER);
@@ -961,6 +1022,28 @@ static ASTNode *factor(void) {
     } else if (token.type == TOKEN_IDENTIFIER) {
         int line = token.line;
 
+        int const_idx = find_const(token.text);
+        if (const_idx != -1) {
+            ConstDef *c = &const_defs[const_idx];
+            match(TOKEN_IDENTIFIER);
+            ASTNode *node;
+            if (c->type == TYPE_REAL) {
+                node = create_node(NODE_REAL_NUMBER);
+                node->data.num_value = c->value;
+            } else if (c->type == TYPE_BOOLEAN) {
+                node = create_node(NODE_BOOLEAN);
+                node->data.num_value = c->value;
+            } else if (c->type == TYPE_STRING || c->type == TYPE_CHAR) {
+                node = create_node(NODE_STRING);
+                node->data.var_idx = c->value;
+            } else { // TYPE_INTEGER
+                node = create_node(NODE_NUMBER);
+                node->data.num_value = c->value;
+            }
+            node->expression_type = c->type;
+            return node;
+        }
+
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
             char rec_name[MAX_NAME];
@@ -1128,6 +1211,47 @@ static ASTNode *expression(void) {
 // declarations. Only record types exist right now - there's no type
 // aliasing ('type TAge = integer;') and no nested records (a field can't
 // itself be a record type).
+// 'const Name1 = expr1; Name2 = expr2; ...' - see the comment above
+// ConstDef for the overall approach.
+static void parse_const_section(void) {
+    match(TOKEN_CONST);
+    while (token.type == TOKEN_IDENTIFIER) {
+        int line = token.line;
+        char name[MAX_NAME];
+        strcpy(name, token.text);
+        if (find_const(name) != -1) {
+            compile_error(line, "Duplicate constant declaration '%s'", name);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_EQ);
+        ASTNode *value = expression();
+        match(TOKEN_SEMI);
+
+        // Fully resolve the expression right now, via the same
+        // type-checking and constant-folding passes the rest of the
+        // pipeline runs later on the whole program - just run
+        // immediately, on this one small subtree.
+        type_check(value);
+        value = optimize_ast(value);
+
+        if (const_def_count >= MAX_CONSTS) {
+            compile_error(line, "Too many constant declarations (limit is %d)", MAX_CONSTS);
+        }
+        ConstDef *c = &const_defs[const_def_count];
+        strcpy(c->name, name);
+        switch (value->type) {
+            case NODE_NUMBER:      c->type = TYPE_INTEGER; c->value = value->data.num_value; break;
+            case NODE_REAL_NUMBER: c->type = TYPE_REAL;    c->value = value->data.num_value; break;
+            case NODE_BOOLEAN:     c->type = TYPE_BOOLEAN; c->value = value->data.num_value; break;
+            case NODE_STRING:      c->type = value->expression_type; c->value = value->data.var_idx; break;
+            default:
+                compile_error(line, "'%s' is not a compile-time constant expression", name);
+        }
+        const_def_count++;
+        free_ast(value);
+    }
+}
+
 static void parse_type_section(void) {
     match(TOKEN_TYPE);
     while (token.type == TOKEN_IDENTIFIER) {
@@ -1223,10 +1347,15 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     current_function_idx = -1;
     record_type_count = 0;
     record_var_count = 0;
+    const_def_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
     match(TOKEN_SEMI);
+
+    if (token.type == TOKEN_CONST) {
+        parse_const_section();
+    }
 
     if (token.type == TOKEN_TYPE) {
         parse_type_section();
@@ -1752,6 +1881,10 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_IDENTIFIER) {
+        if (find_const(token.text) != -1) {
+            compile_error(token.line, "'%s' is a constant and cannot be assigned to", token.text);
+        }
+
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
             char rec_name[MAX_NAME];

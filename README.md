@@ -186,7 +186,11 @@ counters and `readln` targets can now be a parameter/local variable, not
 just global — including full per-call recursion safety for a local loop
 counter's cached end bound (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#for-loops) and
-[docs/LANGUAGE.md](docs/LANGUAGE.md#readln)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#readln)). Also working: `const`
+declarations, resolved entirely at compile time (no `Symbol` or runtime
+storage at all — a reference compiles to exactly the same bytecode as
+the literal value would), including as an array bound (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#constants)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no
