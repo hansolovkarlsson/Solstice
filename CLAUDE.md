@@ -4,11 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Wirth-style Pascal compiler (`pascalc`) targeting a custom stack-based
-virtual machine (`solvm`), plus a matching assembler (`solas`) and
-disassembler (`desole`) for the VM's own bytecode format. Not aiming for
-P-Code or any existing VM compatibility — the bytecode format and machine
-are designed from scratch, purpose-built for this Pascal dialect.
+**Ouroboros**: a multi-language toolchain built around one custom
+stack-based virtual machine (`solvm`) and its bytecode format. Not aiming
+for P-Code or any existing VM compatibility — the bytecode format and
+machine are designed from scratch, under project control, so that
+multiple front-end languages can eventually target it.
+
+The only compiler being worked on right now is `pascalc`, a Wirth-style
+Pascal compiler, developed in parallel with the assembler (`solas`) and
+disassembler (`desole`) for the VM's own bytecode. Current phase: get
+`pascalc` compatible with Wirth/standard Pascal, and expand `solvm` and
+`solas`/`desole` alongside it as new language features demand new
+bytecode capability.
 
 ```
  source.pas ──(pascalc)──> program.bin ──(solvm)──> runs it
@@ -19,6 +26,35 @@ are designed from scratch, purpose-built for this Pascal dialect.
                                 ▼
                           readable .sasm
 ```
+
+### Longer-term direction
+
+Worth keeping in mind when making design decisions in `common.h`,
+`vm.c`, `solas.c`/`desole.c` — bias toward choices that don't foreclose
+these, but don't build for them speculatively either (see the "don't
+design for hypothetical future requirements" rule below — none of this
+is scoped work yet):
+
+- **Pascal** is the current and only active front end. After
+  Wirth-compatibility, the plan is to grow it toward object-oriented
+  Pascal, then possibly add C-style `enum`/`union` concepts.
+- **The VM and assembler are meant to grow into general OOP support**
+  (and other advanced features) so later languages can rely on the same
+  bytecode primitives rather than each language inventing its own.
+- Planned future front ends, roughly in order of interest: a **BASIC**
+  compiler (not aiming for compatibility with any one dialect — pulls
+  features across BASIC's history, from early BASIC through Visual
+  Basic/VB.NET, for whatever's useful), and, further out and more
+  speculative, **Prolog**, **LISP**, and **Smalltalk**.
+- Eventually, an original language of the author's own design, tentatively
+  named **Phoenix**, drawing on ideas from the above, intended to have
+  built-in GUI, lightweight database handling, networking, and
+  token/syntax parsing support.
+
+None of the above is in scope until the Pascal compiler and VM reach the
+Wirth-compatible milestone — treat it as orientation for *why* the VM/
+bytecode layer should stay language-agnostic, not as a backlog to
+implement against.
 
 ## Build
 
