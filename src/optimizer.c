@@ -267,6 +267,21 @@ ASTNode *optimize_ast(ASTNode *node) {
 
 static int var_used_tracker[MAX_SYMBOLS];
 
+// A NODE_RANGE_CHECK-wrapped value (see parser.c's wrap_range_check())
+// has an observable runtime effect of its own - it can abort the
+// program - so an assignment carrying one must never be swept away as
+// "dead" just because its target variable happens to be otherwise
+// unread, unlike an ordinary assignment's value (which this compiler
+// only ever preserves for compile-time-foldable errors, never a genuine
+// runtime side effect - see sweep_dead_assignments() below). Always the
+// direct child of the assignment it guards (wrap_range_check() is only
+// ever applied at the outermost point of a value expression), so a
+// plain type check on the immediate child suffices - no need to search
+// deeper into the expression.
+static int has_range_check(ASTNode *node) {
+    return node && node->type == NODE_RANGE_CHECK;
+}
+
 static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
@@ -298,7 +313,7 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         int var_idx = node->data.var_idx;
         node->next = sweep_dead_assignments(node->next);
 
-        if (!var_used_tracker[var_idx]) {
+        if (!var_used_tracker[var_idx] && !has_range_check(node->left) && !has_range_check(node->right)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
                        sym_table[var_idx].name);
@@ -330,7 +345,7 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         int var_idx = node->data.var_idx;
         node->next = sweep_dead_assignments(node->next);
 
-        if (!var_used_tracker[var_idx]) {
+        if (!var_used_tracker[var_idx] && !has_range_check(node->extra)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
                        sym_table[var_idx].name);

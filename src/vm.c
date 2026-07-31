@@ -387,6 +387,26 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_CHECK_LOWER: {
+                int a = vm_pop(&sp);
+                if (a < instr.arg) {
+                    fprintf(stderr, "VM Runtime Error: Value %d is below its subrange's lower bound %d\n", a, instr.arg);
+                    fatal_abort();
+                }
+                vm_push(&sp, a);
+                break;
+            }
+
+            case OP_CHECK_UPPER: {
+                int a = vm_pop(&sp);
+                if (a > instr.arg) {
+                    fprintf(stderr, "VM Runtime Error: Value %d is above its subrange's upper bound %d\n", a, instr.arg);
+                    fatal_abort();
+                }
+                vm_push(&sp, a);
+                break;
+            }
+
             case OP_ABS: {
                 int a = vm_pop(&sp);
                 vm_push(&sp, a < 0 ? -a : a);

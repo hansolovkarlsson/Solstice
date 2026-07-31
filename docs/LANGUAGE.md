@@ -16,9 +16,9 @@ program Name;
 const
     { named constants, if any - see Constants }
 type
-    { record type declarations, type aliases, and/or enumerated type
-      declarations, if any - see Records, Type aliases, and Enumerated
-      types }
+    { record type declarations, type aliases, enumerated types, and/or
+      subrange types, if any - see Records, Type aliases, Enumerated
+      types, and Subrange types }
 var
     { declarations }
 begin
@@ -31,9 +31,10 @@ end.
 - The `const` section is optional, and comes before `type`/`var` — see
   [Constants](#constants).
 - The `type` section is optional, and declares record types, type
-  aliases, and/or enumerated types (any mix, in any order) — see
-  [Records](#records), [Type aliases](#type-aliases), and
-  [Enumerated types](#enumerated-types).
+  aliases, enumerated types, and/or subrange types (any mix, in any
+  order) — see [Records](#records), [Type aliases](#type-aliases),
+  [Enumerated types](#enumerated-types), and
+  [Subrange types](#subrange-types).
 - The `var` section is optional — omit it entirely if the program declares
   no variables.
 - The final `.` after `end` is required.
@@ -64,6 +65,7 @@ y := 2; // this too, to end of line
 | Array | `array[lower..upper] of T` | — | `T` is `integer`, `real`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
 | Record | `type TName = record ... end;` | — | User-defined; see [Records](#records) |
 | Enumerated | `type TName = (Val1, Val2, ...);` | — | User-defined; see [Enumerated types](#enumerated-types) |
+| Subrange | `type TName = lower..upper;` | — | Bounds-checked `integer`; see [Subrange types](#subrange-types) |
 
 There are no sets.
 
@@ -906,14 +908,66 @@ end.
   `age: TAge` and `x: integer`) are completely interchangeable — the
   alias is a compile-time name only, not a distinct type the type
   checker tracks separately.
-- Alias names, record type names, and enumerated type names all share
-  one namespace (declared in the same `type` section, in any order or
-  mix) — redeclaring any of them as another is a compile-time error,
-  same as redeclaring one as itself.
+- Alias names, record type names, enumerated type names, and subrange
+  type names all share one namespace (declared in the same `type`
+  section, in any order or mix) — redeclaring any of them as another is
+  a compile-time error, same as redeclaring one as itself.
 - A type alias can't itself name a record type (`type TWrapper =
   TPoint;` where `TPoint` is a record type is a compile-time error) —
-  only the five scalar types, an enumerated type, and other aliases of
-  those, are accepted (see [Enumerated types](#enumerated-types) below).
+  only the five scalar types, an enumerated type, a subrange type, and
+  other aliases of those, are accepted (see [Enumerated
+  types](#enumerated-types) and [Subrange types](#subrange-types)
+  below). Aliasing a subrange type produces another, equivalent
+  subrange type under the new name (its bounds are still enforced).
+
+## Subrange types
+
+```pascal
+program Example;
+type
+    TAge = 0..150;
+var
+    age: TAge;
+    scores: array[1..5] of TAge;
+begin
+    age := 36;
+    writeln('age = ', age);
+    age := 200;              { runtime error: out of range }
+end.
+```
+
+- `type Name = <lower> .. <upper>;` declares a bounds-checked integer
+  type: `lower`/`upper` are compile-time-constant integers (a literal,
+  or a named [constant](#constants), same as an array bound), and
+  `upper` must be `>= lower`.
+- **Unlike an enumerated type, a subrange is fully assignment- and
+  arithmetic-compatible with plain `integer`** — the type checker never
+  distinguishes them, so `age: TAge` and `x: integer` mix freely in
+  expressions, comparisons, and assignment in either direction with no
+  widening step needed. The *only* thing a subrange type adds is a
+  **runtime bounds check performed every time a value is stored** into
+  a variable declared with it — assigning a value outside `lower..upper`
+  is a runtime error (`VM Runtime Error`), not a silent wraparound or a
+  compile-time rejection (the value very often isn't known until
+  runtime).
+- The bounds check applies everywhere a subrange type is used: plain
+  variables, array elements (`scores[i] := 200;` above would also
+  error), record fields, `inc`/`dec`, function parameters (checked at
+  every call site) and return values (checked when the function's own
+  name is assigned to, inside its body), and by-reference array
+  parameters.
+- **No range-checking on arithmetic itself** — `age + 1` (including via
+  `succ`/`pred`) can produce an out-of-range *value*; the error only
+  fires at the point that value is actually *stored* somewhere
+  subrange-typed. An intermediate out-of-range value that's only ever
+  read (e.g. printed) without being stored anywhere subrange-typed never
+  errors.
+- Implemented as a compile-time-only wrapper around the assigned value
+  (`NODE_RANGE_CHECK` — see [docs/ARCHITECTURE.md](ARCHITECTURE.md)),
+  compiling to two small new opcodes (`CHECK_LOWER`/`CHECK_UPPER`, see
+  [docs/BYTECODE.md](BYTECODE.md)) — no `.bin` format change, since a
+  subrange-typed variable's `Symbol` entry is otherwise indistinguishable
+  from a plain `integer`'s (disassembling one shows `.var age integer`).
 
 ## Enumerated types
 

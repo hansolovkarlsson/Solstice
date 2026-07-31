@@ -114,6 +114,8 @@ static const char *opcode_name(Opcode op) {
         case OP_FPRINT_PADDED_PRECISE: return "fprint_padded_precise";
         case OP_LOAD_IDX_DYN:  return "load_idx_dyn";
         case OP_STORE_IDX_DYN: return "store_idx_dyn";
+        case OP_CHECK_LOWER: return "check_lower";
+        case OP_CHECK_UPPER: return "check_upper";
         default:       return NULL;
     }
 }
@@ -153,7 +155,8 @@ static int is_var_ref(Opcode op) {
 // a frame-relative local slot number is just as much "a number" here as
 // PUSH's literal is; neither refers to anything named.
 static int is_immediate(Opcode op) {
-    return op == OP_PUSH || op == OP_ENTER || op == OP_LOAD_LOCAL || op == OP_STORE_LOCAL;
+    return op == OP_PUSH || op == OP_ENTER || op == OP_LOAD_LOCAL || op == OP_STORE_LOCAL
+        || op == OP_CHECK_LOWER || op == OP_CHECK_UPPER;
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index

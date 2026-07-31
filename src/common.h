@@ -130,6 +130,14 @@ typedef struct {
                       // case - the fields below are unused); 1 for 2D
     int array_lower2; // only meaningful if is_2d: the SECOND dimension's bounds
     int array_upper2;
+    int is_subrange;      // 1 if this symbol's VALUE (the scalar itself,
+                          // or - if is_array - each element) is
+                          // constrained to a declared subrange
+                          // ('type TAge = 0..150;'); see NODE_RANGE_CHECK.
+                          // Independent of is_array/is_2d - a subrange-
+                          // element array has both set.
+    int subrange_lower;   // only meaningful if is_subrange
+    int subrange_upper;
 } Symbol;
 
 typedef enum {
@@ -368,7 +376,7 @@ typedef enum {
                   // STORE/STORE_LOCAL afterward, so this one opcode
                   // covers both cases with no duplication.
     OP_READ_LOCAL_INT, OP_READ_LOCAL_BOOL, OP_READ_LOCAL_REAL,
-    OP_READ_LOCAL_STR, OP_READ_LOCAL_CHAR // arg = frame slot. Each reads
+    OP_READ_LOCAL_STR, OP_READ_LOCAL_CHAR, // arg = frame slot. Each reads
                   // one line of stdin, parses/validates it exactly like
                   // OP_READ's corresponding branch (see vm.c), and
                   // stores the result directly into the frame slot -
@@ -378,6 +386,15 @@ typedef enum {
                   // equivalent runtime type tag to dispatch on; codegen
                   // picks the right one at compile time, where the
                   // local's declared type is already known.
+    OP_CHECK_LOWER, OP_CHECK_UPPER // arg = a subrange's lower/upper bound
+                  // (a compile-time constant - see NODE_RANGE_CHECK).
+                  // Peeks at the value on top of the stack (does NOT pop
+                  // it - leaves the stack exactly as OP_DUP would, minus
+                  // the duplication) and aborts with a runtime error if
+                  // it's below/above the bound; otherwise a no-op. Two
+                  // separate opcodes, each with one immediate bound,
+                  // rather than one opcode needing two - an opcode only
+                  // carries a single int arg.
 } Opcode;
 
 typedef struct {
@@ -525,7 +542,7 @@ typedef enum {
                        // later, during codegen, would be too late. The
                        // payoff: codegen for this node needs zero special
                        // end-bound-caching logic at all, unlike NODE_FOR.
-    NODE_LOCAL_READLN  // 'readln(x)' where x is a parameter/local
+    NODE_LOCAL_READLN, // 'readln(x)' where x is a parameter/local
                        // variable. data.var_idx = x's frame slot,
                        // expression_type = x's declared type (set by the
                        // parser, since codegen needs to pick one of the
@@ -533,6 +550,17 @@ typedef enum {
                        // unlike OP_READ's runtime type dispatch via
                        // sym_table[], a local frame slot carries no
                        // runtime type information to dispatch on at all).
+    NODE_RANGE_CHECK   // Wraps a value about to be stored into a subrange-
+                       // typed target ('type TAge = 0..150;'). left = the
+                       // value expression; right/extra = NODE_NUMBER
+                       // literals holding the lower/upper bound (always
+                       // compile-time constants - see parse_type_section()
+                       // in parser.c) - reusing existing child pointers
+                       // for two plain int constants rather than adding
+                       // new ASTNode fields. expression_type = TYPE_INTEGER
+                       // (a subrange is fully assignment/arithmetic-
+                       // compatible with integer - unlike an enum, it's
+                       // not a distinct type the type checker tracks).
 } NodeType;
 
 typedef struct ASTNode {
@@ -577,12 +605,25 @@ typedef struct {
     int param_array_lower[MAX_PARAMS];  // only meaningful if the above is
     int param_array_upper[MAX_PARAMS];  // set: the bounds any argument
                                     // passed here must exactly match
+    int param_is_subrange[MAX_PARAMS];  // 1 if this parameter (or, if
+                                    // param_is_array_ref is set, each of
+                                    // its elements) is subrange-
+                                    // constrained - checked at every call
+                                    // site (see parse_call_arguments()).
+    int param_subrange_lower[MAX_PARAMS]; // only meaningful if the above is set
+    int param_subrange_upper[MAX_PARAMS];
     int is_forward;                // 1 while forward-declared but not yet
                                     // completed; 0 once a real body exists
                                     // (or if it was never forward at all)
     int is_function;                // 1 if declared with 'function' (has
                                     // a return value), 0 for 'procedure'
     DataType return_type;           // only meaningful if is_function
+    int return_is_subrange;         // only meaningful if is_function -
+                                    // checked when the function's own
+                                    // name is assigned to (its return
+                                    // value), inside its own body.
+    int return_subrange_lower;      // only meaningful if return_is_subrange
+    int return_subrange_upper;
     int return_slot;                // only meaningful if is_function - a
                                     // hidden local slot, reserved after
                                     // every real parameter/local; assigning

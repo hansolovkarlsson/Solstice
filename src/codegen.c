@@ -688,6 +688,12 @@ void generate_code(ASTNode *node) {
             emit(OP_STORE_IDX_DYN, 0);
             generate_code(node->next);
             break;
+
+        case NODE_RANGE_CHECK:
+            generate_code(node->left); // the value - left on the stack afterward
+            emit(OP_CHECK_LOWER, node->right->data.num_value);
+            emit(OP_CHECK_UPPER, node->extra->data.num_value);
+            break;
     }
 }
 

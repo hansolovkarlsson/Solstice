@@ -133,6 +133,7 @@ fit. Current conventions, for reference:
 | `NODE_FOR` | start bound | end bound | next stmt | body | `TOKEN_TO`/`TOKEN_DOWNTO` | loop var |
 | `NODE_WRITELN` | head of arg list (chained via each arg's own `next`) | — | next stmt | — | `TOKEN_WRITE`/`TOKEN_WRITELN` | — |
 | `NODE_ARRAY_ACCESS` | index expr | — | — | — | — | array var |
+| `NODE_RANGE_CHECK` | value expr | lower bound (`NODE_NUMBER`) | — | upper bound (`NODE_NUMBER`) | — | — |
 
 Two techniques worth naming explicitly, since they're reused constantly:
 

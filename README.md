@@ -199,7 +199,14 @@ enumerated types (`type TColor = (Red, Green, Blue);`), with `ord`/
 `succ`/`pred`, ordinal comparison, and `write`/`writeln` printing a
 value by name (`Red`, not `0`) via a compile-time comparison chain —
 no VM or `.bin` format changes at all (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#enumerated-types)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#enumerated-types)). Also working:
+subrange types (`type TAge = 0..150;`), fully assignment/arithmetic-
+compatible with `integer` (unlike an enum) but bounds-checked at every
+point a value is stored into one — variables, array elements, record
+fields, parameters (checked at every call site), and return values —
+via two new opcodes (`CHECK_LOWER`/`CHECK_UPPER`) that peek and validate
+the value already on the stack, with no `.bin` format change (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#subrange-types)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no

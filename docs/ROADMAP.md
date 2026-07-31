@@ -53,7 +53,20 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       value (`const` is always parsed before `type`, so no enum value
       exists yet at that point) — see
       [docs/LANGUAGE.md](LANGUAGE.md#enumerated-types).
-- [ ] Subrange types (`1..100`)
+- [x] Subrange types (`type TAge = 0..150;`, integer only) —
+      assignment/arithmetic-compatible with plain `integer` (unlike an
+      enum, no distinct `DataType` encoding), bounds-checked at every
+      point a value is stored via a new `NODE_RANGE_CHECK` AST wrapper
+      compiling to two new opcodes (`CHECK_LOWER`/`CHECK_UPPER`, peek-
+      and-validate, no `.bin` format change). Full scope: variables,
+      array elements, record fields, parameters (checked at call sites),
+      return values, `inc`/`dec`, and type aliases of a subrange. Named
+      declaration only (`array[1..MaxSize] of TAge`, not an inline
+      anonymous `var a: 0..150;`). Along the way, fixed a real bug this
+      surfaced: dead-code elimination was silently dropping an
+      assignment's runtime side effect (the range check) whenever its
+      target variable was otherwise unread — see
+      [docs/LANGUAGE.md](LANGUAGE.md#subrange-types).
 - [x] Type aliases (`type TAge = integer;`) — resolved at parse time via
       the same centralized `parse_scalar_type()` every scalar-type call
       site already went through, so this also consolidated 3 duplicated

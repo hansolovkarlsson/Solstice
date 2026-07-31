@@ -246,6 +246,11 @@ void print_ast(ASTNode *node, int indent) {
             print_ast(node->left, indent + 2);
             break;
 
+        case NODE_RANGE_CHECK:
+            printf("[Range Check %d..%d]\n", node->right->data.num_value, node->extra->data.num_value);
+            print_ast(node->left, indent + 1);
+            break;
+
         case NODE_BREAK:
             printf("[Break]\n");
             if (node->next) {

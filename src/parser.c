@@ -45,6 +45,15 @@ typedef struct {
                         // the array's data directly
     int array_lower;    // only meaningful if is_array_ref: the declared
     int array_upper;    // bounds an argument passed here must match
+    int is_subrange;     // this SCALAR local/parameter (or, if
+                        // is_array_ref, each element the referenced
+                        // array holds) is subrange-constrained - see
+                        // the Symbol comment in common.h. Not consulted
+                        // for a plain is_array local (that case's
+                        // constraint lives on the mangled global's own
+                        // Symbol - see add_local_array()).
+    int subrange_lower;  // only meaningful if is_subrange
+    int subrange_upper;
 } LocalSymbol;
 static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
@@ -107,6 +116,9 @@ typedef struct {
     DataType type;
     int is_array;
     int array_lower, array_upper; // only meaningful if is_array
+    int is_subrange;      // see the Symbol comment in common.h - propagated
+    int subrange_lower;   // to the field's mangled global Symbol by
+    int subrange_upper;   // add_record_var()
 } RecordField;
 
 typedef struct {
@@ -152,6 +164,35 @@ static int type_alias_count = 0;
 static int find_type_alias(const char *name) {
     for (int i = 0; i < type_alias_count; i++) {
         if (strcmp(type_aliases[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+// A subrange type ('type TAge = 0..150;') is, unlike a type alias, NOT
+// just another name for TYPE_INTEGER with zero further consequence - a
+// value of this type is bounds-checked at the point it's stored (see
+// NODE_RANGE_CHECK and wrap_range_check() below). But it's also unlike
+// an enum: it's fully assignment/arithmetic-compatible with a plain
+// integer (this compiler's type checker never distinguishes them), so -
+// unlike EnumTypeDef - this table never needs to be consulted by
+// type_checker.c or codegen.c at all. It's purely a parser-time-only
+// lookup: parse_scalar_type() resolves a subrange type NAME into plain
+// TYPE_INTEGER (via its side-channel below), and the bounds are copied
+// directly into whatever Symbol/ProcSymbol/RecordField/NameGroup field
+// is being populated at that declaration site - this table itself is
+// never touched again after that.
+#define MAX_SUBRANGE_TYPES 20
+typedef struct {
+    char name[MAX_NAME];
+    int lower;
+    int upper;
+} SubrangeTypeDef;
+static SubrangeTypeDef subrange_types[MAX_SUBRANGE_TYPES];
+static int subrange_type_count = 0;
+
+static int find_subrange_type(const char *name) {
+    for (int i = 0; i < subrange_type_count; i++) {
+        if (strcmp(subrange_types[i].name, name) == 0) return i;
     }
     return -1;
 }
@@ -230,6 +271,25 @@ ASTNode *create_node(NodeType type) {
     return node;
 }
 
+// Wraps 'value' in a NODE_RANGE_CHECK if is_subrange is set; otherwise
+// returns 'value' unchanged. Called at every point a value is about to
+// be stored into a subrange-typed target (see SubrangeTypeDef above).
+static ASTNode *wrap_range_check(ASTNode *value, int is_subrange, int lower, int upper) {
+    if (!is_subrange) return value;
+    ASTNode *node = create_node(NODE_RANGE_CHECK);
+    node->expression_type = TYPE_INTEGER;
+    node->left = value;
+    ASTNode *lo = create_node(NODE_NUMBER);
+    lo->data.num_value = lower;
+    lo->expression_type = TYPE_INTEGER;
+    ASTNode *hi = create_node(NODE_NUMBER);
+    hi->data.num_value = upper;
+    hi->expression_type = TYPE_INTEGER;
+    node->right = lo;
+    node->extra = hi;
+    return node;
+}
+
 // Soft lookup - returns -1 if `name` isn't a declared global variable,
 // rather than erroring. Used where the caller needs to check "is this a
 // global X" before deciding how to proceed (see try_get_array_bounds
@@ -274,6 +334,9 @@ static void add_var(const char *name, DataType type) {
     sym_table[sym_count].array_lower = 0;
     sym_table[sym_count].array_upper = 0;
     sym_table[sym_count].array_base = 0;
+    sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
+    sym_table[sym_count].subrange_lower = 0;
+    sym_table[sym_count].subrange_upper = 0;
     sym_count++;
 }
 
@@ -308,6 +371,9 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     sym_table[sym_count].array_upper = upper;
     sym_table[sym_count].array_base = array_mem_count;
     sym_table[sym_count].is_2d = 0; // defensive reset (see comment above the Symbol struct)
+    sym_table[sym_count].is_subrange = 0;
+    sym_table[sym_count].subrange_lower = 0;
+    sym_table[sym_count].subrange_upper = 0;
     array_mem_count += size;
     sym_count++;
 }
@@ -350,6 +416,9 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
     sym_table[sym_count].is_2d = 1;
     sym_table[sym_count].array_lower2 = lower2;
     sym_table[sym_count].array_upper2 = upper2;
+    sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
+    sym_table[sym_count].subrange_lower = 0;
+    sym_table[sym_count].subrange_upper = 0;
     array_mem_count += size;
     sym_count++;
 }
@@ -396,6 +465,9 @@ static void add_record_var(const char *name, int record_type_idx) {
         } else {
             add_var(mangled, f->type);
         }
+        sym_table[sym_count - 1].is_subrange = f->is_subrange;
+        sym_table[sym_count - 1].subrange_lower = f->subrange_lower;
+        sym_table[sym_count - 1].subrange_upper = f->subrange_upper;
         rv->field_sym_idx[i] = sym_count - 1; // add_var/add_array_var just incremented sym_count
     }
     record_var_count++;
@@ -519,6 +591,9 @@ static int add_local(const char *name, DataType type) {
     current_locals[current_local_count].is_array_ref = 0;
     current_locals[current_local_count].array_lower = 0;
     current_locals[current_local_count].array_upper = 0;
+    current_locals[current_local_count].is_subrange = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].subrange_lower = 0;
+    current_locals[current_local_count].subrange_upper = 0;
     return current_local_count++;
 }
 
@@ -526,11 +601,15 @@ static int add_local(const char *name, DataType type) {
 // (it holds a runtime sym_table[] index - see parse_array_ref_argument
 // and generate_code's NODE_REF_ARRAY_ACCESS/ASSIGN cases), plus the
 // declared bounds every call site's argument must exactly match.
-static int add_local_array_ref(const char *name, DataType elem_type, int lower, int upper) {
+static int add_local_array_ref(const char *name, DataType elem_type, int lower, int upper,
+                                int is_subrange, int subrange_lower, int subrange_upper) {
     int idx = add_local(name, elem_type);
     current_locals[idx].is_array_ref = 1;
     current_locals[idx].array_lower = lower;
     current_locals[idx].array_upper = upper;
+    current_locals[idx].is_subrange = is_subrange;
+    current_locals[idx].subrange_lower = subrange_lower;
+    current_locals[idx].subrange_upper = subrange_upper;
     return idx;
 }
 
@@ -543,7 +622,8 @@ static int add_local_array_ref(const char *name, DataType elem_type, int lower, 
 // this array is allocated ONCE for the whole program and SHARED across
 // every call to this procedure, including recursive ones - it does not
 // get fresh, isolated storage per call.
-static int add_local_array(const char *name, DataType elem_type, int lower, int upper) {
+static int add_local_array(const char *name, DataType elem_type, int lower, int upper,
+                            int is_subrange, int subrange_lower, int subrange_upper) {
     if (find_local(name) != -1) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
@@ -554,6 +634,9 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     snprintf(mangled, MAX_NAME, "__local_arr%d", sym_count);
     int array_sym_idx = sym_count; // add_array_var() is about to append here
     add_array_var(mangled, elem_type, lower, upper);
+    sym_table[array_sym_idx].is_subrange = is_subrange;
+    sym_table[array_sym_idx].subrange_lower = subrange_lower;
+    sym_table[array_sym_idx].subrange_upper = subrange_upper;
 
     strcpy(current_locals[current_local_count].name, name);
     current_locals[current_local_count].type = elem_type;
@@ -659,13 +742,29 @@ static int parse_int_literal(void) {
     return val;
 }
 
-// A scalar type - one of the five built-in keywords, or a previously
-// declared type alias resolving to one of them (see TypeAliasDef above).
-// This is the one centralized function every scalar-type call site goes
+// Side-channel output of parse_scalar_type() below: whether the type it
+// JUST resolved was a subrange type, and if so, its bounds. A subrange
+// resolves to plain TYPE_INTEGER as parse_scalar_type()'s actual return
+// value (see SubrangeTypeDef above for why), so this is the only way a
+// caller that cares (var/array-element/record-field/parameter/local/
+// return-type declarations) can find out to also apply the bounds
+// constraint - callers that don't care about subranges can simply
+// ignore it. Reset at the top of every parse_scalar_type() call, so it
+// always reflects only the most recent call.
+static int scalar_type_is_subrange = 0;
+static int scalar_type_subrange_lower = 0;
+static int scalar_type_subrange_upper = 0;
+
+// A scalar type - one of the five built-in keywords, a previously
+// declared type alias, enumerated type, or subrange type resolving to
+// one of them (see TypeAliasDef/EnumTypeDef/SubrangeTypeDef above). This
+// is the one centralized function every scalar-type call site goes
 // through (parameters, procedure-locals, record fields, function return
-// types, and plain/array var declarations), so alias support and any
-// future scalar-type keyword only needs to be added here once.
+// types, and plain/array var declarations), so alias/enum/subrange
+// support and any future scalar-type keyword only needs to be added here
+// once.
 static DataType parse_scalar_type(void) {
+    scalar_type_is_subrange = 0;
     if (token.type == TOKEN_INTEGER) { match(TOKEN_INTEGER); return TYPE_INTEGER; }
     if (token.type == TOKEN_BOOLEAN) { match(TOKEN_BOOLEAN); return TYPE_BOOLEAN; }
     if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
@@ -683,8 +782,16 @@ static DataType parse_scalar_type(void) {
             match(TOKEN_IDENTIFIER);
             return (DataType)(TYPE_ENUM_BASE + enum_type_idx);
         }
+        int subrange_idx = find_subrange_type(token.text);
+        if (subrange_idx != -1) {
+            scalar_type_is_subrange = 1;
+            scalar_type_subrange_lower = subrange_types[subrange_idx].lower;
+            scalar_type_subrange_upper = subrange_types[subrange_idx].upper;
+            match(TOKEN_IDENTIFIER);
+            return TYPE_INTEGER;
+        }
     }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', a declared type alias, or an enumerated type)");
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', a declared type alias, an enumerated type, or a subrange type)");
     return TYPE_UNKNOWN;
 }
 
@@ -699,6 +806,9 @@ typedef struct {
     int is_array;
     int array_lower;
     int array_upper;
+    int is_subrange;      // see the Symbol comment in common.h
+    int subrange_lower;
+    int subrange_upper;
 } NameGroup;
 
 static NameGroup parse_name_group(void) {
@@ -734,6 +844,9 @@ static NameGroup parse_name_group(void) {
     } else {
         g.type = parse_scalar_type();
     }
+    g.is_subrange = scalar_type_is_subrange;
+    g.subrange_lower = scalar_type_subrange_lower;
+    g.subrange_upper = scalar_type_subrange_upper;
     return g;
 }
 
@@ -828,9 +941,15 @@ static ASTNode *parse_call_arguments(int proc_idx) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
             while (1) {
-                ASTNode *arg = (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_array_ref[arg_count])
-                    ? parse_array_ref_argument(proc_idx, arg_count)
-                    : expression();
+                ASTNode *arg;
+                if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_array_ref[arg_count]) {
+                    arg = parse_array_ref_argument(proc_idx, arg_count);
+                } else if (arg_count < proc_table[proc_idx].param_count) {
+                    arg = wrap_range_check(expression(), proc_table[proc_idx].param_is_subrange[arg_count],
+                        proc_table[proc_idx].param_subrange_lower[arg_count], proc_table[proc_idx].param_subrange_upper[arg_count]);
+                } else {
+                    arg = expression(); // too many arguments - the count mismatch error below still fires
+                }
                 arg_count++;
                 if (!arg_head) arg_head = arg; else arg_tail->next = arg;
                 arg_tail = arg;
@@ -1388,7 +1507,8 @@ static void parse_type_section(void) {
         int line = token.line;
         char type_name[MAX_NAME];
         strcpy(type_name, token.text);
-        if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1 || find_enum_type(type_name) != -1) {
+        if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1
+            || find_enum_type(type_name) != -1 || find_subrange_type(type_name) != -1) {
             compile_error(line, "Duplicate type declaration '%s'", type_name);
         }
         match(TOKEN_IDENTIFIER);
@@ -1439,16 +1559,63 @@ static void parse_type_section(void) {
             continue;
         }
 
+        // A subrange type ('type TAge = 0..150;') - see the comment
+        // above SubrangeTypeDef. Unambiguous the moment the bound starts
+        // with a number/minus sign (a type alias/enum-type name can
+        // never start with those); when it starts with an identifier,
+        // it's only ambiguous with a type alias/enum-type reference if
+        // that identifier ALSO happens to be an integer const's name -
+        // which a type alias/enum-type reference could never validly be
+        // anyway, so treating it as a subrange bound here is correct.
+        int could_be_subrange = (token.type == TOKEN_NUMBER || token.type == TOKEN_MINUS);
+        if (!could_be_subrange && token.type == TOKEN_IDENTIFIER) {
+            int ci = find_const(token.text);
+            could_be_subrange = (ci != -1 && const_defs[ci].type == TYPE_INTEGER);
+        }
+        if (could_be_subrange) {
+            if (subrange_type_count >= MAX_SUBRANGE_TYPES) {
+                compile_error(line, "Too many subrange type declarations (limit is %d)", MAX_SUBRANGE_TYPES);
+            }
+            int lower = parse_int_literal();
+            match(TOKEN_DOTDOT);
+            int upper = parse_int_literal();
+            match(TOKEN_SEMI);
+            if (upper < lower) {
+                compile_error(line, "Invalid subrange bounds: upper (%d) must be >= lower (%d)", upper, lower);
+            }
+            SubrangeTypeDef *st = &subrange_types[subrange_type_count];
+            strcpy(st->name, type_name);
+            st->lower = lower;
+            st->upper = upper;
+            subrange_type_count++;
+            continue;
+        }
+
         if (token.type != TOKEN_RECORD) {
-            // A plain type alias ('type TAge = integer;') - see the
-            // comment above TypeAliasDef. parse_scalar_type() already
+            // A plain type alias ('type TAge = integer;', or 'type TB =
+            // TA;' where TA is itself an enum/subrange type - see the
+            // comment above TypeAliasDef). parse_scalar_type() already
             // resolves a reference to an earlier alias by name too, so
             // aliases can chain ('type TAge = integer; TYears = TAge;').
+            DataType aliased = parse_scalar_type();
+            match(TOKEN_SEMI);
+            if (scalar_type_is_subrange) {
+                // Aliasing a subrange type produces another subrange
+                // type under the new name, not a plain TypeAliasDef -
+                // TypeAliasDef has no bounds fields of its own.
+                if (subrange_type_count >= MAX_SUBRANGE_TYPES) {
+                    compile_error(line, "Too many subrange type declarations (limit is %d)", MAX_SUBRANGE_TYPES);
+                }
+                SubrangeTypeDef *st = &subrange_types[subrange_type_count];
+                strcpy(st->name, type_name);
+                st->lower = scalar_type_subrange_lower;
+                st->upper = scalar_type_subrange_upper;
+                subrange_type_count++;
+                continue;
+            }
             if (type_alias_count >= MAX_TYPE_ALIASES) {
                 compile_error(line, "Too many type declarations (limit is %d)", MAX_TYPE_ALIASES);
             }
-            DataType aliased = parse_scalar_type();
-            match(TOKEN_SEMI);
             TypeAliasDef *a = &type_aliases[type_alias_count];
             strcpy(a->name, type_name);
             a->type = aliased;
@@ -1511,6 +1678,9 @@ static void parse_type_section(void) {
                 f->is_array = is_array;
                 f->array_lower = lower;
                 f->array_upper = upper;
+                f->is_subrange = scalar_type_is_subrange;
+                f->subrange_lower = scalar_type_subrange_lower;
+                f->subrange_upper = scalar_type_subrange_upper;
                 rt->field_count++;
             }
         }
@@ -1537,6 +1707,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     const_def_count = 0;
     type_alias_count = 0;
     enum_type_count = 0;
+    subrange_type_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -1601,6 +1772,9 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 match(TOKEN_OF);
 
                 DataType elem_type = parse_scalar_type();
+                int is_subrange = scalar_type_is_subrange;
+                int subrange_lower = scalar_type_subrange_lower;
+                int subrange_upper = scalar_type_subrange_upper;
 
                 for (int i = 0; i < count; i++) {
                     if (is_2d) {
@@ -1608,12 +1782,21 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                     } else {
                         add_array_var(temporary_names[i], elem_type, lower, upper);
                     }
+                    sym_table[sym_count - 1].is_subrange = is_subrange;
+                    sym_table[sym_count - 1].subrange_lower = subrange_lower;
+                    sym_table[sym_count - 1].subrange_upper = subrange_upper;
                 }
             } else {
                 DataType target_type = parse_scalar_type();
+                int is_subrange = scalar_type_is_subrange;
+                int subrange_lower = scalar_type_subrange_lower;
+                int subrange_upper = scalar_type_subrange_upper;
 
                 for (int i = 0; i < count; i++) {
                     add_var(temporary_names[i], target_type);
+                    sym_table[sym_count - 1].is_subrange = is_subrange;
+                    sym_table[sym_count - 1].subrange_lower = subrange_lower;
+                    sym_table[sym_count - 1].subrange_upper = subrange_upper;
                 }
             }
             match(TOKEN_SEMI);
@@ -1699,9 +1882,14 @@ static void subroutine_declaration(int is_function_decl) {
         for (int i = 0; i < proc_table[proc_idx].param_count; i++) {
             if (proc_table[proc_idx].param_is_array_ref[i]) {
                 add_local_array_ref(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i],
-                                     proc_table[proc_idx].param_array_lower[i], proc_table[proc_idx].param_array_upper[i]);
+                                     proc_table[proc_idx].param_array_lower[i], proc_table[proc_idx].param_array_upper[i],
+                                     proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
+                                     proc_table[proc_idx].param_subrange_upper[i]);
             } else {
-                add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
+                int idx = add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
+                current_locals[idx].is_subrange = proc_table[proc_idx].param_is_subrange[i];
+                current_locals[idx].subrange_lower = proc_table[proc_idx].param_subrange_lower[i];
+                current_locals[idx].subrange_upper = proc_table[proc_idx].param_subrange_upper[i];
             }
         }
         if (is_function_decl && token.type == TOKEN_COLON) {
@@ -1714,6 +1902,9 @@ static void subroutine_declaration(int is_function_decl) {
         int param_is_array_ref[MAX_PARAMS];
         int param_array_lower[MAX_PARAMS];
         int param_array_upper[MAX_PARAMS];
+        int param_is_subrange[MAX_PARAMS];
+        int param_subrange_lower[MAX_PARAMS];
+        int param_subrange_upper[MAX_PARAMS];
 
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
@@ -1725,15 +1916,22 @@ static void subroutine_declaration(int is_function_decl) {
                             compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
                         }
                         if (g.is_array) {
-                            add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper);
+                            add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper,
+                                                 g.is_subrange, g.subrange_lower, g.subrange_upper);
                         } else {
-                            add_local(g.names[i], g.type);
+                            int idx = add_local(g.names[i], g.type);
+                            current_locals[idx].is_subrange = g.is_subrange;
+                            current_locals[idx].subrange_lower = g.subrange_lower;
+                            current_locals[idx].subrange_upper = g.subrange_upper;
                         }
                         strcpy(param_names[param_count], g.names[i]);
                         param_types[param_count] = g.type;
                         param_is_array_ref[param_count] = g.is_array;
                         param_array_lower[param_count] = g.array_lower;
                         param_array_upper[param_count] = g.array_upper;
+                        param_is_subrange[param_count] = g.is_subrange;
+                        param_subrange_lower[param_count] = g.subrange_lower;
+                        param_subrange_upper[param_count] = g.subrange_upper;
                         param_count++;
                     }
                     if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -1754,12 +1952,18 @@ static void subroutine_declaration(int is_function_decl) {
             proc_table[proc_idx].param_is_array_ref[i] = param_is_array_ref[i];
             proc_table[proc_idx].param_array_lower[i] = param_array_lower[i];
             proc_table[proc_idx].param_array_upper[i] = param_array_upper[i];
+            proc_table[proc_idx].param_is_subrange[i] = param_is_subrange[i];
+            proc_table[proc_idx].param_subrange_lower[i] = param_subrange_lower[i];
+            proc_table[proc_idx].param_subrange_upper[i] = param_subrange_upper[i];
         }
 
         proc_table[proc_idx].is_function = is_function_decl;
         if (is_function_decl) {
             match(TOKEN_COLON);
             proc_table[proc_idx].return_type = parse_scalar_type();
+            proc_table[proc_idx].return_is_subrange = scalar_type_is_subrange;
+            proc_table[proc_idx].return_subrange_lower = scalar_type_subrange_lower;
+            proc_table[proc_idx].return_subrange_upper = scalar_type_subrange_upper;
         }
     }
 
@@ -1780,9 +1984,13 @@ static void subroutine_declaration(int is_function_decl) {
             NameGroup g = parse_name_group();
             for (int i = 0; i < g.count; i++) {
                 if (g.is_array) {
-                    add_local_array(g.names[i], g.type, g.array_lower, g.array_upper);
+                    add_local_array(g.names[i], g.type, g.array_lower, g.array_upper,
+                                     g.is_subrange, g.subrange_lower, g.subrange_upper);
                 } else {
-                    add_local(g.names[i], g.type);
+                    int idx = add_local(g.names[i], g.type);
+                    current_locals[idx].is_subrange = g.is_subrange;
+                    current_locals[idx].subrange_lower = g.subrange_lower;
+                    current_locals[idx].subrange_upper = g.subrange_upper;
                 }
             }
             match(TOKEN_SEMI);
@@ -1850,6 +2058,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     int is_local = 0;
     int global_idx = -1;
     DataType target_type;
+    int target_is_subrange = 0, target_subrange_lower = 0, target_subrange_upper = 0;
 
     int rv_idx = find_record_var(name);
     if (rv_idx != -1) {
@@ -1871,6 +2080,9 @@ static ASTNode *parse_inc_dec(TokenType kind) {
             compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
         }
         target_type = sym_table[global_idx].type;
+        target_is_subrange = sym_table[global_idx].is_subrange;
+        target_subrange_lower = sym_table[global_idx].subrange_lower;
+        target_subrange_upper = sym_table[global_idx].subrange_upper;
     } else {
         local_idx = find_local(name);
         is_local = (local_idx != -1 && !current_locals[local_idx].is_array && !current_locals[local_idx].is_array_ref);
@@ -1879,12 +2091,18 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         }
         if (is_local) {
             target_type = current_locals[local_idx].type;
+            target_is_subrange = current_locals[local_idx].is_subrange;
+            target_subrange_lower = current_locals[local_idx].subrange_lower;
+            target_subrange_upper = current_locals[local_idx].subrange_upper;
         } else {
             global_idx = find_var(name);
             if (sym_table[global_idx].is_array) {
                 compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
             }
             target_type = sym_table[global_idx].type;
+            target_is_subrange = sym_table[global_idx].is_subrange;
+            target_subrange_lower = sym_table[global_idx].subrange_lower;
+            target_subrange_upper = sym_table[global_idx].subrange_upper;
         }
     }
     if (target_type != TYPE_INTEGER) {
@@ -1927,7 +2145,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         write_node = create_node(NODE_ASSIGN);
         write_node->data.var_idx = global_idx;
     }
-    write_node->left = value_node;
+    write_node->left = wrap_range_check(value_node, target_is_subrange, target_subrange_lower, target_subrange_upper);
     return write_node;
 }
 
@@ -1950,7 +2168,8 @@ static ASTNode *parse_global_assignment(int idx) {
             stmt->right = expression(); // second index
             match(TOKEN_RBRACKET);
             match(TOKEN_ASSIGN);
-            stmt->extra = expression(); // value
+            stmt->extra = wrap_range_check(expression(), sym_table[idx].is_subrange,
+                                            sym_table[idx].subrange_lower, sym_table[idx].subrange_upper); // value
             return stmt;
         }
         ASTNode *stmt = create_node(NODE_ASSIGN);
@@ -1958,7 +2177,8 @@ static ASTNode *parse_global_assignment(int idx) {
         stmt->left = expression();  // index
         match(TOKEN_RBRACKET);
         match(TOKEN_ASSIGN);
-        stmt->right = expression(); // value
+        stmt->right = wrap_range_check(expression(), sym_table[idx].is_subrange,
+                                        sym_table[idx].subrange_lower, sym_table[idx].subrange_upper); // value
         return stmt;
     }
     if (token.type == TOKEN_LBRACKET && (sym_table[idx].type == TYPE_STRING || sym_table[idx].type == TYPE_CHAR)) {
@@ -1974,7 +2194,8 @@ static ASTNode *parse_global_assignment(int idx) {
     ASTNode *stmt = create_node(NODE_ASSIGN);
     stmt->data.var_idx = idx;
     match(TOKEN_ASSIGN);
-    stmt->left = expression();  // value
+    stmt->left = wrap_range_check(expression(), sym_table[idx].is_subrange,
+                                   sym_table[idx].subrange_lower, sym_table[idx].subrange_upper); // value
     return stmt;
 }
 
@@ -2098,7 +2319,10 @@ static ASTNode *statement(void) {
                 stmt->data.var_idx = proc_table[current_function_idx].return_slot;
                 stmt->expression_type = proc_table[current_function_idx].return_type;
                 match(TOKEN_ASSIGN);
-                stmt->left = expression();
+                stmt->left = wrap_range_check(expression(),
+                    proc_table[current_function_idx].return_is_subrange,
+                    proc_table[current_function_idx].return_subrange_lower,
+                    proc_table[current_function_idx].return_subrange_upper);
                 return stmt;
             }
             // Otherwise this is a recursive self-call used as a statement
@@ -2125,7 +2349,8 @@ static ASTNode *statement(void) {
                 stmt->left = expression();  // index
                 match(TOKEN_RBRACKET);
                 match(TOKEN_ASSIGN);
-                stmt->right = expression(); // value
+                stmt->right = wrap_range_check(expression(), sym_table[arr_sym_idx].is_subrange,
+                    sym_table[arr_sym_idx].subrange_lower, sym_table[arr_sym_idx].subrange_upper); // value
                 return stmt;
             }
             if (current_locals[local_idx].is_array_ref) {
@@ -2140,7 +2365,8 @@ static ASTNode *statement(void) {
                 stmt->left = expression();  // index
                 match(TOKEN_RBRACKET);
                 match(TOKEN_ASSIGN);
-                stmt->right = expression(); // value
+                stmt->right = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
+                    current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper); // value
                 return stmt;
             }
             match(TOKEN_IDENTIFIER);
@@ -2158,7 +2384,8 @@ static ASTNode *statement(void) {
             stmt->data.var_idx = local_idx;
             stmt->expression_type = current_locals[local_idx].type; // target type, for the type checker
             match(TOKEN_ASSIGN);
-            stmt->left = expression();
+            stmt->left = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
+                current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
             return stmt;
         }
 
