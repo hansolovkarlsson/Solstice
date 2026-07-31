@@ -156,6 +156,34 @@ static int find_type_alias(const char *name) {
     return -1;
 }
 
+// enum_types[]/enum_type_count (declared in common.h, defined in
+// bytecode.c - see the EnumTypeDef comment there) hold every declared
+// enumerated type ('type TColor = (Red, Green, Blue);'). A specific
+// enum type's DataType is TYPE_ENUM_BASE + its index here.
+static int find_enum_type(const char *name) {
+    for (int i = 0; i < enum_type_count; i++) {
+        if (strcmp(enum_types[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+// Looks up a bare value name (e.g. 'Red') across every declared enum
+// type's value list (they all share one flat namespace, matching real
+// Pascal). On a match, fills *enum_type_idx and *ordinal and returns 1;
+// returns 0 (leaving both untouched) if not found.
+static int find_enum_value(const char *name, int *enum_type_idx, int *ordinal) {
+    for (int i = 0; i < enum_type_count; i++) {
+        for (int j = 0; j < enum_types[i].value_count; j++) {
+            if (strcmp(enum_types[i].value_names[j], name) == 0) {
+                *enum_type_idx = i;
+                *ordinal = j;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int find_record_var(const char *name) {
     for (int i = 0; i < record_var_count; i++) {
         if (strcmp(record_vars[i].name, name) == 0) return i;
@@ -231,6 +259,12 @@ static void add_var(const char *name, DataType type) {
     if (find_const(name) != -1) {
         compile_error(token.line, "'%s' is already declared as a constant", name);
     }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
+    }
     if (sym_count >= MAX_SYMBOLS) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
     }
@@ -253,6 +287,12 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     }
     if (find_const(name) != -1) {
         compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
     }
     if (sym_count >= MAX_SYMBOLS) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
@@ -285,6 +325,12 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
     }
     if (find_const(name) != -1) {
         compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
     }
     if (sym_count >= MAX_SYMBOLS) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
@@ -320,6 +366,12 @@ static void add_record_var(const char *name, int record_type_idx) {
     }
     if (find_const(name) != -1) {
         compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
     }
     if (record_var_count >= MAX_RECORD_VARS) {
         compile_error(token.line, "Too many record variables (limit is %d)", MAX_RECORD_VARS);
@@ -375,6 +427,12 @@ static int add_proc(const char *name) {
     }
     if (find_const(name) != -1) {
         compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
     }
     if (proc_count >= MAX_PROCEDURES) {
         compile_error(token.line, "Too many procedure declarations (limit is %d)", MAX_PROCEDURES);
@@ -620,8 +678,13 @@ static DataType parse_scalar_type(void) {
             match(TOKEN_IDENTIFIER);
             return t;
         }
+        int enum_type_idx = find_enum_type(token.text);
+        if (enum_type_idx != -1) {
+            match(TOKEN_IDENTIFIER);
+            return (DataType)(TYPE_ENUM_BASE + enum_type_idx);
+        }
     }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', or a declared type alias)");
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', a declared type alias, or an enumerated type)");
     return TYPE_UNKNOWN;
 }
 
@@ -844,8 +907,27 @@ static ASTNode *factor(void) {
         node->op = op;
         node->left = factor();
         return node;
+    } else if (token.type == TOKEN_ORD) {
+        match(TOKEN_ORD);
+        match(TOKEN_LPAREN);
+        ASTNode *arg = expression();
+        match(TOKEN_RPAREN);
+        if (arg->expression_type >= TYPE_ENUM_BASE) {
+            // An enum value's ordinal IS its runtime representation
+            // already - ord() on an enum is a compile-time no-op,
+            // unlike ord() on a char/string (which needs the OP_ORD
+            // opcode to pull a byte value out of a string_pool[]
+            // entry). Reuse 'arg' directly rather than wrapping it in a
+            // NODE_UNARY_OP, which would emit a real (and wrong) OP_ORD.
+            arg->expression_type = TYPE_INTEGER;
+            return arg;
+        }
+        ASTNode *node = create_node(NODE_UNARY_OP);
+        node->op = TOKEN_ORD;
+        node->left = arg;
+        return node;
     } else if (token.type == TOKEN_ABS || token.type == TOKEN_SQR ||
-               token.type == TOKEN_ORD || token.type == TOKEN_CHR ||
+               token.type == TOKEN_CHR ||
                token.type == TOKEN_TRUNC || token.type == TOKEN_ROUND ||
                token.type == TOKEN_SQRT || token.type == TOKEN_SIN ||
                token.type == TOKEN_COS || token.type == TOKEN_ARCTAN ||
@@ -1078,6 +1160,20 @@ static ASTNode *factor(void) {
             return node;
         }
 
+        int enum_type_idx, ordinal;
+        if (find_enum_value(token.text, &enum_type_idx, &ordinal)) {
+            // A bare enum value name ('Red') resolves directly to its
+            // ordinal as a plain NODE_NUMBER literal - exactly like a
+            // const - with expression_type carrying which enum type it
+            // is (see the TYPE_ENUM_BASE comment in common.h). No new
+            // NodeType needed.
+            match(TOKEN_IDENTIFIER);
+            ASTNode *node = create_node(NODE_NUMBER);
+            node->data.num_value = ordinal;
+            node->expression_type = (DataType)(TYPE_ENUM_BASE + enum_type_idx);
+            return node;
+        }
+
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
             char rec_name[MAX_NAME];
@@ -1274,7 +1370,7 @@ static void parse_const_section(void) {
         ConstDef *c = &const_defs[const_def_count];
         strcpy(c->name, name);
         switch (value->type) {
-            case NODE_NUMBER:      c->type = TYPE_INTEGER; c->value = value->data.num_value; break;
+            case NODE_NUMBER:      c->type = value->expression_type; c->value = value->data.num_value; break; // TYPE_INTEGER, or an enum type if 'value' is a bare enum value name
             case NODE_REAL_NUMBER: c->type = TYPE_REAL;    c->value = value->data.num_value; break;
             case NODE_BOOLEAN:     c->type = TYPE_BOOLEAN; c->value = value->data.num_value; break;
             case NODE_STRING:      c->type = value->expression_type; c->value = value->data.var_idx; break;
@@ -1292,11 +1388,56 @@ static void parse_type_section(void) {
         int line = token.line;
         char type_name[MAX_NAME];
         strcpy(type_name, token.text);
-        if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1) {
+        if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1 || find_enum_type(type_name) != -1) {
             compile_error(line, "Duplicate type declaration '%s'", type_name);
         }
         match(TOKEN_IDENTIFIER);
         match(TOKEN_EQ);
+
+        if (token.type == TOKEN_LPAREN) {
+            // An enumerated type: 'type TColor = (Red, Green, Blue);'.
+            // Each value's ordinal is just its position in this list
+            // (0, 1, 2, ...) - the same integer that ends up as its
+            // actual runtime representation (see the TYPE_ENUM_BASE
+            // comment in common.h). Every value name shares one flat
+            // namespace across every enum type, matching real Pascal.
+            if (enum_type_count >= MAX_ENUM_TYPES) {
+                compile_error(line, "Too many enumerated type declarations (limit is %d)", MAX_ENUM_TYPES);
+            }
+            match(TOKEN_LPAREN);
+            EnumTypeDef *et = &enum_types[enum_type_count];
+            strcpy(et->name, type_name);
+            et->value_count = 0;
+            while (1) {
+                if (token.type != TOKEN_IDENTIFIER) {
+                    compile_error(token.line, "Expected an enumerated value name");
+                }
+                char value_name[MAX_NAME];
+                strcpy(value_name, token.text);
+                int existing_type_idx, existing_ordinal;
+                for (int i = 0; i < et->value_count; i++) {
+                    if (strcmp(et->value_names[i], value_name) == 0) {
+                        compile_error(token.line, "Duplicate value '%s' in enumerated type '%s'", value_name, type_name);
+                    }
+                }
+                if (find_enum_value(value_name, &existing_type_idx, &existing_ordinal) || find_const(value_name) != -1) {
+                    compile_error(token.line, "'%s' is already declared", value_name);
+                }
+                if (et->value_count >= MAX_ENUM_VALUES) {
+                    compile_error(token.line, "Too many values in enumerated type '%s' (limit is %d)", type_name, MAX_ENUM_VALUES);
+                }
+                strcpy(et->value_names[et->value_count], value_name);
+                et->value_str_idx[et->value_count] = intern_string(value_name);
+                et->value_count++;
+                match(TOKEN_IDENTIFIER);
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
+            }
+            match(TOKEN_RPAREN);
+            match(TOKEN_SEMI);
+            enum_type_count++;
+            continue;
+        }
 
         if (token.type != TOKEN_RECORD) {
             // A plain type alias ('type TAge = integer;') - see the
@@ -1395,6 +1536,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     record_var_count = 0;
     const_def_count = 0;
     type_alias_count = 0;
+    enum_type_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -1919,6 +2061,12 @@ static ASTNode *statement(void) {
         if (find_const(token.text) != -1) {
             compile_error(token.line, "'%s' is a constant and cannot be assigned to", token.text);
         }
+        {
+            int enum_type_idx, ordinal;
+            if (find_enum_value(token.text, &enum_type_idx, &ordinal)) {
+                compile_error(token.line, "'%s' is an enumerated value and cannot be assigned to", token.text);
+            }
+        }
 
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
@@ -2085,6 +2233,9 @@ static ASTNode *statement(void) {
             if (sym_table[field_sym_idx].is_array) {
                 compile_error(token.line, "readln into an array is not supported");
             }
+            if (sym_table[field_sym_idx].type >= TYPE_ENUM_BASE) {
+                compile_error(token.line, "readln into an enumerated value is not supported");
+            }
             match(TOKEN_RPAREN);
             ASTNode *stmt = create_node(NODE_READLN);
             stmt->data.var_idx = field_sym_idx;
@@ -2095,6 +2246,9 @@ static ASTNode *statement(void) {
             if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
                 compile_error(token.line, "readln into an array is not supported");
             }
+            if (current_locals[local_idx].type >= TYPE_ENUM_BASE) {
+                compile_error(token.line, "readln into an enumerated value is not supported");
+            }
             ASTNode *stmt = create_node(NODE_LOCAL_READLN);
             stmt->data.var_idx = local_idx;
             stmt->expression_type = current_locals[local_idx].type;
@@ -2102,8 +2256,12 @@ static ASTNode *statement(void) {
             match(TOKEN_RPAREN);
             return stmt;
         }
+        int readln_var_idx = find_var(token.text);
+        if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE) {
+            compile_error(token.line, "readln into an enumerated value is not supported");
+        }
         ASTNode *stmt = create_node(NODE_READLN);
-        stmt->data.var_idx = find_var(token.text);
+        stmt->data.var_idx = readln_var_idx;
         match(TOKEN_IDENTIFIER);
         match(TOKEN_RPAREN);
         return stmt;

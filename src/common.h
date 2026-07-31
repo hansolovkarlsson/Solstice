@@ -67,12 +67,46 @@ typedef enum {
                 // string_pool[] index) - the only difference is the VM
                 // enforces a length-1 constraint whenever a value is
                 // actually stored into a char variable/array element.
-    TYPE_REAL   // A 32-bit IEEE-754 float, reinterpreting the bits of the
+    TYPE_REAL,  // A 32-bit IEEE-754 float, reinterpreting the bits of the
                 // same int-sized storage slot every other type uses (see
                 // vm.c's bits_to_float/float_to_bits) - not a double,
                 // specifically so a real value still fits in exactly one
                 // slot, matching every other type's storage model.
+    TYPE_ENUM_BASE // Not a real type by itself - a specific enumerated
+                // type ('type TColor = (Red, Green, Blue);') is encoded
+                // as TYPE_ENUM_BASE + its enum_types[] index, so DataType
+                // stays a single plain int field everywhere (ASTNode.
+                // expression_type, Symbol.type, etc.) instead of needing
+                // a second "which enum" field threaded through every
+                // struct that already carries a DataType. An enum
+                // value's actual runtime representation is just its
+                // ordinal (0, 1, 2, ...) - a plain int, identical to
+                // TYPE_INTEGER as far as vm_vars[]/vm.c/the .bin format
+                // are concerned; only the compiler frontend (parser.c/
+                // type_checker.c/codegen.c) ever looks at values >=
+                // TYPE_ENUM_BASE. See EnumTypeDef below.
 } DataType;
+
+#define MAX_ENUM_TYPES 20
+#define MAX_ENUM_VALUES 32
+
+// One declared enumerated type ('type TColor = (Red, Green, Blue);') -
+// see the TYPE_ENUM_BASE comment above for how a specific enum type is
+// referenced from a DataType field. Populated by parser.c; also read by
+// codegen.c (to build the name-printing chain for 'write'/'writeln' -
+// see NODE_WRITELN in codegen.c) and ast_printer.c (to print a literal
+// enum value's name instead of its bare ordinal in -v output). Declared
+// here (rather than staying parser.c-local like RecordTypeDef/ConstDef/
+// TypeAliasDef) because, uniquely among this project's compile-time-only
+// features, codegen needs it too - not just the parser. Not part of the
+// .bin file format (like proc_table[], defined below): solvm/solas/
+// desole never reference it, since none of them link parser.c.
+typedef struct {
+    char name[MAX_NAME];                       // e.g. "TColor"
+    char value_names[MAX_ENUM_VALUES][MAX_NAME]; // e.g. "Red", "Green", "Blue"
+    int value_str_idx[MAX_ENUM_VALUES];        // each name's string_pool[] index, for printing
+    int value_count;
+} EnumTypeDef;
 
 typedef struct {
     TokenType type;
@@ -568,6 +602,8 @@ extern int string_count;
 extern int array_mem_count;
 extern ProcSymbol proc_table[MAX_PROCEDURES];
 extern int proc_count;
+extern EnumTypeDef enum_types[MAX_ENUM_TYPES];
+extern int enum_type_count;
 extern Token token;
 
 #endif

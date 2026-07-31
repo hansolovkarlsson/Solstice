@@ -36,6 +36,42 @@ static void emit_ordering(ASTNode *node, Opcode int_op) {
     }
 }
 
+// Prints an enum value by name ('writeln(Red)' -> "Red"), not its bare
+// ordinal - the VM only ever sees an enum value as a plain int (see the
+// TYPE_ENUM_BASE comment in common.h), so there's no opcode that knows
+// "this int is enum value N of enum type T" at runtime. Instead this
+// emits a compile-time-built chain of comparisons: pop nothing yet, DUP
+// the value, compare against each possible ordinal in turn, and print
+// the matching name via the ordinary string-printing opcodes - no new
+// opcode or .bin format change needed, just more bytecode per call site.
+// Expects the value already on top of the stack (from generate_code());
+// consumes it, leaving the stack exactly as balanced as a plain
+// OP_PRINT would. An ordinal that matches no value (only reachable via
+// unchecked succ()/pred() arithmetic past an enum's first/last value -
+// see NODE_BINARY_OP in type_checker.c) falls back to printing the raw
+// ordinal, rather than nothing at all.
+static void emit_enum_print_chain(DataType t) {
+    EnumTypeDef *et = &enum_types[t - TYPE_ENUM_BASE];
+    int done_jmp_idx[MAX_ENUM_VALUES];
+    for (int i = 0; i < et->value_count; i++) {
+        emit(OP_DUP, 0);
+        emit(OP_PUSH, i);
+        emit(OP_EQ, 0);
+        int jz_idx = code_idx;
+        emit(OP_JZ, 0); // patched below: to the next value's check
+        emit(OP_POP, 0); // matched - discard the now-unneeded duplicated value
+        emit(OP_PUSH_STR, et->value_str_idx[i]);
+        emit(OP_PRINT_STR, 0);
+        done_jmp_idx[i] = code_idx;
+        emit(OP_JMP, 0); // patched below: past the whole chain
+        code[jz_idx].arg = code_idx; // next value's check starts here
+    }
+    emit(OP_PRINT, 0); // fallback: no match, print the raw ordinal
+    for (int i = 0; i < et->value_count; i++) {
+        code[done_jmp_idx[i]].arg = code_idx;
+    }
+}
+
 // Allocates a hidden, compiler-generated variable slot (not reachable from
 // user code). Used to cache a for-loop's end bound: Pascal evaluates that
 // bound once, at loop start, not on every iteration - so if the loop body
@@ -336,6 +372,7 @@ void generate_code(ASTNode *node) {
                     if (is_string_type(t)) emit(OP_PRINT_STR, 0);
                     else if (t == TYPE_BOOLEAN) emit(OP_PRINT_BOOL, 0);
                     else if (t == TYPE_REAL) emit(OP_FPRINT, 0);
+                    else if (t >= TYPE_ENUM_BASE) emit_enum_print_chain(t);
                     else emit(OP_PRINT, 0);
                 }
             }

@@ -122,7 +122,15 @@ void print_ast(ASTNode *node, int indent) {
             break;
 
         case NODE_NUMBER:
-            printf("[Number] %d\n", node->data.num_value);
+            if (node->expression_type >= TYPE_ENUM_BASE) {
+                EnumTypeDef *et = &enum_types[node->expression_type - TYPE_ENUM_BASE];
+                printf("[Enum] %s (%s)\n",
+                       node->data.num_value >= 0 && node->data.num_value < et->value_count
+                           ? et->value_names[node->data.num_value] : "?",
+                       et->name);
+            } else {
+                printf("[Number] %d\n", node->data.num_value);
+            }
             break;
 
         case NODE_REAL_NUMBER:

@@ -194,7 +194,12 @@ the literal value would), including as an array bound (see
 aliases (`type TAge = integer;`), resolved the same way as `const` —
 usable anywhere the aliased type is, including parameters, record
 fields, and function return types (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#type-aliases)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#type-aliases)). Also working:
+enumerated types (`type TColor = (Red, Green, Blue);`), with `ord`/
+`succ`/`pred`, ordinal comparison, and `write`/`writeln` printing a
+value by name (`Red`, not `0`) via a compile-time comparison chain —
+no VM or `.bin` format changes at all (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#enumerated-types)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no

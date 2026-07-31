@@ -119,6 +119,14 @@ static const char *opcode_name(Opcode op) {
 }
 
 static const char *type_name(DataType type) {
+    // A specific enumerated type (TYPE_ENUM_BASE + its enum_types[]
+    // index - see common.h) is a pascalc-frontend-only concept: desole
+    // never links parser.c, so it has no way to know which enum type
+    // (or even that it WAS an enum, as opposed to a plain integer) a
+    // given Symbol originally was - it prints as "integer", which is
+    // its actual runtime representation, exactly as accurate as this
+    // tool can be without a .bin format change.
+    if (type >= TYPE_ENUM_BASE) return "integer";
     switch (type) {
         case TYPE_INTEGER: return "integer";
         case TYPE_BOOLEAN: return "boolean";

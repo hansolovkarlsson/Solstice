@@ -24,6 +24,12 @@ int array_mem_count = 0;
 ProcSymbol proc_table[MAX_PROCEDURES];
 int proc_count = 0;
 
+// Compile-time-only, like proc_table[] above - never written to the .bin
+// file, never read by solvm/solas/desole. See the EnumTypeDef comment in
+// common.h.
+EnumTypeDef enum_types[MAX_ENUM_TYPES];
+int enum_type_count = 0;
+
 void save_bytecode(const char *filename) {
     FILE *f = fopen(filename, "wb");
     if (!f) {

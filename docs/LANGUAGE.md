@@ -16,8 +16,9 @@ program Name;
 const
     { named constants, if any - see Constants }
 type
-    { record type declarations and/or type aliases, if any - see Records
-      and Type aliases }
+    { record type declarations, type aliases, and/or enumerated type
+      declarations, if any - see Records, Type aliases, and Enumerated
+      types }
 var
     { declarations }
 begin
@@ -29,9 +30,10 @@ end.
   beyond documentation).
 - The `const` section is optional, and comes before `type`/`var` — see
   [Constants](#constants).
-- The `type` section is optional, and declares record types and/or type
-  aliases (any mix of the two, in any order) — see
-  [Records](#records) and [Type aliases](#type-aliases).
+- The `type` section is optional, and declares record types, type
+  aliases, and/or enumerated types (any mix, in any order) — see
+  [Records](#records), [Type aliases](#type-aliases), and
+  [Enumerated types](#enumerated-types).
 - The `var` section is optional — omit it entirely if the program declares
   no variables.
 - The final `.` after `end` is required.
@@ -61,8 +63,9 @@ y := 2; // this too, to end of line
 | Char | `char` | `'a'`, `'!'`, `'x'` | See [Char](#char) below - a single-quoted literal of length exactly 1 |
 | Array | `array[lower..upper] of T` | — | `T` is `integer`, `real`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
 | Record | `type TName = record ... end;` | — | User-defined; see [Records](#records) |
+| Enumerated | `type TName = (Val1, Val2, ...);` | — | User-defined; see [Enumerated types](#enumerated-types) |
 
-There are no enumerated types or sets.
+There are no sets.
 
 ## Variable declarations
 
@@ -224,11 +227,11 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `pi` | constant | `3.14159265358979...`, usable directly as a value — see [Real](#real) |
 | `power(base, exp)`, `**` | functions/operator | Exponentiation — see [Real](#real) |
 | `odd(x)` | function | `true` if the integer `x` is odd |
-| `succ(x)` | function | `x + 1`, for an integer |
-| `pred(x)` | function | `x - 1`, for an integer |
-| `inc(x)`, `inc(x, n)` | statement | Adds `1` (or `n`) to `x` in place |
-| `dec(x)`, `dec(x, n)` | statement | Subtracts `1` (or `n`) from `x` in place |
-| `ord(c)` | function | A `char`'s byte value, as an integer — see [Char](#char) |
+| `succ(x)` | function | `x + 1` — an integer, or an enumerated value (see [Enumerated types](#enumerated-types)) |
+| `pred(x)` | function | `x - 1` — an integer, or an enumerated value |
+| `inc(x)`, `inc(x, n)` | statement | Adds `1` (or `n`) to `x` in place — integer only, even for an enum (use `x := succ(x);` instead) |
+| `dec(x)`, `dec(x, n)` | statement | Subtracts `1` (or `n`) from `x` in place — integer only, even for an enum (use `x := pred(x);` instead) |
+| `ord(c)` | function | A `char`'s byte value, or an enumerated value's ordinal, as an integer — see [Char](#char) and [Enumerated types](#enumerated-types) |
 | `chr(n)` | function | The `char` with byte value `n` — see [Char](#char) |
 | `length(s)`, `s[i]` | function / indexing | String length and character access — see [String](#string) |
 | `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
@@ -903,12 +906,93 @@ end.
   `age: TAge` and `x: integer`) are completely interchangeable — the
   alias is a compile-time name only, not a distinct type the type
   checker tracks separately.
-- Alias names and record type names share one namespace (declared in the
-  same `type` section, in any order or mix) — redeclaring either as the
-  other is a compile-time error, same as redeclaring either as itself.
+- Alias names, record type names, and enumerated type names all share
+  one namespace (declared in the same `type` section, in any order or
+  mix) — redeclaring any of them as another is a compile-time error,
+  same as redeclaring one as itself.
 - A type alias can't itself name a record type (`type TWrapper =
   TPoint;` where `TPoint` is a record type is a compile-time error) —
-  only the five scalar types and other aliases of them are accepted.
+  only the five scalar types, an enumerated type, and other aliases of
+  those, are accepted (see [Enumerated types](#enumerated-types) below).
+
+## Enumerated types
+
+```pascal
+program Example;
+type
+    TColor = (Red, Green, Blue);
+var
+    c: TColor;
+begin
+    c := Red;
+    writeln('c = ', c);           { c = Red - printed by name, not ordinal }
+    c := succ(c);
+    writeln('c = ', c);           { c = Green }
+    writeln('ord(c) = ', ord(c)); { ord(c) = 1 }
+end.
+```
+
+- `type Name = (Val1, Val2, ...);` declares an ordered, named set of
+  values — each value's ordinal is simply its position in the list,
+  starting at `0`.
+- Every value name is a usable expression in its own right (`Red`,
+  `Green`, `Blue` above), typed as the enclosing enumerated type. Value
+  names share one flat namespace across *every* enumerated type declared
+  in the program (`type TColor = (Red, Green); TSize = (Small, Red);` is
+  a compile-time error — `Red` can't be declared twice) — same as how
+  it's a compile-time error for a value name to collide with an existing
+  `const` name, and vice versa.
+- **`ord`, `succ`, `pred`** all work on an enum value exactly as they do
+  on an integer (see
+  [Built-in functions and procedures](#built-in-functions-and-procedures)):
+  `ord(c)` gives its ordinal, `succ(c)`/`pred(c)` give the next/previous
+  value. `c + 1` / `c - 1` work directly too (this is exactly what
+  `succ`/`pred` desugar to) — but no other arithmetic (`c * 2`, `c + c`,
+  etc.) is accepted. **`inc`/`dec` don't work on an enum** (they're
+  restricted to plain `integer` variables) — write `c := succ(c);`
+  instead of `inc(c);`. **Neither `succ` nor `pred` range-checks** — calling
+  `succ` on an enumerated type's last value (or `pred` on its first)
+  doesn't raise an error; it just produces an ordinal that isn't any
+  named value (see printing, below).
+- **Comparison** (`=`, `<>`, `<`, `>`, `<=`, `>=`) works between two
+  values of the *same* enumerated type, ordinally (`Red < Green < Blue`
+  above). Comparing two *different* enumerated types (or an enum against
+  a plain integer) is a compile-time error — unlike `integer`/`real`,
+  there's no implicit widening between two different enum types, or
+  between an enum and `integer`.
+- **Assignment** requires an exact type match: `c := Red;` where `c: TColor`
+  works; `c := 5;` (a plain integer) or assigning a value from a
+  *different* declared enumerated type is a compile-time error. A value
+  name itself can never be assigned to (`Red := Green;` is a compile-time
+  error — the same restriction a `const` has).
+- **`write`/`writeln` print an enum value by name**, not its bare ordinal
+  (`writeln(Red)` prints `Red`) — a deliberate convenience beyond strict
+  ISO Pascal (which doesn't define printing an enumerated type at all),
+  matching Free Pascal/Delphi. Under the hood this compiles to a chain of
+  compile-time-generated comparisons (no new opcode, no `.bin` format
+  change — see [docs/ARCHITECTURE.md](ARCHITECTURE.md)), so bytecode size
+  for a `writeln` of an enum grows with how many values its type has.
+  **Field-width syntax on an enum argument (`writeln(c:10)`) falls back
+  to printing the raw ordinal**, padded, rather than the name — a known,
+  deliberately-scoped-out gap (see
+  [docs/ROADMAP.md](ROADMAP.md)). An ordinal that doesn't correspond to
+  any named value (only reachable via unchecked `succ`/`pred` past an
+  enum's first/last value) also falls back to printing the raw ordinal,
+  in both the padded and unpadded cases.
+- Usable everywhere a scalar type is: variable declarations (plain or
+  array element), record fields, parameters, procedure/function locals,
+  function return types, and as the target of a [type
+  alias](#type-aliases) (`type TShade = TColor;`).
+- **`readln` into an enum-typed variable isn't supported** — there's no
+  syntax for reading one back in by name, and reading a raw ordinal
+  in unchecked would risk an out-of-range value with no corresponding
+  name.
+- **Array bounds can't reference an enum value** (`array[Red..Blue] of
+  ...` doesn't work) — bounds stay integer-literal-or-integer-`const`
+  only (see [Arrays](#arrays)); a `const` also can't be given an enum
+  value from a type declared *after* it, since `const` is always parsed
+  before `type` (see [Program structure](#program-structure)) — a
+  `const` can only ever reference an earlier `const`.
 
 ## Records
 

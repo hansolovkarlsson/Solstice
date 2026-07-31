@@ -38,7 +38,21 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       concatenation (`const S = 'a' + 'b';` isn't accepted yet, since
       `optimizer.c` doesn't fold string ops) — see
       [docs/LANGUAGE.md](LANGUAGE.md#constants).
-- [ ] Enumerated types (`type TColor = (Red, Green, Blue);`)
+- [x] Enumerated types (`type TColor = (Red, Green, Blue);`) — encoded
+      as `TYPE_ENUM_BASE + enum_types[] index` so `DataType` stays a
+      single plain field everywhere, with zero VM/`.bin` format changes
+      (an enum value is just an int at runtime, exactly like `integer`).
+      `ord`/`succ`/`pred`, ordinal comparison, and full scope (arrays,
+      records, parameters, locals, return types, type aliases) all work.
+      `write`/`writeln` print by name via a compile-time comparison
+      chain. Known gaps: `inc`/`dec` don't work on enums (integer-only;
+      use `succ`/`pred`), `succ`/`pred` don't range-check past an enum's
+      first/last value, field-width syntax on an enum falls back to
+      printing the raw ordinal instead of the name, array bounds can't
+      reference an enum value, and a `const` can never reference an enum
+      value (`const` is always parsed before `type`, so no enum value
+      exists yet at that point) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#enumerated-types).
 - [ ] Subrange types (`1..100`)
 - [x] Type aliases (`type TAge = integer;`) — resolved at parse time via
       the same centralized `parse_scalar_type()` every scalar-type call

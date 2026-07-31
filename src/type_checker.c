@@ -13,6 +13,16 @@ static int is_string_type(DataType t) {
     return t == TYPE_STRING || t == TYPE_CHAR;
 }
 
+// A specific enumerated type is encoded as TYPE_ENUM_BASE + its
+// enum_types[] index (see the comment in common.h) - any DataType value
+// at or above that threshold is some enum type. Two DataType values
+// being equal (left_t == right_t, used throughout this file) already
+// means "the exact same enum type", so no further lookup is needed to
+// tell two different enum types apart.
+static int is_enum_type(DataType t) {
+    return t >= TYPE_ENUM_BASE;
+}
+
 // Wraps *child in an implicit int->real widening conversion (Pascal's
 // automatic integer-to-real promotion) and updates *child to point at the
 // wrapper. Preserves *child's own ->next (if it has one - e.g. it's a
@@ -147,8 +157,16 @@ void type_check(ASTNode *node) {
             DataType right_t = node->right->expression_type;
             int mixed_numeric = (left_t == TYPE_INTEGER && right_t == TYPE_REAL)
                               || (left_t == TYPE_REAL && right_t == TYPE_INTEGER);
+            // Ordinal arithmetic on an enum ('Red + 1' / 'Red - 1') -
+            // this is how succ()/pred() are implemented for enums (see
+            // their desugaring to '+1'/'-1' in parser.c's factor()), and
+            // is also accepted written directly. The result stays the
+            // SAME enum type - see the branch below.
+            int enum_ordinal_arith = is_enum_type(left_t) && right_t == TYPE_INTEGER
+                                   && (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS);
 
-            if (!(is_string_type(left_t) && is_string_type(right_t)) && !mixed_numeric && left_t != right_t) {
+            if (!(is_string_type(left_t) && is_string_type(right_t)) && !mixed_numeric
+                && !enum_ordinal_arith && left_t != right_t) {
                 fprintf(stderr, "%s:%d: Type Error: Mismatched operand types in binary operation\n",
                         get_current_filename(), node->line);
                 fatal_abort();
@@ -203,13 +221,18 @@ void type_check(ASTNode *node) {
                 widen_to_real(&node->right);
                 node->expression_type = TYPE_REAL;
             } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || node->op == TOKEN_MUL) {
-                if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
-                    fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer or real operands%s\n", 
+                if (enum_ordinal_arith) {
+                    // No range-checking against the enum's actual value
+                    // count (e.g. succ() of its last value) - same as
+                    // this compiler's ordinary integer arithmetic never
+                    // overflow-checks either.
+                    node->expression_type = left_t;
+                } else if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
+                    fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer or real operands%s\n",
                             get_current_filename(), node->line,
                             node->op == TOKEN_PLUS ? " (or, for '+', string/char operands)" : "");
                     fatal_abort();
-                }
-                if (left_t == TYPE_REAL || right_t == TYPE_REAL) {
+                } else if (left_t == TYPE_REAL || right_t == TYPE_REAL) {
                     widen_to_real(&node->left);
                     widen_to_real(&node->right);
                     node->expression_type = TYPE_REAL;
@@ -226,8 +249,14 @@ void type_check(ASTNode *node) {
                 int both_bool = (left_t == TYPE_BOOLEAN && right_t == TYPE_BOOLEAN);
                 int both_numeric = (left_t == TYPE_INTEGER || left_t == TYPE_REAL)
                                  && (right_t == TYPE_INTEGER || right_t == TYPE_REAL);
-                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool && !both_numeric) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, real, boolean, string, or char operands\n", get_current_filename(), node->line);
+                // Two values of the SAME enum type compare the same way
+                // integers do (ordinal ordering) - the early mismatched-
+                // operand-types guard above already rejects two
+                // DIFFERENT enum types here, since left_t != right_t in
+                // that case.
+                int both_enum = (left_t == right_t && is_enum_type(left_t));
+                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool && !both_numeric && !both_enum) {
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, real, boolean, string, char, or matching enumerated-type operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 if (both_numeric && (left_t == TYPE_REAL || right_t == TYPE_REAL)) {
