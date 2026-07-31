@@ -40,7 +40,14 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       [docs/LANGUAGE.md](LANGUAGE.md#constants).
 - [ ] Enumerated types (`type TColor = (Red, Green, Blue);`)
 - [ ] Subrange types (`1..100`)
-- [ ] Type aliases (`type TAge = integer;`)
+- [x] Type aliases (`type TAge = integer;`) — resolved at parse time via
+      the same centralized `parse_scalar_type()` every scalar-type call
+      site already went through, so this also consolidated 3 duplicated
+      inline type-keyword chains into that one function. Usable in var
+      declarations (plain/array), record fields, parameters, locals, and
+      function return types. Chains (`TYears = TAge;`) work; aliasing a
+      record type doesn't (only the 5 scalar types) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#type-aliases).
 - [ ] Sets
 - [ ] Pointers (`^Type`, `new`, `dispose`)
 

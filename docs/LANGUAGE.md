@@ -16,7 +16,8 @@ program Name;
 const
     { named constants, if any - see Constants }
 type
-    { record type declarations, if any - see Records }
+    { record type declarations and/or type aliases, if any - see Records
+      and Type aliases }
 var
     { declarations }
 begin
@@ -28,8 +29,9 @@ end.
   beyond documentation).
 - The `const` section is optional, and comes before `type`/`var` — see
   [Constants](#constants).
-- The `type` section is optional, and only declares record types — see
-  [Records](#records).
+- The `type` section is optional, and declares record types and/or type
+  aliases (any mix of the two, in any order) — see
+  [Records](#records) and [Type aliases](#type-aliases).
 - The `var` section is optional — omit it entirely if the program declares
   no variables.
 - The final `.` after `end` is required.
@@ -864,6 +866,49 @@ end.
   arrays themselves were global-only before parameters/locals became
   their own feature).
 - Stored row-major, in the same shared array-memory pool 1D arrays use.
+
+## Type aliases
+
+```pascal
+program Example;
+type
+    TAge = integer;
+    TYears = TAge;
+var
+    age: TAge;
+    scores: array[1..5] of TAge;
+
+function nextAge(a: TAge): TAge;
+begin
+    nextAge := a + 1;
+end;
+
+begin
+    age := 30;
+    writeln('nextAge(30) = ', nextAge(age));
+end.
+```
+
+- `type Name = <existing scalar type>;` declares `Name` as another name
+  for `integer`, `real`, `boolean`, `string`, or `char` — usable
+  everywhere the aliased type is: variable declarations (plain or
+  array-element), record fields, parameters, procedure/function locals,
+  and function return types.
+- An alias can itself alias an earlier alias (`TYears = TAge;` above) —
+  chains resolve all the way down to one of the five built-in types.
+- A type alias has no runtime representation of its own — it's resolved
+  entirely at parse time to whichever built-in type it names, exactly
+  like how [records](#records) resolve to hidden globals. Two variables
+  declared through different aliases of the same underlying type (e.g.
+  `age: TAge` and `x: integer`) are completely interchangeable — the
+  alias is a compile-time name only, not a distinct type the type
+  checker tracks separately.
+- Alias names and record type names share one namespace (declared in the
+  same `type` section, in any order or mix) — redeclaring either as the
+  other is a compile-time error, same as redeclaring either as itself.
+- A type alias can't itself name a record type (`type TWrapper =
+  TPoint;` where `TPoint` is a record type is a compile-time error) —
+  only the five scalar types and other aliases of them are accepted.
 
 ## Records
 

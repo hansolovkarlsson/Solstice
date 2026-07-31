@@ -190,7 +190,11 @@ counter's cached end bound (see
 declarations, resolved entirely at compile time (no `Symbol` or runtime
 storage at all — a reference compiles to exactly the same bytecode as
 the literal value would), including as an array bound (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#constants)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#constants)). Also working: `type`
+aliases (`type TAge = integer;`), resolved the same way as `const` —
+usable anywhere the aliased type is, including parameters, record
+fields, and function return types (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#type-aliases)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no

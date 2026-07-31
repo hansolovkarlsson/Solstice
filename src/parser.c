@@ -134,6 +134,28 @@ static int find_record_type(const char *name) {
     return -1;
 }
 
+// A type alias ('type TAge = integer;') is exactly as compile-time-only
+// as a const: it never becomes a Symbol or a distinct DataType of its
+// own, and has no runtime representation whatsoever - it's purely a
+// second name for one of the existing scalar DataTypes, substituted the
+// moment it's referenced (see parse_scalar_type() below). An alias can
+// itself alias an earlier alias ('type TAge = integer; TYears = TAge;'),
+// the same way one const's expression can reference an earlier const.
+#define MAX_TYPE_ALIASES 20
+typedef struct {
+    char name[MAX_NAME];
+    DataType type;
+} TypeAliasDef;
+static TypeAliasDef type_aliases[MAX_TYPE_ALIASES];
+static int type_alias_count = 0;
+
+static int find_type_alias(const char *name) {
+    for (int i = 0; i < type_alias_count; i++) {
+        if (strcmp(type_aliases[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
 static int find_record_var(const char *name) {
     for (int i = 0; i < record_var_count; i++) {
         if (strcmp(record_vars[i].name, name) == 0) return i;
@@ -579,15 +601,27 @@ static int parse_int_literal(void) {
     return val;
 }
 
-// A scalar type only - used for parameters and procedure-local variables,
-// neither of which support arrays in this increment.
+// A scalar type - one of the five built-in keywords, or a previously
+// declared type alias resolving to one of them (see TypeAliasDef above).
+// This is the one centralized function every scalar-type call site goes
+// through (parameters, procedure-locals, record fields, function return
+// types, and plain/array var declarations), so alias support and any
+// future scalar-type keyword only needs to be added here once.
 static DataType parse_scalar_type(void) {
     if (token.type == TOKEN_INTEGER) { match(TOKEN_INTEGER); return TYPE_INTEGER; }
     if (token.type == TOKEN_BOOLEAN) { match(TOKEN_BOOLEAN); return TYPE_BOOLEAN; }
     if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
     if (token.type == TOKEN_CHAR_TYPE) { match(TOKEN_CHAR_TYPE); return TYPE_CHAR; }
     if (token.type == TOKEN_REAL_TYPE) { match(TOKEN_REAL_TYPE); return TYPE_REAL; }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', or 'real')");
+    if (token.type == TOKEN_IDENTIFIER) {
+        int alias_idx = find_type_alias(token.text);
+        if (alias_idx != -1) {
+            DataType t = type_aliases[alias_idx].type;
+            match(TOKEN_IDENTIFIER);
+            return t;
+        }
+    }
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', or a declared type alias)");
     return TYPE_UNKNOWN;
 }
 
@@ -1255,18 +1289,36 @@ static void parse_const_section(void) {
 static void parse_type_section(void) {
     match(TOKEN_TYPE);
     while (token.type == TOKEN_IDENTIFIER) {
-        if (record_type_count >= MAX_RECORD_TYPES) {
-            compile_error(token.line, "Too many record types (limit is %d)", MAX_RECORD_TYPES);
-        }
+        int line = token.line;
         char type_name[MAX_NAME];
         strcpy(type_name, token.text);
-        if (find_record_type(type_name) != -1) {
-            compile_error(token.line, "Duplicate type declaration '%s'", type_name);
+        if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1) {
+            compile_error(line, "Duplicate type declaration '%s'", type_name);
         }
         match(TOKEN_IDENTIFIER);
         match(TOKEN_EQ);
+
+        if (token.type != TOKEN_RECORD) {
+            // A plain type alias ('type TAge = integer;') - see the
+            // comment above TypeAliasDef. parse_scalar_type() already
+            // resolves a reference to an earlier alias by name too, so
+            // aliases can chain ('type TAge = integer; TYears = TAge;').
+            if (type_alias_count >= MAX_TYPE_ALIASES) {
+                compile_error(line, "Too many type declarations (limit is %d)", MAX_TYPE_ALIASES);
+            }
+            DataType aliased = parse_scalar_type();
+            match(TOKEN_SEMI);
+            TypeAliasDef *a = &type_aliases[type_alias_count];
+            strcpy(a->name, type_name);
+            a->type = aliased;
+            type_alias_count++;
+            continue;
+        }
         match(TOKEN_RECORD);
 
+        if (record_type_count >= MAX_RECORD_TYPES) {
+            compile_error(line, "Too many record types (limit is %d)", MAX_RECORD_TYPES);
+        }
         RecordTypeDef *rt = &record_types[record_type_count];
         strcpy(rt->name, type_name);
         rt->field_count = 0;
@@ -1302,13 +1354,7 @@ static void parse_type_section(void) {
                 match(TOKEN_OF);
                 is_array = 1;
             }
-            DataType field_type = TYPE_UNKNOWN;
-            if (token.type == TOKEN_INTEGER) { field_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
-            else if (token.type == TOKEN_BOOLEAN) { field_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
-            else if (token.type == TOKEN_STRING_TYPE) { field_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
-            else if (token.type == TOKEN_CHAR_TYPE) { field_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
-            else if (token.type == TOKEN_REAL_TYPE) { field_type = TYPE_REAL; match(TOKEN_REAL_TYPE); }
-            else compile_error(token.line, "Unknown field type (records can't contain other records yet)");
+            DataType field_type = parse_scalar_type();
             match(TOKEN_SEMI);
 
             for (int i = 0; i < fcount; i++) {
@@ -1348,6 +1394,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     record_type_count = 0;
     record_var_count = 0;
     const_def_count = 0;
+    type_alias_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -1411,13 +1458,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 }
                 match(TOKEN_OF);
 
-                DataType elem_type = TYPE_UNKNOWN;
-                if (token.type == TOKEN_INTEGER) { elem_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
-                else if (token.type == TOKEN_BOOLEAN) { elem_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
-                else if (token.type == TOKEN_STRING_TYPE) { elem_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
-                else if (token.type == TOKEN_CHAR_TYPE) { elem_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
-                else if (token.type == TOKEN_REAL_TYPE) { elem_type = TYPE_REAL; match(TOKEN_REAL_TYPE); }
-                else compile_error(token.line, "Unknown array element type");
+                DataType elem_type = parse_scalar_type();
 
                 for (int i = 0; i < count; i++) {
                     if (is_2d) {
@@ -1427,13 +1468,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                     }
                 }
             } else {
-                DataType target_type = TYPE_UNKNOWN;
-                if (token.type == TOKEN_INTEGER) { target_type = TYPE_INTEGER; match(TOKEN_INTEGER); }
-                else if (token.type == TOKEN_BOOLEAN) { target_type = TYPE_BOOLEAN; match(TOKEN_BOOLEAN); }
-                else if (token.type == TOKEN_STRING_TYPE) { target_type = TYPE_STRING; match(TOKEN_STRING_TYPE); }
-                else if (token.type == TOKEN_CHAR_TYPE) { target_type = TYPE_CHAR; match(TOKEN_CHAR_TYPE); }
-                else if (token.type == TOKEN_REAL_TYPE) { target_type = TYPE_REAL; match(TOKEN_REAL_TYPE); }
-                else compile_error(token.line, "Unknown primitive category");
+                DataType target_type = parse_scalar_type();
 
                 for (int i = 0; i < count; i++) {
                     add_var(temporary_names[i], target_type);
