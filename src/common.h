@@ -53,6 +53,8 @@ typedef enum {
     TOKEN_TYPE, TOKEN_RECORD,
     TOKEN_CONST,
     TOKEN_WITH,
+    TOKEN_ASSERT,
+    TOKEN_STATIC,
     TOKEN_SQRT, TOKEN_SIN, TOKEN_COS, TOKEN_ARCTAN, TOKEN_EXP, TOKEN_LN,
     TOKEN_PI, TOKEN_POWER,
     TOKEN_POW, // '**'
@@ -387,7 +389,7 @@ typedef enum {
                   // equivalent runtime type tag to dispatch on; codegen
                   // picks the right one at compile time, where the
                   // local's declared type is already known.
-    OP_CHECK_LOWER, OP_CHECK_UPPER // arg = a subrange's lower/upper bound
+    OP_CHECK_LOWER, OP_CHECK_UPPER, // arg = a subrange's lower/upper bound
                   // (a compile-time constant - see NODE_RANGE_CHECK).
                   // Peeks at the value on top of the stack (does NOT pop
                   // it - leaves the stack exactly as OP_DUP would, minus
@@ -396,6 +398,24 @@ typedef enum {
                   // separate opcodes, each with one immediate bound,
                   // rather than one opcode needing two - an opcode only
                   // carries a single int arg.
+    OP_ASSERT,    // Pop a string_pool[] index (the message), then a
+                  // 0/1 value (the condition, pushed first so it ends
+                  // up underneath - matching codegen's natural
+                  // evaluate-condition-then-message order). Aborts with
+                  // a VM Runtime Error using that message if the
+                  // condition is 0; otherwise a no-op, same as
+                  // CHECK_LOWER/CHECK_UPPER above.
+    OP_LOAD_IDX2D_DYN, OP_STORE_IDX2D_DYN // Same as LOAD_IDX2D/
+                  // STORE_IDX2D, but *which* array is also popped from
+                  // the stack instead of coming from arg - needed for 2D
+                  // array parameters, since different calls can pass
+                  // different arrays (exactly the same reasoning
+                  // LOAD_IDX_DYN/STORE_IDX_DYN already use for 1D).
+                  // LOAD_IDX2D_DYN: pop j, i, then a runtime array
+                  // reference (a symbol index); bounds-check each index
+                  // against its own dimension; push the element.
+                  // STORE_IDX2D_DYN: pop value, j, i, then a runtime
+                  // array reference; bounds-check; store.
 } Opcode;
 
 typedef struct {
@@ -453,6 +473,15 @@ typedef enum {
     NODE_REF_ARRAY_ASSIGN, // 'arr[i] := val' for a by-reference array
                        // parameter. data.var_idx = the parameter's local
                        // slot. left = index expr, right = value expr.
+    NODE_REF_ARRAY_ACCESS_2D, // 'arr[i, j]' where arr is a by-reference
+                       // 2D array parameter. data.var_idx = the
+                       // parameter's local slot. left/right = the two
+                       // index expressions.
+    NODE_REF_ARRAY_ASSIGN_2D, // 'arr[i, j] := val' for a by-reference 2D
+                       // array parameter. data.var_idx = the parameter's
+                       // local slot. left/right = the two index
+                       // expressions, extra = value expr - same field
+                       // layout as NODE_ARRAY_ASSIGN_2D's global version.
     NODE_ARRAY_REF,    // Pushes a global (or mangled-local, which is just
                        // a hidden global) array's sym_table[] index as a
                        // compile-time-known literal - used when passing
@@ -551,7 +580,7 @@ typedef enum {
                        // unlike OP_READ's runtime type dispatch via
                        // sym_table[], a local frame slot carries no
                        // runtime type information to dispatch on at all).
-    NODE_RANGE_CHECK   // Wraps a value about to be stored into a subrange-
+    NODE_RANGE_CHECK,  // Wraps a value about to be stored into a subrange-
                        // typed target ('type TAge = 0..150;'). left = the
                        // value expression; right/extra = NODE_NUMBER
                        // literals holding the lower/upper bound (always
@@ -562,6 +591,13 @@ typedef enum {
                        // (a subrange is fully assignment/arithmetic-
                        // compatible with integer - unlike an enum, it's
                        // not a distinct type the type checker tracks).
+    NODE_ASSERT        // 'assert(cond)' / 'assert(cond, msg)'. left =
+                       // condition (must be boolean); right = message
+                       // (must be string/char) - always present, even
+                       // for the no-message form: the parser synthesizes
+                       // a NODE_STRING literal ("Assertion failed") when
+                       // none is given, so codegen/the VM never need to
+                       // handle a "no message" case separately.
 } NodeType;
 
 typedef struct ASTNode {
@@ -606,6 +642,12 @@ typedef struct {
     int param_array_lower[MAX_PARAMS];  // only meaningful if the above is
     int param_array_upper[MAX_PARAMS];  // set: the bounds any argument
                                     // passed here must exactly match
+                                    // (dimension 1, if param_is_2d below)
+    int param_is_2d[MAX_PARAMS];        // 1 if this array-ref parameter is
+                                    // 2D - only meaningful if
+                                    // param_is_array_ref is set
+    int param_array_lower2[MAX_PARAMS]; // only meaningful if param_is_2d:
+    int param_array_upper2[MAX_PARAMS]; // the second dimension's bounds
     int param_is_subrange[MAX_PARAMS];  // 1 if this parameter (or, if
                                     // param_is_array_ref is set, each of
                                     // its elements) is subrange-

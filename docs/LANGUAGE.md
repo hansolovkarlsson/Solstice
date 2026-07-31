@@ -465,6 +465,28 @@ end;
 `readln` into an array (global or local) isn't supported — only a plain
 scalar variable.
 
+### `assert`
+
+```pascal
+assert(x > 0);
+assert(x > 0, 'x must be positive');
+```
+
+- `assert(condition)` / `assert(condition, message)` — `condition` must
+  be `boolean`; if it evaluates to `false` at runtime, execution stops
+  immediately with `VM Runtime Error: message` (or `VM Runtime Error:
+  Assertion failed` if no message was given). If `condition` is `true`,
+  `assert` has no effect at all — it's not evaluated again or cached,
+  just skipped.
+- `message`, if given, must be `string` or `char`, and can be any
+  expression (not just a literal) — it's evaluated every time `assert`
+  runs, same as `condition`.
+- Unlike a normal runtime error (array index out of range, division by
+  zero, and so on), `assert` is a check *you* write — a way to state an
+  invariant explicitly and have the compiler check it at exactly the
+  point you expect it to hold, with a message describing what actually
+  went wrong.
+
 ### Compound statements
 
 `begin ... end` groups zero or more statements (semicolon-separated, the
@@ -866,10 +888,10 @@ end.
   compiler just for this one case. Nest a 1D array of a 2D array's rows,
   or just use a 1D array with manual index arithmetic, if you need more
   dimensions.
-- **Global variables only** — no 2D array parameters and no 2D local
-  arrays yet (1D arrays support both; 2D doesn't yet, matching how 1D
-  arrays themselves were global-only before parameters/locals became
-  their own feature).
+- A 2D array can also be a **parameter** (always by reference, exactly
+  like a 1D array parameter) or a **local variable** — see [Array
+  parameters and local arrays](#array-parameters-and-local-arrays),
+  which covers 1D and 2D together.
 - Stored row-major, in the same shared array-memory pool 1D arrays use.
 
 ## Type aliases
@@ -1271,6 +1293,46 @@ end.
 - Functions (procedures that return a value) work — see
   [Functions](#functions) below.
 
+### Static local variables
+
+```pascal
+function counter: integer;
+var
+    static n: integer;
+begin
+    inc(n);
+    counter := n;
+end;
+
+begin
+    writeln(counter);   { 1 }
+    writeln(counter);   { 2 }
+    writeln(counter);   { 3 }
+end.
+```
+
+- `static name: type;` in a procedure/function's `var` section declares
+  a local that **persists across calls**, unlike an ordinary local
+  (which starts fresh — effectively zeroed — on every call, including
+  recursive ones). A `static` local is initialized to `0` (or the
+  equivalent for its type) once, the first time the program runs, then
+  simply keeps whatever value it was last assigned.
+- **Recursive calls share the same static local** — unlike an ordinary
+  local, which gets its own independent copy per call (see
+  [Recursion](#procedures) above), a `static` local behaves like a
+  single, unqualified global that only this procedure can see by that
+  name.
+- Two different procedures can each have their own `static` local with
+  the same name (e.g. two counters both named `n`) without colliding —
+  each is a distinct piece of storage.
+- **Doesn't apply to arrays** — a local array is already shared across
+  every call by default (see [Local arrays](#local-arrays)), so `static`
+  on an array declaration is a compile-time error; only a plain scalar
+  local can be `static`.
+- Works everywhere an ordinary scalar local does: `inc`/`dec`, `readln`,
+  a `for` loop counter, and a [subrange](#subrange-types)-typed static
+  is bounds-checked exactly like any other subrange-typed storage.
+
 ### Forward declarations
 
 ```pascal
@@ -1404,6 +1466,11 @@ end.
   conversion.
 - A procedure/function can have any mix of scalar and array parameters,
   in any order.
+- **2D array parameters work too** (`procedure foo(arr: array[1..3,
+  1..3] of integer);`), with the same by-reference semantics and exact-
+  bounds-match requirement — including the second dimension. `low`/
+  `high`/`length` still don't support 2D arrays (parameter or global),
+  matching [Two-dimensional arrays](#two-dimensional-arrays).
 
 ### Local arrays
 
@@ -1423,6 +1490,9 @@ end.
   not by your own chosen name.
 - A local array can itself be passed as an array-reference argument to
   another call, exactly like a global array can.
+- **2D local arrays work too** (`var grid: array[1..3, 1..3] of
+  integer;`), with the same "shared across every call, not per-call
+  isolated" behavior as a 1D local array.
 
 ## Errors
 

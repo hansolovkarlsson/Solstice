@@ -132,6 +132,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "record") == 0) token.type = TOKEN_RECORD;
         else if (strcasecmp(token.text, "const") == 0) token.type = TOKEN_CONST;
         else if (strcasecmp(token.text, "with") == 0) token.type = TOKEN_WITH;
+        else if (strcasecmp(token.text, "assert") == 0) token.type = TOKEN_ASSERT;
+        else if (strcasecmp(token.text, "static") == 0) token.type = TOKEN_STATIC;
         else if (strcasecmp(token.text, "sqrt") == 0) token.type = TOKEN_SQRT;
         else if (strcasecmp(token.text, "sin") == 0) token.type = TOKEN_SIN;
         else if (strcasecmp(token.text, "cos") == 0) token.type = TOKEN_COS;

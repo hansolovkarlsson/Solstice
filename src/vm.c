@@ -323,6 +323,28 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_LOAD_IDX2D_DYN: {
+                int j = vm_pop(&sp); // pushed second by codegen - on top
+                int i = vm_pop(&sp); // pushed first
+                int array_ref = vm_pop(&sp);
+                int offset = vm_array_offset_2d(array_ref, i, j);
+                vm_push(&sp, vm_array_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_IDX2D_DYN: {
+                int val = vm_pop(&sp);
+                int j = vm_pop(&sp);
+                int i = vm_pop(&sp);
+                int array_ref = vm_pop(&sp);
+                int offset = vm_array_offset_2d(array_ref, i, j);
+                if (sym_table[array_ref].type == TYPE_CHAR) {
+                    vm_check_char(val, sym_table[array_ref].name);
+                }
+                vm_array_mem[offset] = val;
+                break;
+            }
+
             case OP_ADD: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a + b); break; }
             case OP_SUB: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a - b); break; }
             case OP_MUL: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a * b); break; }
@@ -404,6 +426,16 @@ void run_vm(void) {
                     fatal_abort();
                 }
                 vm_push(&sp, a);
+                break;
+            }
+
+            case OP_ASSERT: {
+                int msg_idx = vm_str_index(vm_pop(&sp));
+                int cond = vm_pop(&sp);
+                if (!cond) {
+                    fprintf(stderr, "VM Runtime Error: %s\n", string_pool[msg_idx]);
+                    fatal_abort();
+                }
                 break;
             }
 

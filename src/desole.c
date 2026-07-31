@@ -116,6 +116,9 @@ static const char *opcode_name(Opcode op) {
         case OP_STORE_IDX_DYN: return "store_idx_dyn";
         case OP_CHECK_LOWER: return "check_lower";
         case OP_CHECK_UPPER: return "check_upper";
+        case OP_ASSERT: return "assert";
+        case OP_LOAD_IDX2D_DYN:  return "load_idx2d_dyn";
+        case OP_STORE_IDX2D_DYN: return "store_idx2d_dyn";
         default:       return NULL;
     }
 }

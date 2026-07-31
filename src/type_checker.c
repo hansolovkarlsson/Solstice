@@ -374,6 +374,29 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_REF_ARRAY_ACCESS_2D:
+            if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_REF_ARRAY_ASSIGN_2D:
+            if (node->left->expression_type != TYPE_INTEGER || node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (!(is_string_type(node->extra->expression_type) && is_string_type(node->expression_type))
+                && node->extra->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->extra, node->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to array element\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_LOCAL_ASSIGN:
             if (!(is_string_type(node->left->expression_type) && is_string_type(node->expression_type))
                 && node->left->expression_type != node->expression_type
@@ -554,6 +577,19 @@ void type_check(ASTNode *node) {
             }
             break;
         }
+
+        case NODE_ASSERT:
+            if (node->left->expression_type != TYPE_BOOLEAN) {
+                fprintf(stderr, "%s:%d: Type Error: 'assert' requires a boolean condition\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (!is_string_type(node->right->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: 'assert' requires a string or char message\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
 
         default:
             break;

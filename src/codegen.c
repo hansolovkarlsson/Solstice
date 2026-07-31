@@ -689,10 +689,33 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_REF_ARRAY_ACCESS_2D:
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference (sym_table index)
+            generate_code(node->left);  // first index
+            generate_code(node->right); // second index
+            emit(OP_LOAD_IDX2D_DYN, 0);
+            break;
+
+        case NODE_REF_ARRAY_ASSIGN_2D:
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference
+            generate_code(node->left);  // first index
+            generate_code(node->right); // second index
+            generate_code(node->extra); // the value
+            emit(OP_STORE_IDX2D_DYN, 0);
+            generate_code(node->next);
+            break;
+
         case NODE_RANGE_CHECK:
             generate_code(node->left); // the value - left on the stack afterward
             emit(OP_CHECK_LOWER, node->right->data.num_value);
             emit(OP_CHECK_UPPER, node->extra->data.num_value);
+            break;
+
+        case NODE_ASSERT:
+            generate_code(node->left);  // condition
+            generate_code(node->right); // message
+            emit(OP_ASSERT, 0);
+            generate_code(node->next);
             break;
     }
 }

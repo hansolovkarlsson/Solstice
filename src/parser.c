@@ -45,6 +45,11 @@ typedef struct {
                         // the array's data directly
     int array_lower;    // only meaningful if is_array_ref: the declared
     int array_upper;    // bounds an argument passed here must match
+                        // (dimension 1, if is_2d below)
+    int is_2d;           // only meaningful if is_array_ref: 1 if this
+                        // by-reference array parameter is 2D
+    int array_lower2;    // only meaningful if is_2d: the second
+    int array_upper2;    // dimension's bounds
     int is_subrange;     // this SCALAR local/parameter (or, if
                         // is_array_ref, each element the referenced
                         // array holds) is subrange-constrained - see
@@ -54,6 +59,18 @@ typedef struct {
                         // Symbol - see add_local_array()).
     int subrange_lower;  // only meaningful if is_subrange
     int subrange_upper;
+    int is_static;        // 'static count: integer;' - a SCALAR local
+                        // that persists across calls, unlike an
+                        // ordinary local (which ENTER zero-initializes
+                        // fresh every call). Reuses the exact same
+                        // "hidden mangled global" trick add_local_array()
+                        // already uses for arrays (which are already
+                        // implicitly persistent) - see add_static_local().
+                        // Mutually exclusive with is_array/is_array_ref
+                        // (only a plain scalar local can be static).
+    int static_sym_idx;   // only meaningful if is_static: the mangled
+                        // global's sym_table[] index - every reference
+                        // resolves here instead of a frame slot.
 } LocalSymbol;
 static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
@@ -586,6 +603,9 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
             return 1;
         }
         if (current_locals[local_idx].is_array_ref) {
+            if (current_locals[local_idx].is_2d) {
+                compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", name);
+            }
             *lower = current_locals[local_idx].array_lower;
             *upper = current_locals[local_idx].array_upper;
             return 1;
@@ -622,6 +642,8 @@ static int add_local(const char *name, DataType type) {
     current_locals[current_local_count].is_subrange = 0; // defensive reset (see comment above LocalSymbol)
     current_locals[current_local_count].subrange_lower = 0;
     current_locals[current_local_count].subrange_upper = 0;
+    current_locals[current_local_count].is_static = 0;
+    current_locals[current_local_count].static_sym_idx = 0;
     return current_local_count++;
 }
 
@@ -630,11 +652,15 @@ static int add_local(const char *name, DataType type) {
 // and generate_code's NODE_REF_ARRAY_ACCESS/ASSIGN cases), plus the
 // declared bounds every call site's argument must exactly match.
 static int add_local_array_ref(const char *name, DataType elem_type, int lower, int upper,
+                                int is_2d, int lower2, int upper2,
                                 int is_subrange, int subrange_lower, int subrange_upper) {
     int idx = add_local(name, elem_type);
     current_locals[idx].is_array_ref = 1;
     current_locals[idx].array_lower = lower;
     current_locals[idx].array_upper = upper;
+    current_locals[idx].is_2d = is_2d;
+    current_locals[idx].array_lower2 = lower2;
+    current_locals[idx].array_upper2 = upper2;
     current_locals[idx].is_subrange = is_subrange;
     current_locals[idx].subrange_lower = subrange_lower;
     current_locals[idx].subrange_upper = subrange_upper;
@@ -651,6 +677,7 @@ static int add_local_array_ref(const char *name, DataType elem_type, int lower, 
 // every call to this procedure, including recursive ones - it does not
 // get fresh, isolated storage per call.
 static int add_local_array(const char *name, DataType elem_type, int lower, int upper,
+                            int is_2d, int lower2, int upper2,
                             int is_subrange, int subrange_lower, int subrange_upper) {
     if (find_local(name) != -1) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
@@ -660,8 +687,12 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     }
     char mangled[MAX_NAME];
     snprintf(mangled, MAX_NAME, "__local_arr%d", sym_count);
-    int array_sym_idx = sym_count; // add_array_var() is about to append here
-    add_array_var(mangled, elem_type, lower, upper);
+    int array_sym_idx = sym_count; // add_array_var()/add_array_var_2d() is about to append here
+    if (is_2d) {
+        add_array_var_2d(mangled, elem_type, lower, upper, lower2, upper2);
+    } else {
+        add_array_var(mangled, elem_type, lower, upper);
+    }
     sym_table[array_sym_idx].is_subrange = is_subrange;
     sym_table[array_sym_idx].subrange_lower = subrange_lower;
     sym_table[array_sym_idx].subrange_upper = subrange_upper;
@@ -670,6 +701,53 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     current_locals[current_local_count].type = elem_type;
     current_locals[current_local_count].is_array = 1;
     current_locals[current_local_count].array_sym_idx = array_sym_idx;
+    current_locals[current_local_count].is_array_ref = 0; // defensive reset (see comment above LocalSymbol) -
+    current_locals[current_local_count].array_lower = 0;  // this slot may have held an array-ref PARAMETER
+    current_locals[current_local_count].array_upper = 0;  // (or anything else) in a previously-parsed procedure
+    current_locals[current_local_count].is_subrange = 0;  // meaningless for is_array - lives on the mangled
+    current_locals[current_local_count].subrange_lower = 0; // global's own Symbol (sym_table[array_sym_idx]) instead
+    current_locals[current_local_count].subrange_upper = 0;
+    current_locals[current_local_count].is_static = 0;
+    current_locals[current_local_count].static_sym_idx = 0;
+    return current_local_count++;
+}
+
+// Registers a procedure-local STATIC scalar variable ('static count:
+// integer;' inside a procedure body) - persists across calls, unlike an
+// ordinary local (which ENTER zero-initializes fresh every call).
+// Reuses the exact same trick add_local_array() above already uses for
+// arrays (which are already implicitly persistent - see its own
+// comment): a hidden, mangled GLOBAL, so two different procedures' own
+// "count" don't collide, with every reference inside the procedure
+// resolving to it exactly as if it were an ordinary global (see the
+// is_static checks throughout this file). Array locals don't need this
+// function at all - they're already global-backed by nature.
+static int add_static_local(const char *proc_name, const char *name, DataType type,
+                             int is_subrange, int subrange_lower, int subrange_upper) {
+    if (find_local(name) != -1) {
+        compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
+    }
+    if (current_local_count >= MAX_LOCALS) {
+        compile_error(token.line, "Too many parameters/local variables (limit is %d)", MAX_LOCALS);
+    }
+    // "__static_procname_name" - checked explicitly rather than letting
+    // snprintf silently truncate, which could make two different
+    // manglings collide (same reasoning as add_record_var()'s own check).
+    if (strlen(proc_name) + 10 + strlen(name) >= MAX_NAME) {
+        compile_error(token.line, "Static local variable name '%s' in procedure '%s' too long", name, proc_name);
+    }
+    char mangled[2 * MAX_NAME];
+    snprintf(mangled, sizeof(mangled), "__static_%s_%s", proc_name, name);
+    int sym_idx = sym_count; // add_var() is about to append here
+    add_var(mangled, type);
+    sym_table[sym_idx].is_subrange = is_subrange;
+    sym_table[sym_idx].subrange_lower = subrange_lower;
+    sym_table[sym_idx].subrange_upper = subrange_upper;
+
+    strcpy(current_locals[current_local_count].name, name);
+    current_locals[current_local_count].type = type;
+    current_locals[current_local_count].is_static = 1;
+    current_locals[current_local_count].static_sym_idx = sym_idx;
     return current_local_count++;
 }
 
@@ -847,6 +925,10 @@ typedef struct {
     int is_array;
     int array_lower;
     int array_upper;
+    int is_2d;             // 1 if this is a 2D array (a second
+                          // 'lo2..hi2' dimension was given)
+    int array_lower2;
+    int array_upper2;
     int is_subrange;      // see the Symbol comment in common.h
     int subrange_lower;
     int subrange_upper;
@@ -856,6 +938,7 @@ static NameGroup parse_name_group(void) {
     NameGroup g;
     g.count = 0;
     g.is_array = 0;
+    g.is_2d = 0;
     if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
     strcpy(g.names[g.count++], token.text);
     match(TOKEN_IDENTIFIER);
@@ -875,6 +958,16 @@ static NameGroup parse_name_group(void) {
         g.array_lower = parse_int_literal();
         match(TOKEN_DOTDOT);
         g.array_upper = parse_int_literal();
+        if (token.type == TOKEN_COMMA) {
+            match(TOKEN_COMMA);
+            g.array_lower2 = parse_int_literal();
+            match(TOKEN_DOTDOT);
+            g.array_upper2 = parse_int_literal();
+            if (g.array_upper2 < g.array_lower2) {
+                compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", g.array_upper2, g.array_lower2);
+            }
+            g.is_2d = 1;
+        }
         match(TOKEN_RBRACKET);
         if (g.array_upper < g.array_lower) {
             compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", g.array_upper, g.array_lower);
@@ -927,22 +1020,33 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
     DataType expected_elem = proc_table[proc_idx].param_types[param_index];
     int expected_lower = proc_table[proc_idx].param_array_lower[param_index];
     int expected_upper = proc_table[proc_idx].param_array_upper[param_index];
+    int expected_is_2d = proc_table[proc_idx].param_is_2d[param_index];
+    int expected_lower2 = proc_table[proc_idx].param_array_lower2[param_index];
+    int expected_upper2 = proc_table[proc_idx].param_array_upper2[param_index];
 
     int local_idx = find_local(arg_name);
     if (local_idx != -1 && (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref)) {
         DataType actual_elem;
-        int actual_lower, actual_upper;
+        int actual_lower, actual_upper, actual_is_2d, actual_lower2, actual_upper2;
         if (current_locals[local_idx].is_array) {
             int s = current_locals[local_idx].array_sym_idx;
             actual_elem = sym_table[s].type;
             actual_lower = sym_table[s].array_lower;
             actual_upper = sym_table[s].array_upper;
+            actual_is_2d = sym_table[s].is_2d;
+            actual_lower2 = sym_table[s].array_lower2;
+            actual_upper2 = sym_table[s].array_upper2;
         } else {
             actual_elem = current_locals[local_idx].type;
             actual_lower = current_locals[local_idx].array_lower;
             actual_upper = current_locals[local_idx].array_upper;
+            actual_is_2d = current_locals[local_idx].is_2d;
+            actual_lower2 = current_locals[local_idx].array_lower2;
+            actual_upper2 = current_locals[local_idx].array_upper2;
         }
-        if (actual_elem != expected_elem || actual_lower != expected_lower || actual_upper != expected_upper) {
+        if (actual_elem != expected_elem || actual_lower != expected_lower || actual_upper != expected_upper
+            || actual_is_2d != expected_is_2d
+            || (expected_is_2d && (actual_lower2 != expected_lower2 || actual_upper2 != expected_upper2))) {
             compile_error(arg_line, "Array argument '%s' does not match parameter %d of '%s' (declared bounds/type)",
                            arg_name, param_index + 1, proc_table[proc_idx].name);
         }
@@ -964,7 +1068,10 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
     }
     if (sym_table[global_idx].type != expected_elem ||
         sym_table[global_idx].array_lower != expected_lower ||
-        sym_table[global_idx].array_upper != expected_upper) {
+        sym_table[global_idx].array_upper != expected_upper ||
+        sym_table[global_idx].is_2d != expected_is_2d ||
+        (expected_is_2d && (sym_table[global_idx].array_lower2 != expected_lower2 ||
+                             sym_table[global_idx].array_upper2 != expected_upper2))) {
         compile_error(arg_line, "Array argument '%s' does not match parameter %d of '%s' (declared bounds/type)",
                        arg_name, param_index + 1, proc_table[proc_idx].name);
     }
@@ -1446,6 +1553,10 @@ static ASTNode *factor(void) {
 
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_static) {
+                match(TOKEN_IDENTIFIER);
+                return parse_global_symbol_reference(current_locals[local_idx].static_sym_idx, line);
+            }
             if (current_locals[local_idx].is_array) {
                 match(TOKEN_IDENTIFIER);
                 int arr_sym_idx = current_locals[local_idx].array_sym_idx;
@@ -1453,6 +1564,17 @@ static ASTNode *factor(void) {
                     compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
                 }
                 match(TOKEN_LBRACKET);
+                if (sym_table[arr_sym_idx].is_2d) {
+                    ASTNode *node = create_node(NODE_ARRAY_ACCESS_2D);
+                    node->line = line;
+                    node->data.var_idx = arr_sym_idx;
+                    node->left = expression();  // first index
+                    match(TOKEN_COMMA);
+                    node->right = expression(); // second index
+                    node->expression_type = sym_table[arr_sym_idx].type;
+                    match(TOKEN_RBRACKET);
+                    return node;
+                }
                 ASTNode *node = create_node(NODE_ARRAY_ACCESS);
                 node->line = line;
                 node->data.var_idx = arr_sym_idx;
@@ -1467,6 +1589,17 @@ static ASTNode *factor(void) {
                     compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
                 }
                 match(TOKEN_LBRACKET);
+                if (current_locals[local_idx].is_2d) {
+                    ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS_2D);
+                    node->line = line;
+                    node->data.var_idx = local_idx;
+                    node->left = expression();  // first index
+                    match(TOKEN_COMMA);
+                    node->right = expression(); // second index
+                    node->expression_type = current_locals[local_idx].type;
+                    match(TOKEN_RBRACKET);
+                    return node;
+                }
                 ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS);
                 node->line = line;
                 node->data.var_idx = local_idx; // the parameter's OWN slot, holding a runtime sym_table index
@@ -2013,6 +2146,8 @@ static void subroutine_declaration(int is_function_decl) {
             if (proc_table[proc_idx].param_is_array_ref[i]) {
                 add_local_array_ref(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i],
                                      proc_table[proc_idx].param_array_lower[i], proc_table[proc_idx].param_array_upper[i],
+                                     proc_table[proc_idx].param_is_2d[i], proc_table[proc_idx].param_array_lower2[i],
+                                     proc_table[proc_idx].param_array_upper2[i],
                                      proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
                                      proc_table[proc_idx].param_subrange_upper[i]);
             } else {
@@ -2032,6 +2167,9 @@ static void subroutine_declaration(int is_function_decl) {
         int param_is_array_ref[MAX_PARAMS];
         int param_array_lower[MAX_PARAMS];
         int param_array_upper[MAX_PARAMS];
+        int param_is_2d[MAX_PARAMS];
+        int param_array_lower2[MAX_PARAMS];
+        int param_array_upper2[MAX_PARAMS];
         int param_is_subrange[MAX_PARAMS];
         int param_subrange_lower[MAX_PARAMS];
         int param_subrange_upper[MAX_PARAMS];
@@ -2047,6 +2185,7 @@ static void subroutine_declaration(int is_function_decl) {
                         }
                         if (g.is_array) {
                             add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper,
+                                                 g.is_2d, g.array_lower2, g.array_upper2,
                                                  g.is_subrange, g.subrange_lower, g.subrange_upper);
                         } else {
                             int idx = add_local(g.names[i], g.type);
@@ -2059,6 +2198,9 @@ static void subroutine_declaration(int is_function_decl) {
                         param_is_array_ref[param_count] = g.is_array;
                         param_array_lower[param_count] = g.array_lower;
                         param_array_upper[param_count] = g.array_upper;
+                        param_is_2d[param_count] = g.is_2d;
+                        param_array_lower2[param_count] = g.array_lower2;
+                        param_array_upper2[param_count] = g.array_upper2;
                         param_is_subrange[param_count] = g.is_subrange;
                         param_subrange_lower[param_count] = g.subrange_lower;
                         param_subrange_upper[param_count] = g.subrange_upper;
@@ -2082,6 +2224,9 @@ static void subroutine_declaration(int is_function_decl) {
             proc_table[proc_idx].param_is_array_ref[i] = param_is_array_ref[i];
             proc_table[proc_idx].param_array_lower[i] = param_array_lower[i];
             proc_table[proc_idx].param_array_upper[i] = param_array_upper[i];
+            proc_table[proc_idx].param_is_2d[i] = param_is_2d[i];
+            proc_table[proc_idx].param_array_lower2[i] = param_array_lower2[i];
+            proc_table[proc_idx].param_array_upper2[i] = param_array_upper2[i];
             proc_table[proc_idx].param_is_subrange[i] = param_is_subrange[i];
             proc_table[proc_idx].param_subrange_lower[i] = param_subrange_lower[i];
             proc_table[proc_idx].param_subrange_upper[i] = param_subrange_upper[i];
@@ -2110,11 +2255,23 @@ static void subroutine_declaration(int is_function_decl) {
 
     if (token.type == TOKEN_VAR) {
         match(TOKEN_VAR);
-        while (token.type == TOKEN_IDENTIFIER) {
+        while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_STATIC) {
+            int is_static = 0;
+            if (token.type == TOKEN_STATIC) {
+                is_static = 1;
+                match(TOKEN_STATIC);
+            }
             NameGroup g = parse_name_group();
             for (int i = 0; i < g.count; i++) {
-                if (g.is_array) {
+                if (is_static) {
+                    if (g.is_array) {
+                        compile_error(token.line, "'static' doesn't apply to arrays - a local array is already shared across every call, unlike a scalar local (see docs/LANGUAGE.md)");
+                    }
+                    add_static_local(proc_table[proc_idx].name, g.names[i], g.type,
+                                      g.is_subrange, g.subrange_lower, g.subrange_upper);
+                } else if (g.is_array) {
                     add_local_array(g.names[i], g.type, g.array_lower, g.array_upper,
+                                     g.is_2d, g.array_lower2, g.array_upper2,
                                      g.is_subrange, g.subrange_lower, g.subrange_upper);
                 } else {
                     int idx = add_local(g.names[i], g.type);
@@ -2158,7 +2315,8 @@ static void subroutine_declaration(int is_function_decl) {
 static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
-           t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH;
+           t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
+           t == TOKEN_ASSERT;
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
@@ -2192,6 +2350,8 @@ static ASTNode *parse_inc_dec(TokenType kind) {
 
     int with_field_idx = find_with_field(name);
     int rv_idx = find_record_var(name);
+    int static_local_idx = (with_field_idx == -1 && rv_idx == -1) ? find_local(name) : -1;
+    if (static_local_idx != -1 && !current_locals[static_local_idx].is_static) static_local_idx = -1;
     if (with_field_idx != -1) {
         global_idx = with_field_idx;
         if (sym_table[global_idx].is_array) {
@@ -2216,6 +2376,15 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         }
         global_idx = rv->field_sym_idx[field_idx];
         match(TOKEN_IDENTIFIER);
+        if (sym_table[global_idx].is_array) {
+            compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
+        }
+        target_type = sym_table[global_idx].type;
+        target_is_subrange = sym_table[global_idx].is_subrange;
+        target_subrange_lower = sym_table[global_idx].subrange_lower;
+        target_subrange_upper = sym_table[global_idx].subrange_upper;
+    } else if (static_local_idx != -1) {
+        global_idx = current_locals[static_local_idx].static_sym_idx;
         if (sym_table[global_idx].is_array) {
             compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
         }
@@ -2485,11 +2654,28 @@ static ASTNode *statement(void) {
 
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_static) {
+                match(TOKEN_IDENTIFIER);
+                return parse_global_assignment(current_locals[local_idx].static_sym_idx);
+            }
             if (current_locals[local_idx].is_array) {
                 int arr_sym_idx = current_locals[local_idx].array_sym_idx;
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
                     compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                }
+                if (sym_table[arr_sym_idx].is_2d) {
+                    ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_2D);
+                    stmt->data.var_idx = arr_sym_idx;
+                    match(TOKEN_LBRACKET);
+                    stmt->left = expression();  // first index
+                    match(TOKEN_COMMA);
+                    stmt->right = expression(); // second index
+                    match(TOKEN_RBRACKET);
+                    match(TOKEN_ASSIGN);
+                    stmt->extra = wrap_range_check(expression(), sym_table[arr_sym_idx].is_subrange,
+                        sym_table[arr_sym_idx].subrange_lower, sym_table[arr_sym_idx].subrange_upper); // value
+                    return stmt;
                 }
                 ASTNode *stmt = create_node(NODE_ASSIGN);
                 stmt->data.var_idx = arr_sym_idx;
@@ -2505,6 +2691,20 @@ static ASTNode *statement(void) {
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
                     compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                }
+                if (current_locals[local_idx].is_2d) {
+                    ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN_2D);
+                    stmt->data.var_idx = local_idx;
+                    stmt->expression_type = current_locals[local_idx].type;
+                    match(TOKEN_LBRACKET);
+                    stmt->left = expression();  // first index
+                    match(TOKEN_COMMA);
+                    stmt->right = expression(); // second index
+                    match(TOKEN_RBRACKET);
+                    match(TOKEN_ASSIGN);
+                    stmt->extra = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
+                        current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper); // value
+                    return stmt;
                 }
                 ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN);
                 stmt->data.var_idx = local_idx; // the parameter's OWN slot, holding a runtime sym_table index
@@ -2554,6 +2754,27 @@ static ASTNode *statement(void) {
 
     if (token.type == TOKEN_INC || token.type == TOKEN_DEC) {
         return parse_inc_dec(token.type);
+    }
+
+    if (token.type == TOKEN_ASSERT) {
+        match(TOKEN_ASSERT);
+        match(TOKEN_LPAREN);
+        ASTNode *stmt = create_node(NODE_ASSERT);
+        stmt->left = expression(); // condition
+        if (token.type == TOKEN_COMMA) {
+            match(TOKEN_COMMA);
+            stmt->right = expression(); // message
+        } else {
+            // No message given - synthesize a default literal, exactly
+            // like a user-written string, so codegen never needs to
+            // handle a "no message" case separately.
+            ASTNode *msg = create_node(NODE_STRING);
+            msg->data.var_idx = intern_string("Assertion failed");
+            msg->expression_type = TYPE_STRING;
+            stmt->right = msg;
+        }
+        match(TOKEN_RPAREN);
+        return stmt;
     }
 
     if (token.type == TOKEN_WRITELN || token.type == TOKEN_WRITE) {
@@ -2635,6 +2856,17 @@ static ASTNode *statement(void) {
         }
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_static) {
+                match(TOKEN_IDENTIFIER);
+                int static_idx = current_locals[local_idx].static_sym_idx;
+                if (sym_table[static_idx].type >= TYPE_ENUM_BASE) {
+                    compile_error(token.line, "readln into an enumerated value is not supported");
+                }
+                match(TOKEN_RPAREN);
+                ASTNode *stmt = create_node(NODE_READLN);
+                stmt->data.var_idx = static_idx;
+                return stmt;
+            }
             if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
                 compile_error(token.line, "readln into an array is not supported");
             }
@@ -2738,6 +2970,37 @@ static ASTNode *statement(void) {
             return stmt;
         }
         int local_idx = find_local(token.text);
+        if (local_idx != -1 && current_locals[local_idx].is_static) {
+            // A static local behaves exactly like a global here - plain
+            // storage, no per-call frame to isolate - so this reuses the
+            // ordinary NODE_FOR shape (the global fallback further
+            // below), just targeting the mangled global's index instead
+            // of find_var()'s.
+            int static_idx = current_locals[local_idx].static_sym_idx;
+            if (sym_table[static_idx].type != TYPE_INTEGER) {
+                compile_error(token.line, "'for' loop variable must be integer");
+            }
+            ASTNode *stmt = create_node(NODE_FOR);
+            stmt->data.var_idx = static_idx;
+            match(TOKEN_IDENTIFIER);
+            match(TOKEN_ASSIGN);
+            stmt->left = expression(); // start bound
+            if (token.type == TOKEN_TO) {
+                match(TOKEN_TO);
+                stmt->op = TOKEN_TO;
+            } else if (token.type == TOKEN_DOWNTO) {
+                match(TOKEN_DOWNTO);
+                stmt->op = TOKEN_DOWNTO;
+            } else {
+                compile_error(token.line, "'for' expects 'to' or 'downto'");
+            }
+            stmt->right = expression(); // end bound
+            match(TOKEN_DO);
+            loop_depth++;
+            stmt->extra = statement();  // body
+            loop_depth--;
+            return stmt;
+        }
         if (local_idx != -1) {
             if (current_locals[local_idx].type != TYPE_INTEGER) {
                 compile_error(token.line, "'for' loop variable must be integer");

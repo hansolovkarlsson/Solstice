@@ -98,14 +98,27 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       different record types and records with an array field (whole-
       array comparison isn't supported) — see
       [docs/LANGUAGE.md](LANGUAGE.md#record-comparison).
-- [ ] 2D array parameters and local 2D arrays (1D already supports both)
+- [x] 2D array parameters and local 2D arrays (1D already supports both)
+      — extends the existing by-reference/local-array machinery: two new
+      opcodes (`LOAD_IDX2D_DYN`/`STORE_IDX2D_DYN`, mirroring the 1D
+      dynamic ones exactly) for by-reference parameters, and local 2D
+      arrays reuse the existing global `LOAD_IDX2D`/`STORE_IDX2D` via the
+      same "hidden mangled global" trick 1D local arrays already use.
+      `low`/`high`/`length` still don't support 2D (parameter or
+      global) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#array-parameters-and-local-arrays).
 - [ ] Three-or-more-dimensional arrays
 - [ ] Dynamic arrays (array `copy`/slicing)
 
 ### Language — I/O & error handling
 
 - [ ] File I/O (text files: open/read/write to a file, not just stdin/stdout)
-- [ ] `assert`
+- [x] `assert` — `assert(cond)` / `assert(cond, message)`, a new
+      NODE_ASSERT AST node compiling to a single new opcode (`OP_ASSERT`,
+      pop message then condition, abort with that message if false). A
+      missing message is synthesized as a literal ("Assertion failed")
+      at parse time, so codegen/the VM never handle a "no message" case
+      separately — see [docs/LANGUAGE.md](LANGUAGE.md#assert).
 - [ ] User-level error/warning built-ins, distinct from the VM's internal
       recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
 - [ ] Some form of try/except/retry that exposes that same
@@ -115,7 +128,14 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 ### Language — procedures/functions & diagnostics
 
 - [ ] Closures (a nested function capturing its enclosing scope)
-- [ ] Static (persistent-across-calls) local variables
+- [x] Static (persistent-across-calls) local variables — `static name:
+      type;` reuses the exact "hidden mangled global" trick local arrays
+      already use (which are already implicitly persistent), so every
+      reference resolves to an ordinary global instead of a frame slot.
+      Scalars only (a local array is already persistent by default).
+      Shared correctly across recursive calls; two procedures' own
+      same-named static don't collide (mangled `__static_proc_name`) —
+      see [docs/LANGUAGE.md](LANGUAGE.md#static-local-variables).
 - [ ] Uninitialized-variable warning pass
 
 ### VM / bytecode

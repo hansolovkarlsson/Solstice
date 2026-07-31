@@ -211,9 +211,18 @@ record comparison (`p1 = p2`, `p1 <> p2`, desugaring to a field-by-field
 `and`-chain) and the `with` statement (`with p do ...`), both pure
 parser-time features needing no new opcodes — a bare identifier inside a
 `with` body resolves exactly as `p.field` already did (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#the-with-statement)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#the-with-statement)). Also working:
+`assert(cond)` / `assert(cond, message)`, aborting cleanly with that
+message if `cond` is false (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#assert)); `static` local variables,
+which persist across calls (including recursive ones) by reusing the
+same "hidden mangled global" trick local arrays already use (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#static-local-variables)); and 2D
+array parameters and local 2D arrays, extending the existing by-
+reference/local-array machinery with two new opcodes
+(`LOAD_IDX2D_DYN`/`STORE_IDX2D_DYN`) mirroring the 1D dynamic ones (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-parameters-and-local-arrays)).
 
-Not yet implemented: three-or-more-dimensional arrays, array
-parameters/locals for 2D arrays specifically, dynamic arrays (so no
-array `copy`/slicing), and records as array elements, record
+Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
+(so no array `copy`/slicing), and records as array elements, record
 parameters/locals, or nested records.
