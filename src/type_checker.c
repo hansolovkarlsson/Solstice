@@ -605,6 +605,51 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        // Each case-label leaf (NODE_NUMBER/NODE_STRING/NODE_BOOLEAN)
+        // already carries its own expression_type, fixed at parse time
+        // (see parse_case_label_value() in parser.c) - nothing here
+        // needs the generic recursion above to have "checked" them the
+        // way a NODE_BINARY_OP's operands need. What DOES need the
+        // selector's expression_type is only resolved by that same
+        // generic recursion (into node->left) just before this switch
+        // runs, which is exactly why this check lives here and not in
+        // the parser.
+        case NODE_CASE: {
+            DataType sel_type = node->left->expression_type;
+            // Deliberately sel_type == TYPE_CHAR here, NOT is_string_type()
+            // - unlike everywhere else in this file, a 'string' selector
+            // must be REJECTED (it isn't ordinal, unlike char), so the two
+            // can't be treated as interchangeable for this one check.
+            if (sel_type != TYPE_INTEGER && sel_type != TYPE_CHAR && sel_type != TYPE_BOOLEAN && !is_enum_type(sel_type)) {
+                fprintf(stderr, "%s:%d: Type Error: 'case' selector must be an ordinal type (integer, char, boolean, or enumerated), not %s\n",
+                        get_current_filename(), node->line, sel_type == TYPE_REAL ? "real" : "string");
+                fatal_abort();
+            }
+            int sel_is_char = (sel_type == TYPE_CHAR);
+            for (ASTNode *arm = node->right; arm; arm = arm->next) {
+                for (ASTNode *label = arm->left; label; label = label->next) {
+                    // parse_case_label_value() never produces a
+                    // TYPE_STRING label (only TYPE_CHAR), so is_string_type()
+                    // here is just this file's usual char/string
+                    // interchangeability - safe now that sel_is_char can
+                    // only be true for a genuinely char selector.
+                    int type_matches = sel_is_char ? is_string_type(label->expression_type) : (label->expression_type == sel_type);
+                    if (!type_matches) {
+                        fprintf(stderr, "%s:%d: Type Error: case label's type doesn't match the 'case' selector's type\n",
+                                get_current_filename(), label->line);
+                        fatal_abort();
+                    }
+                }
+            }
+            break;
+        }
+
+        case NODE_CASE_ARM: // children (labels, statement) already
+                             // walked by the generic recursion above;
+                             // validated from NODE_CASE's own case, once
+                             // the selector's type is known
+            break;
+
         default:
             break;
     }

@@ -12,6 +12,11 @@
 #define MAX_FRAME_STACK 4096
 #define MAX_PROCEDURES 50
 #define MAX_PARAMS 8
+#define MAX_CASE_LABELS 64 // per 'case' statement, across every arm combined
+                           // - also bounds the number of ARMS (each arm
+                           // needs at least one label), which is what
+                           // codegen.c's per-arm jump-patch array sizes
+                           // itself against
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -55,6 +60,7 @@ typedef enum {
     TOKEN_WITH,
     TOKEN_ASSERT,
     TOKEN_STATIC,
+    TOKEN_CASE,
     TOKEN_SQRT, TOKEN_SIN, TOKEN_COS, TOKEN_ARCTAN, TOKEN_EXP, TOKEN_LN,
     TOKEN_PI, TOKEN_POWER,
     TOKEN_POW, // '**'
@@ -591,13 +597,31 @@ typedef enum {
                        // (a subrange is fully assignment/arithmetic-
                        // compatible with integer - unlike an enum, it's
                        // not a distinct type the type checker tracks).
-    NODE_ASSERT        // 'assert(cond)' / 'assert(cond, msg)'. left =
+    NODE_ASSERT,       // 'assert(cond)' / 'assert(cond, msg)'. left =
                        // condition (must be boolean); right = message
                        // (must be string/char) - always present, even
                        // for the no-message form: the parser synthesizes
                        // a NODE_STRING literal ("Assertion failed") when
                        // none is given, so codegen/the VM never need to
                        // handle a "no message" case separately.
+    NODE_CASE,         // 'case selector of label1: stmt1; ... [else
+                       // stmtN] end'. left = selector expression, right =
+                       // head of a NODE_CASE_ARM chain (each arm linked
+                       // via its own ->next), extra = the else-branch
+                       // statement (NULL if there isn't one). data.var_idx
+                       // = string_pool index of a "no matching case
+                       // label and no else clause" runtime-error message,
+                       // synthesized at parse time exactly like
+                       // NODE_ASSERT's default message above - used by
+                       // codegen only when extra is NULL, reusing
+                       // OP_ASSERT itself (an unconditional false
+                       // condition) rather than needing a new opcode.
+    NODE_CASE_ARM      // One 'label1, label2: statement' arm of a
+                       // NODE_CASE. left = head of that arm's case-label-
+                       // value chain (leaf nodes - NODE_NUMBER/
+                       // NODE_STRING/NODE_BOOLEAN - each already carrying
+                       // its own expression_type, chained via ->next).
+                       // right = the arm's statement.
 } NodeType;
 
 typedef struct ASTNode {

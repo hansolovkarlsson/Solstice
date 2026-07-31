@@ -292,6 +292,36 @@ if x > 0 then begin
 end;
 ```
 
+### `case` / `of`
+
+```pascal
+case x of
+    1: writeln('one');
+    2, 3: writeln('two or three');
+else
+    writeln('other: ', x);
+end;
+```
+
+A multi-way branch on an ordinal value — `integer`, `char`, `boolean`, or
+an enumerated type (not `real` or `string`, neither of which is
+ordinal). The selector can be any expression of one of those types, not
+just a bare variable. Each case label is a compile-time constant of the
+same type as the selector: an (optionally negative) integer literal, a
+one-character string or `#NNN` char-code literal, `true`/`false`, a
+`const` reference, or a bare enumerated value name — not a general
+expression, and not a range (`2..5:` isn't accepted; list the values
+individually). A label list can name more than one value for the same
+branch (`2, 3:` above). Case labels must be pairwise distinct across the
+whole statement — a repeated label is a compile-time error.
+
+`else` is optional, matching `if`/`then`. If the selector's value matches
+no label and there's no `else`, it's a runtime error (this compiler
+follows the common implementation choice here — a runtime error, not
+undefined behavior). Each branch (and the `else` branch) is a single
+statement, exactly like `if`/`then` — use `begin...end` for multiple
+statements in a branch.
+
 ### `while` / `do`
 
 ```pascal

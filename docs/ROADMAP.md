@@ -80,10 +80,25 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ### Language — control flow
 
-- [ ] `case`/`of` statement — the one Wirth-standard control structure
-      not implemented at all yet: a multi-way branch on an ordinal value
-      (integer, char, or enumerated), with an optional `else`/`otherwise`
-      catch-all
+- [x] `case`/`of` statement — a multi-way branch on an ordinal value
+      (integer, char, boolean, or enumerated - not real/string, neither
+      of which is ordinal), with an optional `else` catch-all. Each case-
+      label value (an integer literal, char/char-code literal, true/
+      false, a `const` reference, or an enum value name) is parsed
+      without needing to know the selector's type yet - whether it
+      actually matches is deferred to type_checker.c's NODE_CASE handling,
+      once the selector's own expression_type is resolved (a compound
+      selector expression's type isn't known until then). No new opcodes:
+      codegen caches the selector once in a hidden global (reusing
+      add_temp_var(), the same trick a global `for` loop's end-bound
+      already uses), compares it against each label with EQ/SEQ chained
+      by OR, and falls back to OP_ASSERT with an always-false condition
+      when there's no matching label and no `else` (a runtime error,
+      reusing the assert mechanism instead of adding a dedicated opcode).
+      Case labels must be pairwise distinct (checked at parse time).
+      Known gaps: no range labels (`2..5:` - lists values individually
+      instead), no `otherwise` as an alternate spelling of `else` — see
+      [docs/LANGUAGE.md](LANGUAGE.md#case--of).
 - [ ] `goto` and `label` declarations
 
 ### Language — records & arrays

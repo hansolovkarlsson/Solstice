@@ -717,6 +717,90 @@ void generate_code(ASTNode *node) {
             emit(OP_ASSERT, 0);
             generate_code(node->next);
             break;
+
+        // case <selector> of
+        //     label1[, label2...]: <stmt1>;
+        //     ...
+        //   [else <stmtN>]
+        //   end
+        //     <selector>
+        //     STORE sel_var          ; cached once - see add_temp_var()
+        //   arm1:
+        //     LOAD sel_var
+        //     PUSH/PUSH_STR label1
+        //     EQ/SEQ
+        //   [ LOAD sel_var
+        //     PUSH/PUSH_STR label2
+        //     EQ/SEQ
+        //     OR                     ; once per extra label sharing this arm ]
+        //     JZ arm2                ; patched below
+        //     <stmt1>
+        //     JMP end                ; patched below
+        //   arm2:
+        //     ...
+        //   end:                     ; falls straight through to here if no
+        //                            ; arm matched and there's no else (see
+        //                            ; the OP_ASSERT fallback below) - or
+        //                            ; lands here via the else/last arm's JMP
+        case NODE_CASE: {
+            generate_code(node->left); // selector
+            int sel_var = add_temp_var(node->left->expression_type);
+            emit(OP_STORE, sel_var);
+            // == TYPE_CHAR, not is_string_type(): a 'string' selector is
+            // already rejected by type_checker.c before codegen ever
+            // runs, but this stays explicit rather than relying on that.
+            int sel_is_char = (node->left->expression_type == TYPE_CHAR);
+
+            int end_jmp_idx[MAX_CASE_LABELS];
+            int end_jmp_count = 0;
+
+            for (ASTNode *arm = node->right; arm; arm = arm->next) {
+                int label_count = 0;
+                for (ASTNode *label = arm->left; label; label = label->next) {
+                    emit(OP_LOAD, sel_var);
+                    generate_code(label);
+                    emit(sel_is_char ? OP_SEQ : OP_EQ, 0);
+                    if (label_count > 0) emit(OP_OR, 0);
+                    label_count++;
+                }
+                int jz_idx = code_idx;
+                emit(OP_JZ, 0); // placeholder, patched below: next arm's checks
+
+                generate_code(arm->right); // this arm's statement
+
+                end_jmp_idx[end_jmp_count++] = code_idx;
+                emit(OP_JMP, 0); // placeholder, patched below: past the whole case
+
+                code[jz_idx].arg = code_idx; // JZ lands here: next arm's checks
+            }
+
+            if (node->extra) {
+                generate_code(node->extra); // else-branch
+            } else {
+                // No matching label and no else clause: an unconditional
+                // runtime error, reusing OP_ASSERT (an always-false
+                // condition) rather than adding a dedicated opcode.
+                emit(OP_PUSH, 0);
+                emit(OP_PUSH_STR, node->data.var_idx);
+                emit(OP_ASSERT, 0);
+            }
+
+            for (int i = 0; i < end_jmp_count; i++) {
+                code[end_jmp_idx[i]].arg = code_idx; // every arm's JMP lands here
+            }
+
+            generate_code(node->next);
+            break;
+        }
+
+        case NODE_CASE_ARM:
+            // Never reached via generate_code()'s ordinary dispatch -
+            // NODE_CASE's own case above walks each arm directly (label
+            // comparisons need custom per-arm codegen, not the single
+            // generate_code(child) call every other node type gets), so
+            // this case exists only to satisfy -Wswitch's exhaustiveness
+            // check.
+            break;
     }
 }
 

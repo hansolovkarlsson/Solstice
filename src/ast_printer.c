@@ -264,6 +264,38 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_CASE:
+            printf("[Case]\n");
+            print_indent(indent + 1);
+            printf("Selector:\n");
+            print_ast(node->left, indent + 2);
+            print_ast(node->right, indent + 1); // the NODE_CASE_ARM chain
+            if (node->extra) {
+                print_indent(indent + 1);
+                printf("Else:\n");
+                print_ast(node->extra, indent + 2);
+            }
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_CASE_ARM: {
+            printf("[Case Arm]\n");
+            print_indent(indent + 1);
+            printf("Labels:\n");
+            for (ASTNode *label = node->left; label; label = label->next) {
+                print_ast(label, indent + 2);
+            }
+            print_indent(indent + 1);
+            printf("Statement:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent); // the next arm, same indent
+            }
+            break;
+        }
+
         case NODE_BREAK:
             printf("[Break]\n");
             if (node->next) {

@@ -228,6 +228,11 @@ record's hidden-mangled-global fields) — no new opcodes, a record
 argument just flattens into N ordinary field-value pushes at the call
 site (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#record-parameters-and-local-records)).
+Also working: the `case`/`of` statement, a multi-way branch on an
+`integer`/`char`/`boolean`/enumerated value with an optional `else`
+catch-all — no new opcodes here either, reusing the existing comparison/
+jump/assert machinery (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
 (so no array `copy`/slicing), and records as array elements or nested

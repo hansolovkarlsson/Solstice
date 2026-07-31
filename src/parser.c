@@ -2562,6 +2562,175 @@ static void subroutine_declaration(int is_function_decl) {
     current_function_idx = -1;
 }
 
+// Parses one compile-time-constant case-label value: an (optionally
+// negative) integer literal, a char literal ('a' or #NNN), true/false, a
+// 'const' reference, or a bare enumerated value name - the only forms
+// standard Pascal allows as a case-label constant. Deliberately doesn't
+// know (or need to know) the enclosing case statement's selector type:
+// whether this label's type actually matches the selector is checked
+// later, by type_checker.c's NODE_CASE handling, once the selector's own
+// expression_type is resolved - which, for anything beyond a bare
+// variable, only happens during that later pass (see the NODE_BINARY_OP
+// construction in term()/arithmetic_expression()/expression() above,
+// none of which set expression_type at parse time the way a leaf node
+// does). Returns a leaf node (NODE_NUMBER/NODE_STRING/NODE_BOOLEAN) with
+// expression_type already set, mirroring the equivalent literal-handling
+// branches in factor().
+static ASTNode *parse_case_label_value(void) {
+    int sign = 1;
+    if (token.type == TOKEN_MINUS) {
+        sign = -1;
+        match(TOKEN_MINUS);
+    }
+    if (token.type == TOKEN_NUMBER) {
+        ASTNode *node = create_node(NODE_NUMBER);
+        node->data.num_value = token.value * sign;
+        node->expression_type = TYPE_INTEGER;
+        match(TOKEN_NUMBER);
+        return node;
+    }
+    if (sign == -1) {
+        compile_error(token.line, "Expected an integer literal after '-'");
+    }
+    if (token.type == TOKEN_STRING) {
+        if (strlen(token.string_value) != 1) {
+            compile_error(token.line, "A char case label must be exactly one character, got '%s'", token.string_value);
+        }
+        ASTNode *node = create_node(NODE_STRING);
+        node->data.var_idx = intern_string(token.string_value);
+        node->expression_type = TYPE_CHAR;
+        match(TOKEN_STRING);
+        return node;
+    }
+    if (token.type == TOKEN_CHARCODE) {
+        if (token.value < 1 || token.value > 255) {
+            compile_error(token.line, "Character code %d out of range (1..255)", token.value);
+        }
+        char buf[2] = { (char)token.value, '\0' };
+        ASTNode *node = create_node(NODE_STRING);
+        node->data.var_idx = intern_string(buf);
+        node->expression_type = TYPE_CHAR;
+        match(TOKEN_CHARCODE);
+        return node;
+    }
+    if (token.type == TOKEN_TRUE || token.type == TOKEN_FALSE) {
+        ASTNode *node = create_node(NODE_BOOLEAN);
+        node->data.num_value = token.value;
+        node->expression_type = TYPE_BOOLEAN;
+        next_token();
+        return node;
+    }
+    if (token.type == TOKEN_IDENTIFIER) {
+        int const_idx = find_const(token.text);
+        if (const_idx != -1) {
+            ConstDef *c = &const_defs[const_idx];
+            if (c->type == TYPE_REAL) {
+                compile_error(token.line, "'%s' is a real constant - case labels must be an ordinal type (integer, char, boolean, or enumerated)", token.text);
+            }
+            ASTNode *node;
+            if (c->type == TYPE_STRING || c->type == TYPE_CHAR) {
+                node = create_node(NODE_STRING);
+                node->data.var_idx = c->value;
+            } else if (c->type == TYPE_BOOLEAN) {
+                node = create_node(NODE_BOOLEAN);
+                node->data.num_value = c->value;
+            } else { // TYPE_INTEGER
+                node = create_node(NODE_NUMBER);
+                node->data.num_value = c->value;
+            }
+            node->expression_type = c->type;
+            match(TOKEN_IDENTIFIER);
+            return node;
+        }
+        int enum_type_idx, ordinal;
+        if (find_enum_value(token.text, &enum_type_idx, &ordinal)) {
+            ASTNode *node = create_node(NODE_NUMBER);
+            node->data.num_value = ordinal;
+            node->expression_type = (DataType)(TYPE_ENUM_BASE + enum_type_idx);
+            match(TOKEN_IDENTIFIER);
+            return node;
+        }
+        compile_error(token.line, "'%s' is not a constant or enumerated value", token.text);
+    }
+    compile_error(token.line, "Expected a case label (a literal, constant, or enumerated value)");
+    return NULL; // unreachable - compile_error() never returns
+}
+
+// 'case selector of label1[, label2...]: statement1; ... [else
+// statementN] end' - see the NODE_CASE/NODE_CASE_ARM comments in
+// common.h for the AST shape this builds. Case-label constants must be
+// pairwise distinct across the WHOLE statement (checked here, at parse
+// time - comparing (type, value) pairs is all that's needed, and needs
+// nothing the selector's own type resolution would add). Whether each
+// label's type actually matches the selector is checked later, by
+// type_checker.c, once the selector is fully resolved.
+static ASTNode *parse_case_statement(void) {
+    match(TOKEN_CASE);
+    ASTNode *node = create_node(NODE_CASE);
+    node->left = expression();
+    match(TOKEN_OF);
+
+    DataType seen_types[MAX_CASE_LABELS];
+    int seen_values[MAX_CASE_LABELS];
+    int seen_count = 0;
+
+    ASTNode *arm_head = NULL;
+    ASTNode *arm_tail = NULL;
+    while (token.type != TOKEN_ELSE && token.type != TOKEN_END) {
+        ASTNode *label_head = NULL;
+        ASTNode *label_tail = NULL;
+        while (1) {
+            int label_line = token.line;
+            ASTNode *label = parse_case_label_value();
+            for (int i = 0; i < seen_count; i++) {
+                if (seen_types[i] == label->expression_type && seen_values[i] == label->data.num_value) {
+                    compile_error(label_line, "Duplicate case label");
+                }
+            }
+            if (seen_count >= MAX_CASE_LABELS) {
+                compile_error(label_line, "Too many case labels in one 'case' statement (limit is %d)", MAX_CASE_LABELS);
+            }
+            seen_types[seen_count] = label->expression_type;
+            seen_values[seen_count] = label->data.num_value; // aliases data.var_idx too (same union member) - fine for a char label, which sets var_idx instead
+            seen_count++;
+
+            if (!label_head) label_head = label; else label_tail->next = label;
+            label_tail = label;
+            if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+            break;
+        }
+        match(TOKEN_COLON);
+
+        ASTNode *arm = create_node(NODE_CASE_ARM);
+        arm->left = label_head;
+        arm->right = statement();
+        if (!arm_head) arm_head = arm; else arm_tail->next = arm;
+        arm_tail = arm;
+
+        if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+        break;
+    }
+    if (!arm_head) {
+        compile_error(token.line, "'case' must have at least one label");
+    }
+    node->right = arm_head;
+
+    if (token.type == TOKEN_ELSE) {
+        match(TOKEN_ELSE);
+        node->extra = statement();
+        if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); }
+    }
+    match(TOKEN_END);
+
+    // Synthesized even when there IS an else clause - simpler than
+    // conditionally interning it, and it costs nothing (one string_pool
+    // slot) when unused. Mirrors how NODE_ASSERT's default "Assertion
+    // failed" message is always synthesized too, regardless of whether
+    // the user supplied their own.
+    node->data.var_idx = intern_string("No matching case label and no else clause");
+    return node;
+}
+
 // True for every token that can legally start a statement. Used by
 // statement_list() to know when to stop (hitting END/ELSE/UNTIL, or EOF
 // on a malformed file, all correctly fail this check).
@@ -2569,7 +2738,7 @@ static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
-           t == TOKEN_ASSERT;
+           t == TOKEN_ASSERT || t == TOKEN_CASE;
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
@@ -3397,6 +3566,10 @@ static ASTNode *statement(void) {
         match(TOKEN_UNTIL);
         stmt->right = expression();      // until-condition
         return stmt;
+    }
+
+    if (token.type == TOKEN_CASE) {
+        return parse_case_statement();
     }
 
     if (token.type == TOKEN_WITH) {
