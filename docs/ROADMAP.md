@@ -78,6 +78,14 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 - [ ] Sets
 - [ ] Pointers (`^Type`, `new`, `dispose`)
 
+### Language — control flow
+
+- [ ] `case`/`of` statement — the one Wirth-standard control structure
+      not implemented at all yet: a multi-way branch on an ordinal value
+      (integer, char, or enumerated), with an optional `else`/`otherwise`
+      catch-all
+- [ ] `goto` and `label` declarations
+
 ### Language — records & arrays
 
 - [x] `with` statement — pure parser-time sugar, no AST node/codegen/VM
@@ -107,13 +115,8 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       a global record variable — see
       [docs/LANGUAGE.md](LANGUAGE.md#record-parameters-and-local-records).
 - [ ] Nested records
-- [x] Record comparison (`=`, `<>`) — desugars at parse time into a
-      field-by-field `and`-chain of ordinary comparisons (same "a record
-      isn't one runtime value" philosophy whole-record assignment
-      already uses), so it needed no new opcodes either. Rejects
-      different record types and records with an array field (whole-
-      array comparison isn't supported) — see
-      [docs/LANGUAGE.md](LANGUAGE.md#record-comparison).
+- [ ] Variant records (`case tag: T of ...` inside a `record`) — a
+      record's alternate, overlapping field layouts selected by a tag field
 - [x] 2D array parameters and local 2D arrays (1D already supports both)
       — extends the existing by-reference/local-array machinery: two new
       opcodes (`LOAD_IDX2D_DYN`/`STORE_IDX2D_DYN`, mirroring the 1D
@@ -124,34 +127,43 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       global) — see
       [docs/LANGUAGE.md](LANGUAGE.md#array-parameters-and-local-arrays).
 - [ ] Three-or-more-dimensional arrays
-- [ ] Dynamic arrays (array `copy`/slicing)
 
 ### Language — I/O & error handling
 
 - [ ] File I/O (text files: open/read/write to a file, not just stdin/stdout)
-- [x] `assert` — `assert(cond)` / `assert(cond, message)`, a new
-      NODE_ASSERT AST node compiling to a single new opcode (`OP_ASSERT`,
-      pop message then condition, abort with that message if false). A
-      missing message is synthesized as a literal ("Assertion failed")
-      at parse time, so codegen/the VM never handle a "no message" case
-      separately — see [docs/LANGUAGE.md](LANGUAGE.md#assert).
-- [ ] User-level error/warning built-ins, distinct from the VM's internal
-      recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
-- [ ] Some form of try/except/retry that exposes that same
-      recoverable-error mechanism to Pascal source itself, not just the C
-      host
+- [ ] `read` (as distinct from `readln`) — doesn't consume the trailing
+      newline, letting a caller read several whitespace-separated values
+      that span a line boundary
+- [ ] Multiple targets in one `read`/`readln` call (`readln(a, b, c);`)
+      — currently only a single variable per call is accepted
+- [ ] `eof`/`eoln` — standard predicates for end of input/line; useful
+      against stdin even before real file I/O exists (`while not eof do
+      readln(x);` is a very common idiom this dialect can't express yet)
+- [ ] `program` heading parameters (`program Foo(input, output);`) — pure
+      syntax at the moment (`program Name;` only); lowest priority here,
+      since in virtually every real implementation this list is a no-op
 
 ### Language — procedures/functions & diagnostics
 
-- [ ] Closures (a nested function capturing its enclosing scope)
-- [x] Static (persistent-across-calls) local variables — `static name:
-      type;` reuses the exact "hidden mangled global" trick local arrays
-      already use (which are already implicitly persistent), so every
-      reference resolves to an ordinary global instead of a frame slot.
-      Scalars only (a local array is already persistent by default).
-      Shared correctly across recursive calls; two procedures' own
-      same-named static don't collide (mangled `__static_proc_name`) —
-      see [docs/LANGUAGE.md](LANGUAGE.md#static-local-variables).
+- [ ] General `var` parameters (pass-by-reference for scalars and
+      records, not just arrays) — currently only array parameters are by
+      reference; arguably the single biggest remaining gap versus
+      standard Pascal, since `inc`/`dec` (see
+      [docs/LANGUAGE.md](LANGUAGE.md#built-in-functions-and-procedures))
+      are hand-rolled special cases standing in for the general mechanism
+- [ ] Nested procedure/function declarations — a procedure/function
+      declared inside another one, with lexical access to the enclosing
+      procedure's own locals; not supported in any form yet (only
+      top-level declarations are). Distinct from Closures (Phase 2, non-
+      standard): plain lexical nesting doesn't let the nested
+      procedure/function escape/outlive its enclosing call, so it needs
+      none of closures' capture machinery
+- [ ] Functional/procedural parameters — passing a function or procedure
+      as a formal parameter (`function Apply(function f(n: integer):
+      integer; v: integer): integer;`), standard ISO 7185 Pascal's inline
+      form. Distinct from Procedural types (Phase 2, non-standard): this
+      needs no named, storable "pointer to a function" type — just the
+      parameter written out inline, same as any other formal parameter
 - [ ] Uninitialized-variable warning pass
 
 ### VM / bytecode
@@ -169,16 +181,69 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ## Phase 2 — Object-oriented Pascal + general OOP support in the VM
 
-Once Phase 1 is done: grow Pascal into an object-oriented dialect
-(classes/objects, most likely early binding only to start), and grow
-SolVM/`solas` to support OOP constructs generally rather than
+Once Phase 1 is done: grow Pascal into an object-oriented dialect, and
+grow SolVM/`solas` to support OOP constructs generally rather than
 Pascal-specifically, so later front ends can share the same bytecode
-primitives instead of each reinventing them. Also under this phase:
+primitives instead of each reinventing them.
 
-- Possibly add C-style `enum`/`union` concepts alongside Pascal's own
-  enumerated types
-- Units/modules and an `uses`-style include/import mechanism
-- Possibly a linker for separately-compiled object-style units (`.obj`)
+- [ ] Classes and instances (fields + methods), most likely early/static
+      binding only to start
+- [ ] Possibly add C-style `enum`/`union` concepts alongside Pascal's own
+      enumerated types
+- [ ] Units/modules and an `uses`-style include/import mechanism
+- [ ] Possibly a linker for separately-compiled object-style units (`.obj`)
+
+### Language extensions beyond standard Pascal
+
+Moved here from Phase 1: none of these are part of Wirth/ISO 7185
+Pascal, so they don't belong on the Wirth-compatibility checklist even
+though a few are already implemented — Phase 1 stays scoped to standard
+Pascal only, and picks up general OOP/VM growth once Phase 2 starts
+anyway, so this is where they land instead.
+
+- [x] Record comparison (`=`, `<>`) — desugars at parse time into a
+      field-by-field `and`-chain of ordinary comparisons (same "a record
+      isn't one runtime value" philosophy whole-record assignment
+      already uses), so it needed no new opcodes either. Rejects
+      different record types and records with an array field (whole-
+      array comparison isn't supported) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#record-comparison). (Standard Pascal
+      doesn't permit comparing structured types with `=`/`<>` at all.)
+- [ ] Dynamic arrays (array `copy`/slicing) — standard Pascal arrays are
+      always fixed-size
+- [x] `assert` — `assert(cond)` / `assert(cond, message)`, a new
+      NODE_ASSERT AST node compiling to a single new opcode (`OP_ASSERT`,
+      pop message then condition, abort with that message if false). A
+      missing message is synthesized as a literal ("Assertion failed")
+      at parse time, so codegen/the VM never handle a "no message" case
+      separately — see [docs/LANGUAGE.md](LANGUAGE.md#assert).
+- [ ] User-level error/warning built-ins, distinct from the VM's internal
+      recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
+- [ ] Some form of try/except/retry that exposes that same
+      recoverable-error mechanism to Pascal source itself, not just the C
+      host
+- [ ] Closures (a nested function capturing its enclosing scope) —
+      standard Pascal allows nested procedures with lexical scoping, but
+      not one that escapes/outlives its enclosing call
+- [ ] Procedural types / function pointers — a variable, parameter, or
+      field that holds a reference to a procedure or function, matching
+      Turbo Pascal's `type TProc = procedure(x: integer);` (standard
+      Pascal only allows a procedure/function as a formal parameter
+      inline, not as a named, storable type - see Functional/procedural
+      parameters in Phase 1 for that standard form, which needs none of
+      this)
+- [ ] Functions/procedures as return values — a function returning a
+      reference to another function/procedure; needs procedural types
+      above (standard Pascal restricts a function's return type to a
+      simple ordinal/real type, so this itself is non-standard too)
+- [x] Static (persistent-across-calls) local variables — `static name:
+      type;` reuses the exact "hidden mangled global" trick local arrays
+      already use (which are already implicitly persistent), so every
+      reference resolves to an ordinary global instead of a frame slot.
+      Scalars only (a local array is already persistent by default).
+      Shared correctly across recursive calls; two procedures' own
+      same-named static don't collide (mangled `__static_proc_name`) —
+      see [docs/LANGUAGE.md](LANGUAGE.md#static-local-variables).
 
 ## Phase 3 — Additional front ends
 
@@ -189,7 +254,10 @@ whatever's useful, with OOP support of its own.
 
 Further out and more speculative, roughly in order of interest: **Logo**,
 **Prolog**, **LISP**, **Smalltalk**, and possibly a **C** front end
-(`.c`/`.h`).
+(`.c`/`.h`). Prolog is the intended home for a rules engine in the
+classic sense — forward/backward-chaining inference over facts and
+rules, with unification — rather than bolting that machinery onto Pascal
+or Phoenix.
 
 ## Phase 4 — Phoenix (an original language)
 
@@ -198,6 +266,13 @@ Eventually, a language of this project's own design — tentatively named
 features: a GUI, lightweight database handling, networking, and
 token/syntax/rule parsing support built into the language itself (rather
 than bolted on as a library).
+
+Language-level features under consideration, beyond whatever Pascal
+itself will already provide by this point — not part of any Pascal
+dialect, so tracked here rather than against Phase 1/2:
+
+- [ ] Tuples
+- [ ] Lambda expressions (anonymous functions with closure capture)
 
 ## Ideas / not yet scheduled
 
