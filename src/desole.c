@@ -119,6 +119,9 @@ static const char *opcode_name(Opcode op) {
         case OP_ASSERT: return "assert";
         case OP_LOAD_IDX2D_DYN:  return "load_idx2d_dyn";
         case OP_STORE_IDX2D_DYN: return "store_idx2d_dyn";
+        case OP_PUSH_LOCAL_REF: return "push_local_ref";
+        case OP_LOAD_REF:  return "load_ref";
+        case OP_STORE_REF: return "store_ref";
         default:       return NULL;
     }
 }
@@ -159,7 +162,7 @@ static int is_var_ref(Opcode op) {
 // PUSH's literal is; neither refers to anything named.
 static int is_immediate(Opcode op) {
     return op == OP_PUSH || op == OP_ENTER || op == OP_LOAD_LOCAL || op == OP_STORE_LOCAL
-        || op == OP_CHECK_LOWER || op == OP_CHECK_UPPER;
+        || op == OP_CHECK_LOWER || op == OP_CHECK_UPPER || op == OP_PUSH_LOCAL_REF;
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index

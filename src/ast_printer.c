@@ -296,6 +296,28 @@ void print_ast(ASTNode *node, int indent) {
             break;
         }
 
+        case NODE_VAR_REF:
+            printf("[Var Ref] -> Variable: %s\n", sym_table[node->data.var_idx].name);
+            break;
+
+        case NODE_LOCAL_VAR_REF:
+            printf("[Local Var Ref] slot %d\n", node->data.var_idx);
+            break;
+
+        case NODE_VAR_PARAM_READ:
+            printf("[Var Param Read] slot %d\n", node->data.var_idx);
+            break;
+
+        case NODE_VAR_PARAM_ASSIGN:
+            printf("[Var Param Assignment] -> slot %d\n", node->data.var_idx);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->left, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_BREAK:
             printf("[Break]\n");
             if (node->next) {

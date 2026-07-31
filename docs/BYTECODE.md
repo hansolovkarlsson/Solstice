@@ -170,6 +170,9 @@ corruption.
 | `LOAD_LOCAL` | `arg` = a slot index relative to `fp`. Push `vm_frame_stack[fp + arg]`. |
 | `STORE_LOCAL` | `arg` = a slot index relative to `fp`. Pop a value; store it at `vm_frame_stack[fp + arg]`. |
 | `POP` | Pop a value and discard it. Used when a function is called as a statement (its return value unwanted) rather than as part of an expression - the value is still pushed like any function's, but nothing consumes it, so this discards it explicitly rather than leaving the operand stack unbalanced. |
+| `PUSH_LOCAL_REF` | `arg` = a slot index relative to the CURRENT `fp` (the caller, about to pass one of its own locals/parameters as a `var` argument - see `param_is_var` in `common.h`). Push `-(fp + arg + 1)` - the absolute `vm_frame_stack[]` index of that slot, encoded as a negative int so `LOAD_REF`/`STORE_REF` below can tell it apart from a global's (non-negative) `sym_table[]` index. Safe without any extra liveness tracking: this reference is only ever created right before a `CALL` and consumed during that one call, never stored anywhere it could outlive the frame it points into. |
+| `LOAD_REF` | Pop a reference (from `PUSH_LOCAL_REF` above, or a plain compile-time `PUSH` of a global's `sym_table[]` index - a `var` argument that's already a global needs no opcode of its own for this). Push `vm_vars[ref]` if `ref >= 0`, else `vm_frame_stack[-(ref + 1)]`. |
+| `STORE_REF` | Pop a value, then a reference (same encoding as `LOAD_REF`, same push order `STORE_IDX_DYN` already uses: reference pushed first/deepest, value pushed last/on top). Store the value through it, using the same `ref >= 0` / `ref < 0` dispatch as `LOAD_REF`. |
 
 See [Procedures: CALL, RET, and stack frames](#procedures-call-ret-and-stack-frames) below for the full picture, including why `CALL` needs to save more than just a return address.
 

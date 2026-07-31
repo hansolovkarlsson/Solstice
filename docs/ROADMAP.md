@@ -160,12 +160,33 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ### Language — procedures/functions & diagnostics
 
-- [ ] General `var` parameters (pass-by-reference for scalars and
-      records, not just arrays) — currently only array parameters are by
-      reference; arguably the single biggest remaining gap versus
-      standard Pascal, since `inc`/`dec` (see
-      [docs/LANGUAGE.md](LANGUAGE.md#built-in-functions-and-procedures))
-      are hand-rolled special cases standing in for the general mechanism
+- [x] General `var` parameters, for scalars (integer/real/boolean/char/
+      string/enum/subrange) — a record FIELD works too (global or local,
+      or a `with`-target's); a whole record or an array element as a
+      `var` argument is a known gap, tracked separately below. A
+      reference is a single int: >= 0 is a global's sym_table[] index
+      (compile-time-constant, reusing the same "just PUSH it" trick
+      NODE_ARRAY_REF already uses for array arguments), < 0 is
+      `-(index + 1)`, an ABSOLUTE `vm_frame_stack[]` index of one of the
+      CALLER's own local/parameter slots, computed at the call site via a
+      new opcode (`PUSH_LOCAL_REF`) using the caller's own frame pointer -
+      only known at runtime, unlike a global's fixed index. Two more new
+      opcodes (`LOAD_REF`/`STORE_REF`) dereference either kind uniformly,
+      letting one calling convention (one stack value per `var` argument,
+      exactly like every other parameter kind) reach both of this VM's
+      separate storage regions without widening it. Forwarding an
+      already-`var` parameter through to another call needs no new
+      opcode at all - its raw frame-slot value already IS a valid
+      reference, so an ordinary local read passes it through unchanged.
+      Found and fixed a real dead-code-elimination bug along the way: a
+      global passed ONLY as a `var` argument (never read directly) was
+      being wrongly treated as unused and its assignment stripped -
+      exactly the same class of bug NODE_ARRAY_REF was already kept
+      distinct from `NODE_NUMBER` to avoid, just missed for this new node
+      type at first. Known gaps: whole records and array elements as
+      `var` arguments, `readln` into a `var` parameter, and a `var`
+      parameter as a `for` loop counter — see
+      [docs/LANGUAGE.md](LANGUAGE.md#var-parameters).
 - [ ] Nested procedure/function declarations — a procedure/function
       declared inside another one, with lexical access to the enclosing
       procedure's own locals; not supported in any form yet (only

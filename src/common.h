@@ -411,7 +411,7 @@ typedef enum {
                   // a VM Runtime Error using that message if the
                   // condition is 0; otherwise a no-op, same as
                   // CHECK_LOWER/CHECK_UPPER above.
-    OP_LOAD_IDX2D_DYN, OP_STORE_IDX2D_DYN // Same as LOAD_IDX2D/
+    OP_LOAD_IDX2D_DYN, OP_STORE_IDX2D_DYN, // Same as LOAD_IDX2D/
                   // STORE_IDX2D, but *which* array is also popped from
                   // the stack instead of coming from arg - needed for 2D
                   // array parameters, since different calls can pass
@@ -422,6 +422,37 @@ typedef enum {
                   // against its own dimension; push the element.
                   // STORE_IDX2D_DYN: pop value, j, i, then a runtime
                   // array reference; bounds-check; store.
+    OP_PUSH_LOCAL_REF, // Support for general 'var' (by-reference) scalar
+                  // parameters - see the long comment above ProcSymbol's
+                  // param_is_var field for the full design. arg = a
+                  // frame-relative local slot number, of the CURRENTLY
+                  // EXECUTING frame (the CALLER, about to pass one of its
+                  // own locals/parameters as a 'var' argument). Resolves
+                  // that slot to its absolute vm_frame_stack[] index
+                  // (via vm_local_index(), using the current fp - only
+                  // known at runtime, unlike a global's fixed sym_table[]
+                  // index) and pushes it ENCODED as a negative int:
+                  // -(absolute_index + 1). That encoding is what lets
+                  // OP_LOAD_REF/OP_STORE_REF below tell "this reference
+                  // is a local frame slot" (negative) apart from "this
+                  // reference is a global's sym_table[] index" (zero or
+                  // positive - see NODE_VAR_REF, which pushes one of
+                  // those directly via a plain OP_PUSH, needing no
+                  // opcode of its own). Safe without an extra liveness
+                  // check: a reference is only ever created right before
+                  // a CALL and consumed during that one call's execution,
+                  // never stored anywhere it could outlive the frame it
+                  // points into (ordinary call/return discipline keeps
+                  // the caller's frame allocated for exactly that long).
+    OP_LOAD_REF,  // Pop a reference (as produced by OP_PUSH_LOCAL_REF, or
+                  // a plain compile-time PUSH of a global's sym_table[]
+                  // index - see NODE_VAR_REF); push the value it refers
+                  // to: vm_vars[ref] if ref >= 0, else
+                  // vm_frame_stack[-(ref + 1)].
+    OP_STORE_REF  // Pop a value, then a reference (same encoding as
+                  // OP_LOAD_REF, and the same push order OP_STORE_IDX_DYN
+                  // already uses: reference pushed first/deepest, value
+                  // pushed last/on top); store the value through it.
 } Opcode;
 
 typedef struct {
@@ -616,12 +647,52 @@ typedef enum {
                        // codegen only when extra is NULL, reusing
                        // OP_ASSERT itself (an unconditional false
                        // condition) rather than needing a new opcode.
-    NODE_CASE_ARM      // One 'label1, label2: statement' arm of a
+    NODE_CASE_ARM,     // One 'label1, label2: statement' arm of a
                        // NODE_CASE. left = head of that arm's case-label-
                        // value chain (leaf nodes - NODE_NUMBER/
                        // NODE_STRING/NODE_BOOLEAN - each already carrying
                        // its own expression_type, chained via ->next).
                        // right = the arm's statement.
+    NODE_VAR_REF,      // A 'var' argument that resolves to a GLOBAL
+                       // scalar (or a static local, or a global record's
+                       // field - all of which ARE a global under the
+                       // hood): pushes that global's sym_table[] index as
+                       // a compile-time-known literal - the reference
+                       // value itself. data.var_idx = the sym_table[]
+                       // index. Codegen-identical to NODE_ARRAY_REF (a
+                       // plain PUSH), but kept as its own type for the
+                       // same reason NODE_ARRAY_REF is: dead-code
+                       // elimination's usage tracking needs to recognize
+                       // this as a genuine use of that global scalar, not
+                       // an arbitrary literal (a NODE_NUMBER) or an array
+                       // use (NODE_ARRAY_REF itself).
+    NODE_LOCAL_VAR_REF, // A 'var' argument that resolves to one of the
+                       // CALLER's own PLAIN local/parameter scalars (or a
+                       // local record's field) - data.var_idx = that
+                       // local's frame-relative slot number. Unlike
+                       // NODE_VAR_REF, this can't be a compile-time
+                       // constant: the actual vm_frame_stack[] index
+                       // depends on the CALLER's frame pointer, only
+                       // known at runtime - see OP_PUSH_LOCAL_REF.
+                       // (Forwarding the caller's OWN 'var' parameter
+                       // through to another call needs neither of these
+                       // two node types - its raw local slot value IS
+                       // already a valid reference, from its own caller,
+                       // so an ordinary NODE_LOCAL_VAR read passes it
+                       // through unchanged.)
+    NODE_VAR_PARAM_READ, // Reads through a 'var' parameter, inside the
+                       // procedure that declared it. data.var_idx = the
+                       // parameter's own local frame slot, which holds
+                       // an ENCODED REFERENCE (from one of the two node
+                       // types above, or a forwarded one), not the value
+                       // itself.
+    NODE_VAR_PARAM_ASSIGN // Writes through a 'var' parameter. left =
+                       // value expression. data.var_idx = the parameter's
+                       // own local frame slot (see NODE_VAR_PARAM_READ).
+                       // expression_type = the target's declared type -
+                       // needed for the same reason NODE_LOCAL_ASSIGN
+                       // needs it (type_checker.c has no table to look a
+                       // local's type up in later).
 } NodeType;
 
 typedef struct ASTNode {
@@ -717,6 +788,62 @@ typedef struct {
                                     // without needing any visibility
                                     // into parser.c's record-type
                                     // tables.
+    int param_is_var[MAX_PARAMS];  // 1 if this parameter is declared
+                                    // 'var name: type' - general by-
+                                    // reference passing for a SCALAR
+                                    // (integer/real/boolean/char/string/
+                                    // enum/subrange), not just arrays
+                                    // (which are already always by
+                                    // reference, with or without 'var' -
+                                    // see parse_name_group() in parser.c).
+                                    // The argument at each call site must
+                                    // itself be a variable (see
+                                    // parse_var_argument()), never a
+                                    // general expression, and must
+                                    // exactly match this parameter's
+                                    // declared type (no int->real
+                                    // widening, unlike a by-value
+                                    // argument - real Pascal never widens
+                                    // a 'var' argument either). Whole
+                                    // records and array elements aren't
+                                    // supported as 'var' arguments yet.
+                                    // Mutually exclusive with
+                                    // param_is_array_ref/param_is_record -
+                                    // an array parameter is already
+                                    // always by reference regardless of
+                                    // 'var' (which is accepted but has no
+                                    // further effect there), and a record
+                                    // 'var' parameter is rejected as
+                                    // unsupported at parse time.
+                                    //
+                                    // Implementation: the callee gets an
+                                    // ordinary frame slot (via add_local(),
+                                    // exactly like a ANY other parameter)
+                                    // but its value is an ENCODED
+                                    // REFERENCE rather than the value
+                                    // itself - see OP_PUSH_LOCAL_REF/
+                                    // OP_LOAD_REF/OP_STORE_REF in this
+                                    // file and NODE_VAR_REF/
+                                    // NODE_LOCAL_VAR_REF/
+                                    // NODE_VAR_PARAM_READ/
+                                    // NODE_VAR_PARAM_ASSIGN above for the
+                                    // full mechanism. A reference is a
+                                    // single int: >= 0 means "sym_table[]
+                                    // index of a global", < 0 means
+                                    // "-(index + 1), an absolute
+                                    // vm_frame_stack[] index of one of
+                                    // the CALLER's own local/parameter
+                                    // slots" - letting one calling
+                                    // convention (one value pushed per
+                                    // 'var' argument, exactly like every
+                                    // other parameter kind) reach either
+                                    // of this VM's two separate storage
+                                    // regions (vm_vars[] for globals,
+                                    // vm_frame_stack[] for locals),
+                                    // without needing a second,
+                                    // synchronized stack value or
+                                    // widening the calling convention
+                                    // itself.
     int is_forward;                // 1 while forward-declared but not yet
                                     // completed; 0 once a real body exists
                                     // (or if it was never forward at all)

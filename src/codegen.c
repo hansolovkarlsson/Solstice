@@ -801,6 +801,26 @@ void generate_code(ASTNode *node) {
             // this case exists only to satisfy -Wswitch's exhaustiveness
             // check.
             break;
+
+        case NODE_VAR_REF:
+            emit(OP_PUSH, node->data.var_idx);
+            break;
+
+        case NODE_LOCAL_VAR_REF:
+            emit(OP_PUSH_LOCAL_REF, node->data.var_idx);
+            break;
+
+        case NODE_VAR_PARAM_READ:
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the reference
+            emit(OP_LOAD_REF, 0);
+            break;
+
+        case NODE_VAR_PARAM_ASSIGN:
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the reference
+            generate_code(node->left);                // the value
+            emit(OP_STORE_REF, 0);
+            generate_code(node->next);
+            break;
     }
 }
 

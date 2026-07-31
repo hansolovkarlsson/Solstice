@@ -1341,7 +1341,8 @@ end.
   semicolon-separated between groups:
   `procedure foo(a, b: integer; flag: boolean);`. Passed by value —
   modifying a parameter inside the procedure never affects the caller's
-  argument.
+  argument — unless it's declared `var`, which passes it by reference
+  instead; see [`var` parameters](#var-parameters) below.
 - **Local variables** use an ordinary `var` section, placed after the
   parameter list and before `begin`:
   `procedure foo(x: integer); var temp: integer; begin ... end;`
@@ -1409,6 +1410,74 @@ end.
 - Works everywhere an ordinary scalar local does: `inc`/`dec`, `readln`,
   a `for` loop counter, and a [subrange](#subrange-types)-typed static
   is bounds-checked exactly like any other subrange-typed storage.
+
+### `var` parameters
+
+```pascal
+procedure inc10(var x: integer);
+begin
+    x := x + 10;
+end;
+
+procedure swap(var a, b: integer);
+var
+    temp: integer;
+begin
+    temp := a;
+    a := b;
+    b := temp;
+end;
+
+var
+    n: integer;
+    p, q: integer;
+begin
+    n := 5;
+    inc10(n);
+    writeln(n);      { 15 }
+
+    p := 1;
+    q := 2;
+    swap(p, q);
+    writeln(p, ' ', q);  { 2 1 }
+end.
+```
+
+`var name: type` in a parameter list passes that parameter **by
+reference** — assigning to it inside the procedure writes straight
+through to the caller's own variable, instead of a private copy. This is
+the general mechanism real Pascal's `inc`/`dec` are built on; in this
+compiler `inc`/`dec` still desugar directly to `x := x + 1` rather than
+routing through it (see
+[Built-in functions and procedures](#built-in-functions-and-procedures)),
+but a `var` parameter now works everywhere else a real Pascal one would.
+
+- Works for every scalar type: `integer`, `real`, `boolean`, `char`,
+  `string`, an enumerated type, or a subrange (bounds-checked on every
+  write, using the *parameter's* own declared bounds — see
+  [Subrange types](#subrange-types)).
+- **The argument must be a variable** — a global, a local/parameter of
+  the caller, a `static` local, a record field (global or local, or a
+  `with`-target's field), or the caller's own `var` parameter (forwarded
+  straight through, unchanged) — never a general expression like `x +
+  1`, matching real Pascal.
+- **The argument's type must exactly match** the parameter's declared
+  type — unlike a by-value argument, a `var` argument is never
+  automatically widened (an `integer` variable can't be passed to a `var
+  x: real` parameter).
+- `var` mixes freely with ordinary by-value parameters and array
+  parameters in the same parameter list
+  (`procedure foo(a: integer; var b: integer; c: array[1..3] of integer)`).
+- Writing `var` before an **array** parameter is accepted but redundant —
+  an array parameter is already always by reference (see
+  [Array parameters and local arrays](#array-parameters-and-local-arrays)),
+  with or without it.
+- **Not supported yet**: a whole **record** as a `var` parameter (a
+  record *field* works fine, though — see the example above), an
+  **array element** as a `var` argument (`swap(arr[1], arr[2])`), `readln`
+  into a `var` parameter, and using a `var` parameter as a `for` loop's
+  counter. Each is a clear compile-time error rather than a silent wrong
+  answer.
 
 ### Forward declarations
 

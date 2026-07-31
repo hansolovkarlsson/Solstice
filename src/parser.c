@@ -71,6 +71,16 @@ typedef struct {
     int static_sym_idx;   // only meaningful if is_static: the mangled
                         // global's sym_table[] index - every reference
                         // resolves here instead of a frame slot.
+    int is_var_param;     // 'var name: type' - a general by-reference
+                        // SCALAR parameter (see param_is_var in
+                        // common.h's ProcSymbol for the full design).
+                        // This slot holds an ENCODED REFERENCE, not the
+                        // value itself - every read/write of it must go
+                        // through NODE_VAR_PARAM_READ/ASSIGN (never the
+                        // plain NODE_LOCAL_VAR/ASSIGN every other scalar
+                        // local uses). Mutually exclusive with
+                        // is_array/is_array_ref/is_static (only a plain
+                        // scalar parameter can be a 'var' parameter).
 } LocalSymbol;
 static LocalSymbol current_locals[MAX_LOCALS];
 static int current_local_count = 0;
@@ -751,7 +761,23 @@ static int add_local(const char *name, DataType type) {
     current_locals[current_local_count].subrange_upper = 0;
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
+    current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
+}
+
+// Registers a general by-reference SCALAR parameter ('var name: type').
+// Just an ordinary local slot (like every other parameter) - it holds an
+// ENCODED REFERENCE, not the value itself, so every access must go
+// through NODE_VAR_PARAM_READ/ASSIGN instead of the plain
+// NODE_LOCAL_VAR/ASSIGN a by-value scalar parameter would use. See
+// param_is_var's comment in common.h for the full design.
+static int add_local_var_param(const char *name, DataType type, int is_subrange, int subrange_lower, int subrange_upper) {
+    int idx = add_local(name, type);
+    current_locals[idx].is_var_param = 1;
+    current_locals[idx].is_subrange = is_subrange;
+    current_locals[idx].subrange_lower = subrange_lower;
+    current_locals[idx].subrange_upper = subrange_upper;
+    return idx;
 }
 
 // Registers a by-reference array parameter. Just an ordinary local slot
@@ -816,6 +842,7 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     current_locals[current_local_count].subrange_upper = 0;
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
+    current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
 
@@ -1296,6 +1323,134 @@ static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **o
     return head; // NULL only for a (degenerate) empty record type
 }
 
+// Parses an argument for a general 'var' (by-reference SCALAR) parameter
+// (param_index into proc_idx's declared parameter list) - see
+// param_is_var in common.h's ProcSymbol for the full design. Real Pascal
+// restricts a 'var' argument to a VARIABLE, never a general expression,
+// so - like parse_record_argument() and parse_array_ref_argument() - this
+// resolves a bare identifier (plus an optional '.field') directly, rather
+// than calling expression(). Requires an EXACT type match with the
+// parameter's declared type (no int->real widening - real Pascal never
+// widens a 'var' argument either, unlike a by-value one).
+//
+// Builds whichever reference-producing node fits:
+//   - a with-target's field, a global variable, a static local (itself a
+//     hidden global), or a global record's field -> NODE_VAR_REF (a
+//     compile-time-constant sym_table[] index)
+//   - the caller's own PLAIN local/parameter, or a local record's field
+//     -> NODE_LOCAL_VAR_REF (computed at runtime from the CALLER's own
+//     frame pointer - see OP_PUSH_LOCAL_REF in vm.c)
+//   - the caller's own 'var' parameter, forwarded through unchanged -> an
+//     ordinary NODE_LOCAL_VAR read (its raw value IS already a valid
+//     reference, from its own caller - nothing to re-encode)
+// Whole records and array elements aren't accepted yet (see
+// param_is_var's comment in common.h) - both rejected here with a clear
+// error, as known gaps rather than a silent wrong answer.
+static ASTNode *parse_var_argument(int proc_idx, int param_index) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Parameter %d of '%s' is a 'var' parameter - expects a variable, not an expression",
+                       param_index + 1, proc_table[proc_idx].name);
+    }
+    char name[MAX_NAME];
+    int line = token.line;
+    strcpy(name, token.text);
+
+    DataType expected_type = proc_table[proc_idx].param_types[param_index];
+
+    int with_field_idx = find_with_field(name);
+    if (with_field_idx != -1) {
+        match(TOKEN_IDENTIFIER);
+        if (sym_table[with_field_idx].type != expected_type) {
+            compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
+                           name, param_index + 1, proc_table[proc_idx].name);
+        }
+        ASTNode *node = create_node(NODE_VAR_REF);
+        node->data.var_idx = with_field_idx;
+        node->expression_type = expected_type;
+        return node;
+    }
+
+    {
+        int rv_is_local, rv_record_type_idx;
+        const int *rv_field_idx;
+        if (find_any_record_var(name, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            match(TOKEN_IDENTIFIER);
+            if (token.type != TOKEN_PERIOD) {
+                compile_error(token.line, "'%s' is a record - 'var' expects a field, e.g. '%s.field' (whole records aren't supported as 'var' arguments yet)",
+                               name, name);
+            }
+            match(TOKEN_PERIOD);
+            if (token.type != TOKEN_IDENTIFIER) {
+                compile_error(token.line, "Expected a field name after '%s.'", name);
+            }
+            int field_idx = find_record_field(rv_record_type_idx, token.text);
+            if (field_idx == -1) {
+                compile_error(token.line, "'%s' is not a field of '%s'", token.text, name);
+            }
+            int resolved_idx = rv_field_idx[field_idx];
+            match(TOKEN_IDENTIFIER);
+            DataType field_type = rv_is_local ? current_locals[resolved_idx].type : sym_table[resolved_idx].type;
+            if (field_type != expected_type) {
+                compile_error(line, "'var' argument does not match parameter %d of '%s' (wrong type)",
+                               param_index + 1, proc_table[proc_idx].name);
+            }
+            ASTNode *node = create_node(rv_is_local ? NODE_LOCAL_VAR_REF : NODE_VAR_REF);
+            node->data.var_idx = resolved_idx;
+            node->expression_type = expected_type;
+            return node;
+        }
+    }
+
+    int local_idx = find_local(name);
+    if (local_idx != -1) {
+        if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
+            compile_error(line, "'%s' is an array - array elements aren't supported as 'var' arguments yet (an array itself is already always by reference, without needing 'var')", name);
+        }
+        match(TOKEN_IDENTIFIER);
+        if (current_locals[local_idx].is_static) {
+            int static_idx = current_locals[local_idx].static_sym_idx;
+            if (sym_table[static_idx].type != expected_type) {
+                compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
+                               name, param_index + 1, proc_table[proc_idx].name);
+            }
+            ASTNode *node = create_node(NODE_VAR_REF);
+            node->data.var_idx = static_idx;
+            node->expression_type = expected_type;
+            return node;
+        }
+        if (current_locals[local_idx].type != expected_type) {
+            compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
+                           name, param_index + 1, proc_table[proc_idx].name);
+        }
+        if (current_locals[local_idx].is_var_param) {
+            // Forwarding: this slot already holds a valid reference (from
+            // this procedure's OWN caller) - pass it through unchanged.
+            ASTNode *node = create_node(NODE_LOCAL_VAR);
+            node->data.var_idx = local_idx;
+            node->expression_type = expected_type;
+            return node;
+        }
+        ASTNode *node = create_node(NODE_LOCAL_VAR_REF);
+        node->data.var_idx = local_idx;
+        node->expression_type = expected_type;
+        return node;
+    }
+
+    int global_idx = find_var(name);
+    match(TOKEN_IDENTIFIER);
+    if (sym_table[global_idx].is_array) {
+        compile_error(line, "'%s' is an array - array elements aren't supported as 'var' arguments yet (an array itself is already always by reference, without needing 'var')", name);
+    }
+    if (sym_table[global_idx].type != expected_type) {
+        compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
+                       name, param_index + 1, proc_table[proc_idx].name);
+    }
+    ASTNode *node = create_node(NODE_VAR_REF);
+    node->data.var_idx = global_idx;
+    node->expression_type = expected_type;
+    return node;
+}
+
 static ASTNode *parse_call_arguments(int proc_idx) {
     ASTNode *arg_head = NULL;
     ASTNode *arg_tail = NULL;
@@ -1311,6 +1466,9 @@ static ASTNode *parse_call_arguments(int proc_idx) {
                     this_tail = arg;
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_record[arg_count]) {
                     arg = parse_record_argument(proc_idx, arg_count, &this_tail);
+                } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_var[arg_count]) {
+                    arg = parse_var_argument(proc_idx, arg_count);
+                    this_tail = arg;
                 } else if (arg_count < proc_table[proc_idx].param_count) {
                     arg = wrap_range_check(expression(), proc_table[proc_idx].param_is_subrange[arg_count],
                         proc_table[proc_idx].param_subrange_lower[arg_count], proc_table[proc_idx].param_subrange_upper[arg_count]);
@@ -1778,6 +1936,19 @@ static ASTNode *factor(void) {
 
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_var_param) {
+                match(TOKEN_IDENTIFIER);
+                if ((current_locals[local_idx].type == TYPE_STRING || current_locals[local_idx].type == TYPE_CHAR)
+                    && token.type == TOKEN_LBRACKET) {
+                    compile_error(token.line, "Indexing a 'var' parameter's string/char value ('%s[i]') is not supported yet - only the whole value can be read/written through it",
+                                   current_locals[local_idx].name);
+                }
+                ASTNode *node = create_node(NODE_VAR_PARAM_READ);
+                node->line = line;
+                node->data.var_idx = local_idx;
+                node->expression_type = current_locals[local_idx].type;
+                return node;
+            }
             if (current_locals[local_idx].is_static) {
                 match(TOKEN_IDENTIFIER);
                 return parse_global_symbol_reference(current_locals[local_idx].static_sym_idx, line);
@@ -2379,6 +2550,10 @@ static void subroutine_declaration(int is_function_decl) {
                                      proc_table[proc_idx].param_subrange_upper[i]);
             } else if (proc_table[proc_idx].param_is_record[i]) {
                 add_local_record(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_record_type_idx[i]);
+            } else if (proc_table[proc_idx].param_is_var[i]) {
+                add_local_var_param(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i],
+                                     proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
+                                     proc_table[proc_idx].param_subrange_upper[i]);
             } else {
                 int idx = add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
                 current_locals[idx].is_subrange = proc_table[proc_idx].param_is_subrange[i];
@@ -2405,22 +2580,42 @@ static void subroutine_declaration(int is_function_decl) {
         int param_is_record[MAX_PARAMS];
         int param_record_type_idx[MAX_PARAMS];
         int param_record_field_count[MAX_PARAMS];
+        int param_is_var[MAX_PARAMS];
 
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
             if (token.type != TOKEN_RPAREN) {
                 while (1) {
+                    // 'var' is a per-group modifier here (inside the
+                    // parameter list), unlike the 'var' KEYWORD that
+                    // introduces the whole local-variable SECTION below -
+                    // same token, different grammar position, so this
+                    // check only fires here, once per semicolon-separated
+                    // parameter group.
+                    int is_var_group = 0;
+                    if (token.type == TOKEN_VAR) {
+                        is_var_group = 1;
+                        match(TOKEN_VAR);
+                    }
                     NameGroup g = parse_name_group();
                     for (int i = 0; i < g.count; i++) {
                         if (param_count >= MAX_PARAMS) {
                             compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
                         }
+                        if (is_var_group && g.is_record) {
+                            compile_error(token.line, "'var' doesn't support whole records yet - only a scalar 'var' parameter is supported (see docs/LANGUAGE.md)");
+                        }
                         if (g.is_array) {
+                            // 'var' on an array parameter is accepted but
+                            // redundant - an array parameter is already
+                            // always by reference, with or without it.
                             add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper,
                                                  g.is_2d, g.array_lower2, g.array_upper2,
                                                  g.is_subrange, g.subrange_lower, g.subrange_upper);
                         } else if (g.is_record) {
                             add_local_record(g.names[i], g.record_type_idx);
+                        } else if (is_var_group) {
+                            add_local_var_param(g.names[i], g.type, g.is_subrange, g.subrange_lower, g.subrange_upper);
                         } else {
                             int idx = add_local(g.names[i], g.type);
                             current_locals[idx].is_subrange = g.is_subrange;
@@ -2441,6 +2636,7 @@ static void subroutine_declaration(int is_function_decl) {
                         param_is_record[param_count] = g.is_record;
                         param_record_type_idx[param_count] = g.record_type_idx;
                         param_record_field_count[param_count] = g.is_record ? record_types[g.record_type_idx].field_count : 0;
+                        param_is_var[param_count] = is_var_group;
                         param_count++;
                     }
                     if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -2476,6 +2672,7 @@ static void subroutine_declaration(int is_function_decl) {
             proc_table[proc_idx].param_is_record[i] = param_is_record[i];
             proc_table[proc_idx].param_record_type_idx[i] = param_record_type_idx[i];
             proc_table[proc_idx].param_record_field_count[i] = param_record_field_count[i];
+            proc_table[proc_idx].param_is_var[i] = param_is_var[i];
         }
 
         proc_table[proc_idx].is_function = is_function_decl;
@@ -2766,6 +2963,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
 
     int local_idx = -1;
     int is_local = 0;
+    int is_var_param = 0;
     int global_idx = -1;
     DataType target_type;
     int target_is_subrange = 0, target_subrange_lower = 0, target_subrange_upper = 0;
@@ -2836,6 +3034,11 @@ static ASTNode *parse_inc_dec(TokenType kind) {
             target_is_subrange = current_locals[local_idx].is_subrange;
             target_subrange_lower = current_locals[local_idx].subrange_lower;
             target_subrange_upper = current_locals[local_idx].subrange_upper;
+            // is_var_param is set below, after target_type's own integer
+            // check - a 'var' parameter's read/write node kind is decided
+            // separately from is_local (see the read_node/write_node
+            // construction below), but the type/subrange info above is
+            // identical either way.
         } else {
             global_idx = find_var(name);
             if (sym_table[global_idx].is_array) {
@@ -2850,6 +3053,9 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     if (target_type != TYPE_INTEGER) {
         compile_error(line, "'%s' only supports integer variables", name_str);
     }
+    if (is_local && current_locals[local_idx].is_var_param) {
+        is_var_param = 1;
+    }
 
     ASTNode *delta;
     if (token.type == TOKEN_COMMA) {
@@ -2863,7 +3069,11 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     match(TOKEN_RPAREN);
 
     ASTNode *read_node;
-    if (is_local) {
+    if (is_var_param) {
+        read_node = create_node(NODE_VAR_PARAM_READ);
+        read_node->data.var_idx = local_idx;
+        read_node->expression_type = TYPE_INTEGER;
+    } else if (is_local) {
         read_node = create_node(NODE_LOCAL_VAR);
         read_node->data.var_idx = local_idx;
         read_node->expression_type = TYPE_INTEGER;
@@ -2879,7 +3089,11 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     value_node->right = delta;
 
     ASTNode *write_node;
-    if (is_local) {
+    if (is_var_param) {
+        write_node = create_node(NODE_VAR_PARAM_ASSIGN);
+        write_node->data.var_idx = local_idx;
+        write_node->expression_type = TYPE_INTEGER;
+    } else if (is_local) {
         write_node = create_node(NODE_LOCAL_ASSIGN);
         write_node->data.var_idx = local_idx;
         write_node->expression_type = TYPE_INTEGER;
@@ -3153,6 +3367,16 @@ static ASTNode *statement(void) {
 
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_var_param) {
+                match(TOKEN_IDENTIFIER);
+                match(TOKEN_ASSIGN);
+                ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);
+                stmt->data.var_idx = local_idx;
+                stmt->expression_type = current_locals[local_idx].type;
+                stmt->left = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
+                    current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
+                return stmt;
+            }
             if (current_locals[local_idx].is_static) {
                 match(TOKEN_IDENTIFIER);
                 return parse_global_assignment(current_locals[local_idx].static_sym_idx);
@@ -3369,6 +3593,9 @@ static ASTNode *statement(void) {
         }
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
+            if (current_locals[local_idx].is_var_param) {
+                compile_error(token.line, "readln into a 'var' parameter is not supported yet - readln into a plain local/global instead, then assign it through the parameter");
+            }
             if (current_locals[local_idx].is_static) {
                 match(TOKEN_IDENTIFIER);
                 int static_idx = current_locals[local_idx].static_sym_idx;
@@ -3497,6 +3724,9 @@ static ASTNode *statement(void) {
             return stmt;
         }
         int local_idx = find_local(token.text);
+        if (local_idx != -1 && current_locals[local_idx].is_var_param) {
+            compile_error(token.line, "'for' loop variable can't be a 'var' parameter yet - assign it to a plain local first");
+        }
         if (local_idx != -1 && current_locals[local_idx].is_static) {
             // A static local behaves exactly like a global here - plain
             // storage, no per-call frame to isolate - so this reuses the

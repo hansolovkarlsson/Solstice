@@ -579,6 +579,14 @@ void type_check(ASTNode *node) {
                     }
                     continue;
                 }
+                if (proc->param_is_var[i]) {
+                    // parse_var_argument() already enforces an EXACT type
+                    // match (no widening - real Pascal never widens a
+                    // 'var' argument), so there's nothing left to check;
+                    // just skip the one node it produced.
+                    arg_ptr = &(*arg_ptr)->next;
+                    continue;
+                }
                 DataType expected = proc->param_types[i];
                 DataType actual = (*arg_ptr)->expression_type;
                 if (!(is_string_type(expected) && is_string_type(actual)) && expected != actual

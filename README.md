@@ -232,8 +232,14 @@ Also working: the `case`/`of` statement, a multi-way branch on an
 `integer`/`char`/`boolean`/enumerated value with an optional `else`
 catch-all — no new opcodes here either, reusing the existing comparison/
 jump/assert machinery (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)). Also working: general
+`var` parameters (pass-by-reference for scalars — `integer`/`real`/
+`boolean`/`char`/`string`/enumerated/subrange — and record fields, not
+just arrays), via three new opcodes (`PUSH_LOCAL_REF`/`LOAD_REF`/
+`STORE_REF`) that let one reference value transparently address either a
+global variable or one of the caller's own local/parameter slots (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#var-parameters)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
-(so no array `copy`/slicing), and records as array elements or nested
-records.
+(so no array `copy`/slicing), records as array elements or nested
+records, and a whole record or an array element as a `var` argument.

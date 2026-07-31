@@ -765,6 +765,38 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_PUSH_LOCAL_REF: {
+                int abs_index = vm_local_index(fp, frame_sp, instr.arg);
+                vm_push(&sp, -(abs_index + 1));
+                break;
+            }
+
+            case OP_LOAD_REF: {
+                int ref = vm_pop(&sp);
+                if (ref >= 0) {
+                    vm_push(&sp, vm_vars[vm_var_index(ref)]);
+                } else {
+                    // The bounds check already happened once, in
+                    // OP_PUSH_LOCAL_REF, when this reference was created -
+                    // and the frame it points into is guaranteed still
+                    // live (see OP_PUSH_LOCAL_REF's comment in common.h),
+                    // so a direct index is enough here.
+                    vm_push(&sp, vm_frame_stack[-(ref + 1)]);
+                }
+                break;
+            }
+
+            case OP_STORE_REF: {
+                int val = vm_pop(&sp);
+                int ref = vm_pop(&sp);
+                if (ref >= 0) {
+                    vm_vars[vm_var_index(ref)] = val;
+                } else {
+                    vm_frame_stack[-(ref + 1)] = val;
+                }
+                break;
+            }
+
             case OP_POP:
                 vm_pop(&sp);
                 break;
