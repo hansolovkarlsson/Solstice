@@ -559,11 +559,26 @@ void type_check(ASTNode *node) {
         case NODE_CALL: {
             // Argument count is already guaranteed correct by the parser
             // (it errors immediately at the call site if it doesn't match
-            // proc_table[...].param_count), so this only needs to check types.
+            // proc_table[...].param_count), so this only needs to check
+            // types. Iterates PARAMETERS (param_count), not argument
+            // nodes: a record parameter flattens into N field-value nodes
+            // at parse time (see parse_record_argument() in parser.c), so
+            // node-count and param_count diverge whenever one is present.
             ProcSymbol *proc = &proc_table[node->data.var_idx];
-            int i = 0;
             ASTNode **arg_ptr = &node->left;
-            while (*arg_ptr) {
+            for (int i = 0; i < proc->param_count; i++) {
+                if (proc->param_is_record[i]) {
+                    // The parser only accepts a record argument whose
+                    // record type is IDENTICAL to the parameter's (see
+                    // parse_record_argument()), so every flattened field
+                    // is already guaranteed correctly typed - nothing to
+                    // check. Just skip the N nodes this one syntactic
+                    // parameter produced.
+                    for (int j = 0; j < proc->param_record_field_count[i]; j++) {
+                        arg_ptr = &(*arg_ptr)->next;
+                    }
+                    continue;
+                }
                 DataType expected = proc->param_types[i];
                 DataType actual = (*arg_ptr)->expression_type;
                 if (!(is_string_type(expected) && is_string_type(actual)) && expected != actual
@@ -573,7 +588,6 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 arg_ptr = &(*arg_ptr)->next;
-                i++;
             }
             break;
         }

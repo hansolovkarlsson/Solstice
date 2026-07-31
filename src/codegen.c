@@ -756,10 +756,14 @@ void generate_program(ASTNode *main_body) {
             if (proc_table[i].local_count > 0) {
                 emit(OP_ENTER, proc_table[i].local_count);
             }
-            // Caller pushed arguments left-to-right, so the last one is
-            // on top of the operand stack - pop into the last parameter
-            // slot first, working backwards to slot 0.
-            for (int p = proc_table[i].param_count - 1; p >= 0; p--) {
+            // Caller pushed arguments left-to-right (a record argument as
+            // N flattened field values - see parse_record_argument() in
+            // parser.c), so the last one is on top of the operand stack -
+            // pop into the last parameter SLOT first, working backwards to
+            // slot 0. param_slot_count, not param_count: a record
+            // parameter occupies multiple slots (one per field) but is
+            // still just one syntactic parameter.
+            for (int p = proc_table[i].param_slot_count - 1; p >= 0; p--) {
                 emit(OP_STORE_LOCAL, p);
             }
             generate_code(proc_table[i].body);

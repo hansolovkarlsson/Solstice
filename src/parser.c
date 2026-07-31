@@ -156,6 +156,29 @@ typedef struct {
 static RecordVarDef record_vars[MAX_RECORD_VARS];
 static int record_var_count = 0;
 
+// A record LOCAL or PARAMETER (as opposed to RecordVarDef above, which
+// is always a GLOBAL). Unlike a global record's fields (hidden globals,
+// shared/not per-call-isolated - same as an ordinary global), each
+// field here is an ordinary FRAME SLOT (a current_locals[] index, added
+// via add_local() exactly like N separate scalar locals/parameters
+// would be) - giving a local/parameter record proper per-call
+// isolation, matching every OTHER local/parameter in this language. A
+// record's fields don't need contiguous memory the way an array's
+// elements do, so there's no reason for a local record to inherit
+// local ARRAYS' "shared across every call" limitation - see
+// add_local_record() below. Reset (like current_locals[]) at the start
+// of each procedure's parsing; a local record shadows a global of the
+// same name, checked first everywhere - see find_any_record_var().
+#define MAX_LOCAL_RECORD_VARS 20
+typedef struct {
+    char name[MAX_NAME];
+    int record_type_idx;
+    int field_local_idx[MAX_RECORD_FIELDS]; // current_locals[] index of
+                                // each field, in declared order
+} LocalRecordVarDef;
+static LocalRecordVarDef local_record_vars[MAX_LOCAL_RECORD_VARS];
+static int local_record_var_count = 0;
+
 static int find_record_type(const char *name) {
     for (int i = 0; i < record_type_count; i++) {
         if (strcmp(record_types[i].name, name) == 0) return i;
@@ -247,6 +270,73 @@ static int find_record_var(const char *name) {
         if (strcmp(record_vars[i].name, name) == 0) return i;
     }
     return -1;
+}
+
+// Unified record-variable lookup: checks local_record_vars[] (a
+// local/parameter record - only meaningful while a procedure is
+// currently being parsed) FIRST, then the global record_vars[] -
+// matching how a local shadows a global of the same name everywhere
+// else in this file. On a match, fills *is_local, *record_type_idx,
+// and *field_idx_array (the found entry's own array of per-field
+// indices - current_locals[] indices if *is_local, else sym_table[]
+// indices) and returns 1; returns 0 (touching nothing) if not found in
+// either table.
+static int find_any_record_var(const char *name, int *is_local, int *record_type_idx, const int **field_idx_array) {
+    for (int i = 0; i < local_record_var_count; i++) {
+        if (strcmp(local_record_vars[i].name, name) == 0) {
+            *is_local = 1;
+            *record_type_idx = local_record_vars[i].record_type_idx;
+            *field_idx_array = local_record_vars[i].field_local_idx;
+            return 1;
+        }
+    }
+    int gi = find_record_var(name);
+    if (gi != -1) {
+        *is_local = 0;
+        *record_type_idx = record_vars[gi].record_type_idx;
+        *field_idx_array = record_vars[gi].field_sym_idx;
+        return 1;
+    }
+    return 0;
+}
+
+// Builds an expression node reading one already-resolved record field,
+// given find_any_record_var()'s *is_local output and the field's index
+// into its field_idx_array (a current_locals[] index if is_local, else a
+// sym_table[] index) - the two possible storage locations a record
+// variable's field can live in (see the LocalRecordVarDef/RecordVarDef
+// comments above). Mirrors parse_global_symbol_reference() for the
+// "plain scalar, no further indexing" case, which is the only case a
+// record field can ever need: an array-typed field is rejected by
+// add_local_record() for a local/parameter record, and whole-array
+// GLOBAL record fields aren't read through this helper (they still go
+// through parse_global_symbol_reference(), which knows how to index
+// them).
+static ASTNode *record_field_read_node(int is_local, int field_or_sym_idx) {
+    if (is_local) {
+        ASTNode *node = create_node(NODE_LOCAL_VAR);
+        node->data.var_idx = field_or_sym_idx;
+        node->expression_type = current_locals[field_or_sym_idx].type;
+        return node;
+    }
+    ASTNode *node = create_node(NODE_VARIABLE);
+    node->data.var_idx = field_or_sym_idx;
+    node->expression_type = sym_table[field_or_sym_idx].type;
+    return node;
+}
+
+// Builds an assignment node writing 'value' into one already-resolved
+// record field - the write-side mirror of record_field_read_node() above.
+// NODE_LOCAL_ASSIGN needs its own ->expression_type set explicitly (type_
+// checker.c has no visibility into parser.c's current_locals[] to look it
+// up by index, unlike NODE_ASSIGN, which type_checker.c checks straight
+// against sym_table[]).
+static ASTNode *record_field_assign_node(int is_local, int field_or_sym_idx, ASTNode *value) {
+    ASTNode *node = create_node(is_local ? NODE_LOCAL_ASSIGN : NODE_ASSIGN);
+    node->data.var_idx = field_or_sym_idx;
+    node->left = value;
+    if (is_local) node->expression_type = current_locals[field_or_sym_idx].type;
+    return node;
 }
 
 // -1 if record_types[record_type_idx] has no field with this name.
@@ -625,8 +715,25 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
 }
 
 
+// True if 'name' is already a local/parameter RECORD variable's own name
+// (as opposed to one of its mangled per-field frame slots, which
+// find_local() wouldn't recognize as belonging to 'name' at all - a
+// record variable's own name never becomes a current_locals[] entry by
+// itself). Every OTHER local-registering function (add_local(),
+// add_local_array(), add_static_local()) needs this check too, alongside
+// find_local(), to catch a plain local/array/static colliding with an
+// already-declared record parameter/local of the same name - the mirror
+// image of the check add_local_record() itself already does via
+// find_any_record_var().
+static int local_record_name_collides(const char *name) {
+    for (int i = 0; i < local_record_var_count; i++) {
+        if (strcmp(local_record_vars[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
 static int add_local(const char *name, DataType type) {
-    if (find_local(name) != -1) {
+    if (find_local(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -679,7 +786,7 @@ static int add_local_array_ref(const char *name, DataType elem_type, int lower, 
 static int add_local_array(const char *name, DataType elem_type, int lower, int upper,
                             int is_2d, int lower2, int upper2,
                             int is_subrange, int subrange_lower, int subrange_upper) {
-    if (find_local(name) != -1) {
+    if (find_local(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -724,7 +831,7 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
 // function at all - they're already global-backed by nature.
 static int add_static_local(const char *proc_name, const char *name, DataType type,
                              int is_subrange, int subrange_lower, int subrange_upper) {
-    if (find_local(name) != -1) {
+    if (find_local(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -749,6 +856,50 @@ static int add_static_local(const char *proc_name, const char *name, DataType ty
     current_locals[current_local_count].is_static = 1;
     current_locals[current_local_count].static_sym_idx = sym_idx;
     return current_local_count++;
+}
+
+// Registers a record LOCAL or PARAMETER ('var p: TPoint;' inside a
+// procedure body, or 'procedure foo(p: TPoint)') - see the comment
+// above LocalRecordVarDef for why each field gets its own ordinary
+// frame slot (add_local()) instead of a hidden global. Used for BOTH
+// locals and parameters identically; a parameter's fields additionally
+// get populated by copy-in code at each call site (by value) - see
+// parse_call_arguments()'s record-argument handling.
+static void add_local_record(const char *name, int record_type_idx) {
+    int existing_is_local, existing_record_type_idx;
+    const int *existing_field_idx;
+    if (find_local(name) != -1 || find_any_record_var(name, &existing_is_local, &existing_record_type_idx, &existing_field_idx)) {
+        compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
+    }
+    if (local_record_var_count >= MAX_LOCAL_RECORD_VARS) {
+        compile_error(token.line, "Too many local/parameter record variables (limit is %d)", MAX_LOCAL_RECORD_VARS);
+    }
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    LocalRecordVarDef *rv = &local_record_vars[local_record_var_count];
+    strcpy(rv->name, name);
+    rv->record_type_idx = record_type_idx;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_array) {
+            compile_error(token.line, "Record local/parameter '%s' has an array field '%s' - this compiler doesn't support that yet (see docs/LANGUAGE.md)",
+                          name, f->name);
+        }
+        // "name__fieldname", purely for -v/ast_printer readability - see
+        // add_local()/current_locals[]; unlike a global record's mangled
+        // field, this name is never looked up again (field resolution
+        // goes through LocalRecordVarDef.field_local_idx instead).
+        char mangled[2 * MAX_NAME];
+        if (strlen(name) + 2 + strlen(f->name) >= sizeof(mangled)) {
+            compile_error(token.line, "Record variable/field name '%s.%s' too long", name, f->name);
+        }
+        snprintf(mangled, sizeof(mangled), "%s__%s", name, f->name);
+        int idx = add_local(mangled, f->type);
+        current_locals[idx].is_subrange = f->is_subrange;
+        current_locals[idx].subrange_lower = f->subrange_lower;
+        current_locals[idx].subrange_upper = f->subrange_upper;
+        rv->field_local_idx[i] = idx;
+    }
+    local_record_var_count++;
 }
 
 // Adds a string literal to the pool, reusing an existing slot if the exact
@@ -932,13 +1083,22 @@ typedef struct {
     int is_subrange;      // see the Symbol comment in common.h
     int subrange_lower;
     int subrange_upper;
+    int is_record;         // 1 if this group's type is a record type
+                          // name (mutually exclusive with is_array -
+                          // records as array elements aren't supported
+                          // yet, so parse_scalar_type() below still
+                          // rejects a record type name in that position)
+    int record_type_idx;  // only meaningful if is_record
 } NameGroup;
 
 static NameGroup parse_name_group(void) {
     NameGroup g;
     g.count = 0;
+    g.type = TYPE_INTEGER; // defensive default (see the Symbol comment in common.h) - only meaningful if !is_record
     g.is_array = 0;
     g.is_2d = 0;
+    g.is_record = 0;
+    g.record_type_idx = 0;
     if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
     strcpy(g.names[g.count++], token.text);
     match(TOKEN_IDENTIFIER);
@@ -975,6 +1135,10 @@ static NameGroup parse_name_group(void) {
         match(TOKEN_OF);
         g.type = parse_scalar_type();
         g.is_array = 1;
+    } else if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+        g.record_type_idx = find_record_type(token.text);
+        g.is_record = 1;
+        match(TOKEN_IDENTIFIER);
     } else {
         g.type = parse_scalar_type();
     }
@@ -1081,6 +1245,57 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
     return node;
 }
 
+// Parses a bare record-variable name as an argument for a record
+// parameter (param_index into proc_idx's declared parameter list) - see
+// param_is_record[] in ProcSymbol. Record parameters are always BY
+// VALUE, and this compiler has no by-reference mechanism for scalars at
+// all, so unlike parse_array_ref_argument() there's no "pass a runtime
+// reference" option: this flattens the argument into N field-value read
+// nodes (its own fields, wherever they resolve to - local frame slot or
+// global mangled symbol), one per field of the record TYPE, in declared
+// order, chained via ->next exactly like N separate scalar arguments
+// would be. Each field is individually range-checked against the
+// PARAMETER record type's own field bounds - safe to use the type's
+// declared bounds (rather than re-deriving them some other way) because
+// the caller's record is required to be of the exact same record type,
+// not just a structurally compatible one.
+// Sets *out_tail to the chain's last node (NULL for a zero-field record
+// type), so the caller can splice the whole chain into its own argument
+// list the same way it splices in a single-node argument.
+static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **out_tail) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Parameter %d of '%s' expects a record variable", param_index + 1, proc_table[proc_idx].name);
+    }
+    char arg_name[MAX_NAME];
+    int arg_line = token.line;
+    strcpy(arg_name, token.text);
+    match(TOKEN_IDENTIFIER);
+
+    int arg_is_local, arg_record_type_idx;
+    const int *arg_field_idx;
+    if (!find_any_record_var(arg_name, &arg_is_local, &arg_record_type_idx, &arg_field_idx)) {
+        compile_error(arg_line, "'%s' is not a record variable", arg_name);
+    }
+    int expected_type_idx = proc_table[proc_idx].param_record_type_idx[param_index];
+    if (arg_record_type_idx != expected_type_idx) {
+        compile_error(arg_line, "Record argument '%s' (type '%s') does not match parameter %d of '%s' (expects '%s')",
+                       arg_name, record_types[arg_record_type_idx].name, param_index + 1, proc_table[proc_idx].name,
+                       record_types[expected_type_idx].name);
+    }
+
+    RecordTypeDef *rt = &record_types[expected_type_idx];
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    for (int i = 0; i < rt->field_count; i++) {
+        ASTNode *value = record_field_read_node(arg_is_local, arg_field_idx[i]);
+        value = wrap_range_check(value, rt->fields[i].is_subrange, rt->fields[i].subrange_lower, rt->fields[i].subrange_upper);
+        if (!head) head = value; else tail->next = value;
+        tail = value;
+    }
+    *out_tail = tail;
+    return head; // NULL only for a (degenerate) empty record type
+}
+
 static ASTNode *parse_call_arguments(int proc_idx) {
     ASTNode *arg_head = NULL;
     ASTNode *arg_tail = NULL;
@@ -1090,17 +1305,25 @@ static ASTNode *parse_call_arguments(int proc_idx) {
         if (token.type != TOKEN_RPAREN) {
             while (1) {
                 ASTNode *arg;
+                ASTNode *this_tail;
                 if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_array_ref[arg_count]) {
                     arg = parse_array_ref_argument(proc_idx, arg_count);
+                    this_tail = arg;
+                } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_record[arg_count]) {
+                    arg = parse_record_argument(proc_idx, arg_count, &this_tail);
                 } else if (arg_count < proc_table[proc_idx].param_count) {
                     arg = wrap_range_check(expression(), proc_table[proc_idx].param_is_subrange[arg_count],
                         proc_table[proc_idx].param_subrange_lower[arg_count], proc_table[proc_idx].param_subrange_upper[arg_count]);
+                    this_tail = arg;
                 } else {
                     arg = expression(); // too many arguments - the count mismatch error below still fires
+                    this_tail = arg;
                 }
                 arg_count++;
-                if (!arg_head) arg_head = arg; else arg_tail->next = arg;
-                arg_tail = arg;
+                if (arg) { // NULL only for a zero-field record argument
+                    if (!arg_head) arg_head = arg; else arg_tail->next = arg;
+                    arg_tail = this_tail;
+                }
                 if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
                 break;
             }
@@ -1183,38 +1406,33 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
 // generic recursion fills in every wrapper node normally once parsing
 // finishes, exactly as if a user had written the field-by-field chain
 // by hand.
-static ASTNode *parse_record_comparison(int rv_idx, const char *rec_name) {
+static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, const int *field_idx1, const char *rec_name) {
     TokenType op = token.type; // TOKEN_EQ or TOKEN_NEQ
     match(op);
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected a record variable of the same type as '%s'", rec_name);
     }
-    int other_rv_idx = find_record_var(token.text);
-    if (other_rv_idx == -1) {
+    int is_local2, record_type_idx2;
+    const int *field_idx2;
+    if (!find_any_record_var(token.text, &is_local2, &record_type_idx2, &field_idx2)) {
         compile_error(token.line, "'%s' is not a record variable", token.text);
     }
-    RecordVarDef *rv1 = &record_vars[rv_idx];
-    RecordVarDef *rv2 = &record_vars[other_rv_idx];
-    if (rv1->record_type_idx != rv2->record_type_idx) {
+    if (record_type_idx1 != record_type_idx2) {
         compile_error(token.line, "Cannot compare '%s' (type '%s') to '%s' (type '%s') - different record types",
-                       rec_name, record_types[rv1->record_type_idx].name,
-                       token.text, record_types[rv2->record_type_idx].name);
+                       rec_name, record_types[record_type_idx1].name,
+                       token.text, record_types[record_type_idx2].name);
     }
     match(TOKEN_IDENTIFIER);
 
-    RecordTypeDef *rt = &record_types[rv1->record_type_idx];
+    RecordTypeDef *rt = &record_types[record_type_idx1];
     ASTNode *result = NULL;
     for (int i = 0; i < rt->field_count; i++) {
         if (rt->fields[i].is_array) {
             compile_error(token.line, "Cannot compare record '%s': field '%s' is an array, and this compiler doesn't support whole-array comparison",
                            rec_name, rt->fields[i].name);
         }
-        ASTNode *left = create_node(NODE_VARIABLE);
-        left->data.var_idx = rv1->field_sym_idx[i];
-        left->expression_type = sym_table[rv1->field_sym_idx[i]].type;
-        ASTNode *right = create_node(NODE_VARIABLE);
-        right->data.var_idx = rv2->field_sym_idx[i];
-        right->expression_type = sym_table[rv2->field_sym_idx[i]].type;
+        ASTNode *left = record_field_read_node(is_local1, field_idx1[i]);
+        ASTNode *right = record_field_read_node(is_local2, field_idx2[i]);
         ASTNode *eq = create_node(NODE_BINARY_OP);
         eq->op = TOKEN_EQ;
         eq->left = left;
@@ -1526,29 +1744,36 @@ static ASTNode *factor(void) {
             return parse_global_symbol_reference(with_field_idx, line);
         }
 
-        int rv_idx = find_record_var(token.text);
-        if (rv_idx != -1) {
-            char rec_name[MAX_NAME];
-            strcpy(rec_name, token.text);
-            match(TOKEN_IDENTIFIER);
-            if (token.type == TOKEN_EQ || token.type == TOKEN_NEQ) {
-                return parse_record_comparison(rv_idx, rec_name);
+        {
+            int rv_is_local, rv_record_type_idx;
+            const int *rv_field_idx;
+            if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+                char rec_name[MAX_NAME];
+                strcpy(rec_name, token.text);
+                match(TOKEN_IDENTIFIER);
+                if (token.type == TOKEN_EQ || token.type == TOKEN_NEQ) {
+                    return parse_record_comparison(rv_is_local, rv_record_type_idx, rv_field_idx, rec_name);
+                }
+                if (token.type != TOKEN_PERIOD) {
+                    compile_error(token.line, "'%s' is a record variable and can't be used directly here - access a field with '%s.fieldname', compare it with '=' or '<>', or use whole-record assignment ('%s := otherRecord;')",
+                                  rec_name, rec_name, rec_name);
+                }
+                match(TOKEN_PERIOD);
+                if (token.type != TOKEN_IDENTIFIER) {
+                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+                }
+                int field_idx = find_record_field(rv_record_type_idx, token.text);
+                if (field_idx == -1) {
+                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+                }
+                match(TOKEN_IDENTIFIER);
+                if (rv_is_local) {
+                    ASTNode *node = record_field_read_node(1, rv_field_idx[field_idx]);
+                    node->line = line;
+                    return node;
+                }
+                return parse_global_symbol_reference(rv_field_idx[field_idx], line);
             }
-            if (token.type != TOKEN_PERIOD) {
-                compile_error(token.line, "'%s' is a record variable and can't be used directly here - access a field with '%s.fieldname', compare it with '=' or '<>', or use whole-record assignment ('%s := otherRecord;')",
-                              rec_name, rec_name, rec_name);
-            }
-            match(TOKEN_PERIOD);
-            if (token.type != TOKEN_IDENTIFIER) {
-                compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-            }
-            RecordVarDef *rv = &record_vars[rv_idx];
-            int field_idx = find_record_field(rv->record_type_idx, token.text);
-            if (field_idx == -1) {
-                compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-            }
-            match(TOKEN_IDENTIFIER);
-            return parse_global_symbol_reference(rv->field_sym_idx[field_idx], line);
         }
 
         int local_idx = find_local(token.text);
@@ -1966,6 +2191,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     current_function_idx = -1;
     record_type_count = 0;
     record_var_count = 0;
+    local_record_var_count = 0;
     const_def_count = 0;
     type_alias_count = 0;
     enum_type_count = 0;
@@ -2134,6 +2360,7 @@ static void subroutine_declaration(int is_function_decl) {
 
     in_procedure = 1;
     current_local_count = 0;
+    local_record_var_count = 0;
 
     if (completing_forward) {
         if (token.type == TOKEN_LPAREN) {
@@ -2150,6 +2377,8 @@ static void subroutine_declaration(int is_function_decl) {
                                      proc_table[proc_idx].param_array_upper2[i],
                                      proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
                                      proc_table[proc_idx].param_subrange_upper[i]);
+            } else if (proc_table[proc_idx].param_is_record[i]) {
+                add_local_record(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_record_type_idx[i]);
             } else {
                 int idx = add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
                 current_locals[idx].is_subrange = proc_table[proc_idx].param_is_subrange[i];
@@ -2173,6 +2402,9 @@ static void subroutine_declaration(int is_function_decl) {
         int param_is_subrange[MAX_PARAMS];
         int param_subrange_lower[MAX_PARAMS];
         int param_subrange_upper[MAX_PARAMS];
+        int param_is_record[MAX_PARAMS];
+        int param_record_type_idx[MAX_PARAMS];
+        int param_record_field_count[MAX_PARAMS];
 
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
@@ -2187,6 +2419,8 @@ static void subroutine_declaration(int is_function_decl) {
                             add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper,
                                                  g.is_2d, g.array_lower2, g.array_upper2,
                                                  g.is_subrange, g.subrange_lower, g.subrange_upper);
+                        } else if (g.is_record) {
+                            add_local_record(g.names[i], g.record_type_idx);
                         } else {
                             int idx = add_local(g.names[i], g.type);
                             current_locals[idx].is_subrange = g.is_subrange;
@@ -2204,6 +2438,9 @@ static void subroutine_declaration(int is_function_decl) {
                         param_is_subrange[param_count] = g.is_subrange;
                         param_subrange_lower[param_count] = g.subrange_lower;
                         param_subrange_upper[param_count] = g.subrange_upper;
+                        param_is_record[param_count] = g.is_record;
+                        param_record_type_idx[param_count] = g.record_type_idx;
+                        param_record_field_count[param_count] = g.is_record ? record_types[g.record_type_idx].field_count : 0;
                         param_count++;
                     }
                     if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -2218,6 +2455,12 @@ static void subroutine_declaration(int is_function_decl) {
         // mutually-recursive call from another procedure) sees the real
         // values right away.
         proc_table[proc_idx].param_count = param_count;
+        // Every add_local()/add_local_array_ref()/add_local_record() call
+        // above (one call per parameter, or per field for a record
+        // parameter) has already run, so current_local_count is exactly
+        // the number of frame slots the parameters ended up occupying -
+        // see param_slot_count's comment in common.h.
+        proc_table[proc_idx].param_slot_count = current_local_count;
         for (int i = 0; i < param_count; i++) {
             proc_table[proc_idx].param_types[i] = param_types[i];
             strcpy(proc_table[proc_idx].param_names[i], param_names[i]);
@@ -2230,6 +2473,9 @@ static void subroutine_declaration(int is_function_decl) {
             proc_table[proc_idx].param_is_subrange[i] = param_is_subrange[i];
             proc_table[proc_idx].param_subrange_lower[i] = param_subrange_lower[i];
             proc_table[proc_idx].param_subrange_upper[i] = param_subrange_upper[i];
+            proc_table[proc_idx].param_is_record[i] = param_is_record[i];
+            proc_table[proc_idx].param_record_type_idx[i] = param_record_type_idx[i];
+            proc_table[proc_idx].param_record_field_count[i] = param_record_field_count[i];
         }
 
         proc_table[proc_idx].is_function = is_function_decl;
@@ -2250,6 +2496,7 @@ static void subroutine_declaration(int is_function_decl) {
         proc_table[proc_idx].is_forward = 1;
         in_procedure = 0;
         current_local_count = 0;
+        local_record_var_count = 0;
         return; // the real body comes later, in a completing declaration
     }
 
@@ -2267,12 +2514,17 @@ static void subroutine_declaration(int is_function_decl) {
                     if (g.is_array) {
                         compile_error(token.line, "'static' doesn't apply to arrays - a local array is already shared across every call, unlike a scalar local (see docs/LANGUAGE.md)");
                     }
+                    if (g.is_record) {
+                        compile_error(token.line, "'static' doesn't apply to records yet - a persistent record local isn't supported (see docs/LANGUAGE.md)");
+                    }
                     add_static_local(proc_table[proc_idx].name, g.names[i], g.type,
                                       g.is_subrange, g.subrange_lower, g.subrange_upper);
                 } else if (g.is_array) {
                     add_local_array(g.names[i], g.type, g.array_lower, g.array_upper,
                                      g.is_2d, g.array_lower2, g.array_upper2,
                                      g.is_subrange, g.subrange_lower, g.subrange_upper);
+                } else if (g.is_record) {
+                    add_local_record(g.names[i], g.record_type_idx);
                 } else {
                     int idx = add_local(g.names[i], g.type);
                     current_locals[idx].is_subrange = g.is_subrange;
@@ -2306,6 +2558,7 @@ static void subroutine_declaration(int is_function_decl) {
 
     in_procedure = 0;
     current_local_count = 0;
+    local_record_var_count = 0;
     current_function_idx = -1;
 }
 
@@ -2349,8 +2602,10 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     int target_is_subrange = 0, target_subrange_lower = 0, target_subrange_upper = 0;
 
     int with_field_idx = find_with_field(name);
-    int rv_idx = find_record_var(name);
-    int static_local_idx = (with_field_idx == -1 && rv_idx == -1) ? find_local(name) : -1;
+    int rv_is_local = 0, rv_record_type_idx = 0;
+    const int *rv_field_idx_arr = NULL;
+    int rv_found = (with_field_idx == -1) && find_any_record_var(name, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
+    int static_local_idx = (with_field_idx == -1 && !rv_found) ? find_local(name) : -1;
     if (static_local_idx != -1 && !current_locals[static_local_idx].is_static) static_local_idx = -1;
     if (with_field_idx != -1) {
         global_idx = with_field_idx;
@@ -2361,7 +2616,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         target_is_subrange = sym_table[global_idx].is_subrange;
         target_subrange_lower = sym_table[global_idx].subrange_lower;
         target_subrange_upper = sym_table[global_idx].subrange_upper;
-    } else if (rv_idx != -1) {
+    } else if (rv_found) {
         if (token.type != TOKEN_PERIOD) {
             compile_error(token.line, "'%s' is a record - '%s' expects a field, e.g. '%s.field'", name, name_str, name);
         }
@@ -2369,20 +2624,29 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "Expected a field name after '%s.'", name);
         }
-        RecordVarDef *rv = &record_vars[rv_idx];
-        int field_idx = find_record_field(rv->record_type_idx, token.text);
+        int field_idx = find_record_field(rv_record_type_idx, token.text);
         if (field_idx == -1) {
             compile_error(token.line, "'%s' is not a field of '%s'", token.text, name);
         }
-        global_idx = rv->field_sym_idx[field_idx];
+        int resolved_idx = rv_field_idx_arr[field_idx];
         match(TOKEN_IDENTIFIER);
-        if (sym_table[global_idx].is_array) {
-            compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
+        if (rv_is_local) {
+            is_local = 1;
+            local_idx = resolved_idx;
+            target_type = current_locals[local_idx].type;
+            target_is_subrange = current_locals[local_idx].is_subrange;
+            target_subrange_lower = current_locals[local_idx].subrange_lower;
+            target_subrange_upper = current_locals[local_idx].subrange_upper;
+        } else {
+            global_idx = resolved_idx;
+            if (sym_table[global_idx].is_array) {
+                compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
+            }
+            target_type = sym_table[global_idx].type;
+            target_is_subrange = sym_table[global_idx].is_subrange;
+            target_subrange_lower = sym_table[global_idx].subrange_lower;
+            target_subrange_upper = sym_table[global_idx].subrange_upper;
         }
-        target_type = sym_table[global_idx].type;
-        target_is_subrange = sym_table[global_idx].is_subrange;
-        target_subrange_lower = sym_table[global_idx].subrange_lower;
-        target_subrange_upper = sym_table[global_idx].subrange_upper;
     } else if (static_local_idx != -1) {
         global_idx = current_locals[static_local_idx].static_sym_idx;
         if (sym_table[global_idx].is_array) {
@@ -2508,6 +2772,19 @@ static ASTNode *parse_global_assignment(int idx) {
     return stmt;
 }
 
+// Given an already-resolved LOCAL record field (a current_locals[] index),
+// parses ':=' and the value expression. A record field local is always a
+// plain scalar (add_local_record() rejects an array field), so unlike
+// parse_global_assignment() there's no indexing to handle - this is the
+// simple tail end of NODE_LOCAL_ASSIGN construction, reused wherever a
+// local record field is a write target.
+static ASTNode *parse_local_assignment(int local_idx) {
+    match(TOKEN_ASSIGN);
+    return record_field_assign_node(1, local_idx,
+        wrap_range_check(expression(), current_locals[local_idx].is_subrange,
+                          current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper));
+}
+
 // 'p2 := p1;' where p2 (already resolved) and p1 must be record variables
 // of the same record type. Desugars into N ordinary field assignments
 // (p2.f1 := p1.f1; p2.f2 := p1.f2; ...) chained via ->next, wrapped in a
@@ -2519,25 +2796,24 @@ static ASTNode *parse_global_assignment(int idx) {
 // returning a multi-node chain directly would have its own internal
 // links silently overwritten - wrapping keeps the chain intact via the
 // compound's ->left while still presenting a single well-behaved node.
-static ASTNode *parse_whole_record_assignment(int dest_rv_idx) {
-    RecordVarDef *dest_rv = &record_vars[dest_rv_idx];
+static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record_type_idx, const int *dest_field_idx, const char *dest_name) {
     match(TOKEN_ASSIGN);
     if (token.type != TOKEN_IDENTIFIER) {
-        compile_error(token.line, "Expected a record variable of the same type as '%s'", dest_rv->name);
+        compile_error(token.line, "Expected a record variable of the same type as '%s'", dest_name);
     }
-    int src_rv_idx = find_record_var(token.text);
-    if (src_rv_idx == -1) {
+    int src_is_local, src_record_type_idx;
+    const int *src_field_idx;
+    if (!find_any_record_var(token.text, &src_is_local, &src_record_type_idx, &src_field_idx)) {
         compile_error(token.line, "'%s' is not a record variable", token.text);
     }
-    RecordVarDef *src_rv = &record_vars[src_rv_idx];
-    if (src_rv->record_type_idx != dest_rv->record_type_idx) {
+    if (src_record_type_idx != dest_record_type_idx) {
         compile_error(token.line, "Cannot assign '%s' (type '%s') to '%s' (type '%s') - different record types",
-                      src_rv->name, record_types[src_rv->record_type_idx].name,
-                      dest_rv->name, record_types[dest_rv->record_type_idx].name);
+                      token.text, record_types[src_record_type_idx].name,
+                      dest_name, record_types[dest_record_type_idx].name);
     }
     match(TOKEN_IDENTIFIER);
 
-    RecordTypeDef *rt = &record_types[dest_rv->record_type_idx];
+    RecordTypeDef *rt = &record_types[dest_record_type_idx];
     for (int i = 0; i < rt->field_count; i++) {
         if (rt->fields[i].is_array) {
             compile_error(token.line, "Cannot assign whole record '%s': field '%s' is an array, and this compiler doesn't support whole-array assignment",
@@ -2548,12 +2824,8 @@ static ASTNode *parse_whole_record_assignment(int dest_rv_idx) {
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
     for (int i = 0; i < rt->field_count; i++) {
-        ASTNode *assign = create_node(NODE_ASSIGN);
-        assign->data.var_idx = dest_rv->field_sym_idx[i];
-        ASTNode *value = create_node(NODE_VARIABLE);
-        value->data.var_idx = src_rv->field_sym_idx[i];
-        value->expression_type = sym_table[src_rv->field_sym_idx[i]].type;
-        assign->left = value;
+        ASTNode *value = record_field_read_node(src_is_local, src_field_idx[i]);
+        ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], value);
         if (!head) head = assign; else tail->next = assign;
         tail = assign;
     }
@@ -2566,6 +2838,59 @@ static ASTNode *parse_whole_record_assignment(int dest_rv_idx) {
 // by ':width' or ':width:precision' (Pascal's field-width syntax).
 // Always wraps the result in NODE_WRITE_ARG, even when no ':width' is
 // present, so codegen sees a uniform shape for every argument.
+// Parses the '<var> := start (to|downto) end do body' tail of a 'for'
+// statement, given the loop counter already resolved to a LOCAL frame
+// slot (field_local_idx - either a plain local, or one field of a local/
+// parameter record). Shared between the plain-local case and the local-
+// record-field case in statement()'s TOKEN_FOR handling below: a local
+// counter's end bound has to be cached in its own hidden local first
+// (unlike the global/with-field/global-record-field case, which reuses
+// the ordinary NODE_FOR shape directly) since NODE_LOCAL_FOR's codegen
+// re-evaluates its ->right every loop iteration, and re-evaluating an
+// arbitrary end-bound expression on every iteration would be both wrong
+// (re-running any side effects) and wasteful.
+static ASTNode *parse_local_for_tail(int field_local_idx) {
+    match(TOKEN_ASSIGN);
+    ASTNode *start_bound = expression();
+    TokenType dir;
+    if (token.type == TOKEN_TO) { match(TOKEN_TO); dir = TOKEN_TO; }
+    else if (token.type == TOKEN_DOWNTO) { match(TOKEN_DOWNTO); dir = TOKEN_DOWNTO; }
+    else { compile_error(token.line, "'for' expects 'to' or 'downto'"); dir = TOKEN_TO; }
+    ASTNode *end_bound = expression();
+    match(TOKEN_DO);
+
+    // Cache the end bound in a hidden local, reserved now (during
+    // parsing) rather than later - the enclosing procedure's local count
+    // must be finalized before ENTER is emitted, so a new slot can't be
+    // added once codegen has started.
+    char hidden_name[MAX_NAME];
+    snprintf(hidden_name, MAX_NAME, "__for_tmp_local%d", current_local_count);
+    int end_slot = add_local(hidden_name, TYPE_INTEGER);
+
+    ASTNode *cache_assign = create_node(NODE_LOCAL_ASSIGN);
+    cache_assign->data.var_idx = end_slot;
+    cache_assign->expression_type = TYPE_INTEGER;
+    cache_assign->left = end_bound;
+
+    ASTNode *for_node = create_node(NODE_LOCAL_FOR);
+    for_node->data.var_idx = field_local_idx;
+    for_node->op = dir;
+    for_node->left = start_bound;
+    ASTNode *end_ref = create_node(NODE_LOCAL_VAR);
+    end_ref->data.var_idx = end_slot;
+    end_ref->expression_type = TYPE_INTEGER;
+    for_node->right = end_ref;
+
+    loop_depth++;
+    for_node->extra = statement();   // body
+    loop_depth--;
+
+    cache_assign->next = for_node;
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = cache_assign;
+    return compound;
+}
+
 static ASTNode *parse_write_arg(void) {
     ASTNode *value = expression();
     ASTNode *arg = create_node(NODE_WRITE_ARG);
@@ -2606,26 +2931,31 @@ static ASTNode *statement(void) {
             }
         }
 
-        int rv_idx = find_record_var(token.text);
-        if (rv_idx != -1) {
-            char rec_name[MAX_NAME];
-            strcpy(rec_name, token.text);
-            match(TOKEN_IDENTIFIER);
-            if (token.type == TOKEN_PERIOD) {
-                match(TOKEN_PERIOD);
-                if (token.type != TOKEN_IDENTIFIER) {
-                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-                }
-                RecordVarDef *rv = &record_vars[rv_idx];
-                int field_idx = find_record_field(rv->record_type_idx, token.text);
-                if (field_idx == -1) {
-                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-                }
+        {
+            int rv_is_local, rv_record_type_idx;
+            const int *rv_field_idx;
+            if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+                char rec_name[MAX_NAME];
+                strcpy(rec_name, token.text);
                 match(TOKEN_IDENTIFIER);
-                return parse_global_assignment(rv->field_sym_idx[field_idx]);
+                if (token.type == TOKEN_PERIOD) {
+                    match(TOKEN_PERIOD);
+                    if (token.type != TOKEN_IDENTIFIER) {
+                        compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+                    }
+                    int field_idx = find_record_field(rv_record_type_idx, token.text);
+                    if (field_idx == -1) {
+                        compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+                    }
+                    match(TOKEN_IDENTIFIER);
+                    if (rv_is_local) {
+                        return parse_local_assignment(rv_field_idx[field_idx]);
+                    }
+                    return parse_global_assignment(rv_field_idx[field_idx]);
+                }
+                // No '.field' - this is a whole-record assignment: 'p2 := p1;'
+                return parse_whole_record_assignment(rv_is_local, rv_record_type_idx, rv_field_idx, rec_name);
             }
-            // No '.field' - this is a whole-record assignment: 'p2 := p1;'
-            return parse_whole_record_assignment(rv_idx);
         }
 
         if (current_function_idx != -1 && strcmp(token.text, proc_table[current_function_idx].name) == 0) {
@@ -2824,35 +3154,49 @@ static ASTNode *statement(void) {
             }
         }
 
-        int rv_idx = find_record_var(token.text);
-        if (rv_idx != -1) {
-            char rec_name[MAX_NAME];
-            strcpy(rec_name, token.text);
-            match(TOKEN_IDENTIFIER);
-            if (token.type != TOKEN_PERIOD) {
-                compile_error(token.line, "'%s' is a record - readln expects a field, e.g. '%s.field'", rec_name, rec_name);
+        {
+            int rv_is_local, rv_record_type_idx;
+            const int *rv_field_idx;
+            if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+                char rec_name[MAX_NAME];
+                strcpy(rec_name, token.text);
+                match(TOKEN_IDENTIFIER);
+                if (token.type != TOKEN_PERIOD) {
+                    compile_error(token.line, "'%s' is a record - readln expects a field, e.g. '%s.field'", rec_name, rec_name);
+                }
+                match(TOKEN_PERIOD);
+                if (token.type != TOKEN_IDENTIFIER) {
+                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+                }
+                int field_idx = find_record_field(rv_record_type_idx, token.text);
+                if (field_idx == -1) {
+                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+                }
+                int resolved_idx = rv_field_idx[field_idx];
+                match(TOKEN_IDENTIFIER);
+                if (rv_is_local) {
+                    // Never an array (add_local_record() rejects an array
+                    // field) - only the enum check applies.
+                    if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE) {
+                        compile_error(token.line, "readln into an enumerated value is not supported");
+                    }
+                    match(TOKEN_RPAREN);
+                    ASTNode *stmt = create_node(NODE_LOCAL_READLN);
+                    stmt->data.var_idx = resolved_idx;
+                    stmt->expression_type = current_locals[resolved_idx].type;
+                    return stmt;
+                }
+                if (sym_table[resolved_idx].is_array) {
+                    compile_error(token.line, "readln into an array is not supported");
+                }
+                if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE) {
+                    compile_error(token.line, "readln into an enumerated value is not supported");
+                }
+                match(TOKEN_RPAREN);
+                ASTNode *stmt = create_node(NODE_READLN);
+                stmt->data.var_idx = resolved_idx;
+                return stmt;
             }
-            match(TOKEN_PERIOD);
-            if (token.type != TOKEN_IDENTIFIER) {
-                compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-            }
-            RecordVarDef *rv = &record_vars[rv_idx];
-            int field_idx = find_record_field(rv->record_type_idx, token.text);
-            if (field_idx == -1) {
-                compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-            }
-            int field_sym_idx = rv->field_sym_idx[field_idx];
-            match(TOKEN_IDENTIFIER);
-            if (sym_table[field_sym_idx].is_array) {
-                compile_error(token.line, "readln into an array is not supported");
-            }
-            if (sym_table[field_sym_idx].type >= TYPE_ENUM_BASE) {
-                compile_error(token.line, "readln into an enumerated value is not supported");
-            }
-            match(TOKEN_RPAREN);
-            ASTNode *stmt = create_node(NODE_READLN);
-            stmt->data.var_idx = field_sym_idx;
-            return stmt;
         }
         int local_idx = find_local(token.text);
         if (local_idx != -1) {
@@ -2921,9 +3265,13 @@ static ASTNode *statement(void) {
             compile_error(token.line, "'for' expects a variable identifier");
         }
         int with_field_idx = find_with_field(token.text);
-        int rv_idx = (with_field_idx == -1) ? find_record_var(token.text) : -1;
-        if (with_field_idx != -1 || rv_idx != -1) {
-            int field_sym_idx;
+        int rv_is_local = 0, rv_record_type_idx = 0;
+        const int *rv_field_idx_arr = NULL;
+        int rv_found = (with_field_idx == -1) && find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
+        if (with_field_idx != -1 || rv_found) {
+            int field_sym_idx = -1;   // valid if with-field or global record field
+            int field_local_idx = -1; // valid if local record field
+            int is_local_target = 0;
             if (with_field_idx != -1) {
                 field_sym_idx = with_field_idx;
                 match(TOKEN_IDENTIFIER);
@@ -2938,13 +3286,23 @@ static ASTNode *statement(void) {
                 if (token.type != TOKEN_IDENTIFIER) {
                     compile_error(token.line, "Expected a field name after '%s.'", rec_name);
                 }
-                RecordVarDef *rv = &record_vars[rv_idx];
-                int field_idx = find_record_field(rv->record_type_idx, token.text);
+                int field_idx = find_record_field(rv_record_type_idx, token.text);
                 if (field_idx == -1) {
                     compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
                 }
-                field_sym_idx = rv->field_sym_idx[field_idx];
                 match(TOKEN_IDENTIFIER);
+                if (rv_is_local) {
+                    is_local_target = 1;
+                    field_local_idx = rv_field_idx_arr[field_idx];
+                } else {
+                    field_sym_idx = rv_field_idx_arr[field_idx];
+                }
+            }
+            if (is_local_target) {
+                if (current_locals[field_local_idx].type != TYPE_INTEGER) {
+                    compile_error(token.line, "'for' loop variable must be integer");
+                }
+                return parse_local_for_tail(field_local_idx);
             }
             if (sym_table[field_sym_idx].type != TYPE_INTEGER) {
                 compile_error(token.line, "'for' loop variable must be integer");
@@ -3006,45 +3364,7 @@ static ASTNode *statement(void) {
                 compile_error(token.line, "'for' loop variable must be integer");
             }
             match(TOKEN_IDENTIFIER);
-            match(TOKEN_ASSIGN);
-            ASTNode *start_bound = expression();
-            TokenType dir;
-            if (token.type == TOKEN_TO) { match(TOKEN_TO); dir = TOKEN_TO; }
-            else if (token.type == TOKEN_DOWNTO) { match(TOKEN_DOWNTO); dir = TOKEN_DOWNTO; }
-            else { compile_error(token.line, "'for' expects 'to' or 'downto'"); dir = TOKEN_TO; }
-            ASTNode *end_bound = expression();
-            match(TOKEN_DO);
-
-            // Cache the end bound in a hidden local, reserved now (during
-            // parsing) rather than later - the enclosing procedure's
-            // local count must be finalized before ENTER is emitted, so
-            // a new slot can't be added once codegen has started.
-            char hidden_name[MAX_NAME];
-            snprintf(hidden_name, MAX_NAME, "__for_tmp_local%d", current_local_count);
-            int end_slot = add_local(hidden_name, TYPE_INTEGER);
-
-            ASTNode *cache_assign = create_node(NODE_LOCAL_ASSIGN);
-            cache_assign->data.var_idx = end_slot;
-            cache_assign->expression_type = TYPE_INTEGER;
-            cache_assign->left = end_bound;
-
-            ASTNode *for_node = create_node(NODE_LOCAL_FOR);
-            for_node->data.var_idx = local_idx;
-            for_node->op = dir;
-            for_node->left = start_bound;
-            ASTNode *end_ref = create_node(NODE_LOCAL_VAR);
-            end_ref->data.var_idx = end_slot;
-            end_ref->expression_type = TYPE_INTEGER;
-            for_node->right = end_ref;
-
-            loop_depth++;
-            for_node->extra = statement();   // body
-            loop_depth--;
-
-            cache_assign->next = for_node;
-            ASTNode *compound = create_node(NODE_COMPOUND);
-            compound->left = cache_assign;
-            return compound;
+            return parse_local_for_tail(local_idx);
         }
         ASTNode *stmt = create_node(NODE_FOR);
         stmt->data.var_idx = find_var(token.text);
@@ -3093,10 +3413,17 @@ static ASTNode *statement(void) {
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "'with' expects a record variable");
         }
-        int rv_idx = find_record_var(token.text);
-        if (rv_idx == -1) {
-            compile_error(token.line, "'%s' is not a record variable", token.text);
+        {
+            int rv_is_local, rv_record_type_idx;
+            const int *rv_field_idx;
+            if (!find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+                compile_error(token.line, "'%s' is not a record variable", token.text);
+            }
+            if (rv_is_local) {
+                compile_error(token.line, "'with' doesn't support a local record variable or parameter yet - access its fields directly (e.g. '%s.field')", token.text);
+            }
         }
+        int rv_idx = find_record_var(token.text);
         match(TOKEN_IDENTIFIER);
         match(TOKEN_DO);
         if (with_depth >= MAX_WITH_DEPTH) {

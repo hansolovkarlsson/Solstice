@@ -89,7 +89,23 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       globals (classic Pascal behavior). Single record only (no `with a,
       b do`) — see [docs/LANGUAGE.md](LANGUAGE.md#the-with-statement).
 - [ ] Records as array elements (runtime-indexed record storage)
-- [ ] Record parameters and local records
+- [x] Record parameters and local records — unlike a global record's
+      fields (hidden mangled globals), a local/parameter record's fields
+      each get their own ordinary FRAME SLOT (via the existing `add_local`
+      machinery), giving proper per-call isolation, including under
+      recursion. A record parameter is always by value (this compiler has
+      no by-reference mechanism for scalars at all): flattened into N
+      field-value pushes at every call site, reusing the existing
+      scalar-argument-passing path — no new opcodes. Required splitting
+      `ProcSymbol.param_count` (syntactic parameter count, for call-site
+      arg-count checks) from a new `param_slot_count` (frame slots the
+      parameters actually occupy, for `ENTER`/`STORE_LOCAL`), since the
+      two now diverge whenever a record parameter is present. Local and
+      global records of the same type mix freely in assignment/comparison.
+      Known gaps: an array-typed field in a record parameter/local is
+      rejected, no `static` record locals, and `with` still only accepts
+      a global record variable — see
+      [docs/LANGUAGE.md](LANGUAGE.md#record-parameters-and-local-records).
 - [ ] Nested records
 - [x] Record comparison (`=`, `<>`) — desugars at parse time into a
       field-by-field `and`-chain of ordinary comparisons (same "a record

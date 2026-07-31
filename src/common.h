@@ -625,12 +625,26 @@ typedef struct ASTNode {
 typedef struct {
     char name[MAX_NAME];
     int entry_address;
-    int param_count;
+    int param_count;                // SYNTACTIC parameter count (how many
+                                    // comma-separated parameters were
+                                    // declared) - used for call-site
+                                    // argument-count validation. NOT
+                                    // necessarily the number of frame
+                                    // slots the parameters occupy - see
+                                    // param_slot_count.
+    int param_slot_count;           // total FRAME SLOTS the parameters
+                                    // occupy (0..param_slot_count-1).
+                                    // Equal to param_count UNLESS one or
+                                    // more parameters is a record, which
+                                    // expands to multiple slots (one per
+                                    // field - see add_local_record() and
+                                    // param_is_record below).
     int local_count;               // total slots ENTER reserves - params
-                                    // occupy 0..param_count-1, additional
-                                    // locals continue from there, and (for
-                                    // a function) return_slot is the last
-                                    // one, reserved automatically
+                                    // occupy 0..param_slot_count-1,
+                                    // additional locals continue from
+                                    // there, and (for a function)
+                                    // return_slot is the last one,
+                                    // reserved automatically
     DataType param_types[MAX_PARAMS];
     char param_names[MAX_PARAMS][MAX_NAME]; // needed so a forward
                                     // declaration's later completing
@@ -655,6 +669,30 @@ typedef struct {
                                     // site (see parse_call_arguments()).
     int param_subrange_lower[MAX_PARAMS]; // only meaningful if the above is set
     int param_subrange_upper[MAX_PARAMS];
+    int param_is_record[MAX_PARAMS];    // 1 if this parameter is a record
+                                    // type - always by value, flattened
+                                    // into N field-value pushes at every
+                                    // call site (see
+                                    // parse_record_argument() in
+                                    // parser.c), each landing in its own
+                                    // per-call-isolated frame slot (see
+                                    // add_local_record() - NOT the
+                                    // "hidden global" trick local arrays
+                                    // use).
+    int param_record_type_idx[MAX_PARAMS]; // only meaningful if the
+                                    // above is set - which parser.c-only
+                                    // record_types[] entry this
+                                    // parameter is
+    int param_record_field_count[MAX_PARAMS]; // only meaningful if
+                                    // param_is_record is set - how many
+                                    // flattened argument nodes this ONE
+                                    // syntactic parameter consumes at a
+                                    // call site. type_checker.c uses
+                                    // this to skip over them (already
+                                    // correctly typed by construction)
+                                    // without needing any visibility
+                                    // into parser.c's record-type
+                                    // tables.
     int is_forward;                // 1 while forward-declared but not yet
                                     // completed; 0 once a real body exists
                                     // (or if it was never forward at all)

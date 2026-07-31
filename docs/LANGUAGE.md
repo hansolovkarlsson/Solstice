@@ -1218,17 +1218,64 @@ there's no restriction here beyond what already applies to
 - The `with`-target must be a plain record variable; it can't be an
   expression.
 
+### Record parameters and local records
+
+```pascal
+type
+    TPoint = record
+        x, y: integer;
+    end;
+
+function SumPlusOne(p: TPoint): integer;
+var
+    local: TPoint;
+begin
+    local.x := p.x + 1;
+    local.y := p.y + 1;
+    SumPlusOne := local.x + local.y;
+end;
+```
+
+A record can be a parameter type or a local variable's type inside a
+procedure/function, not just a global. Unlike a global record — whose
+fields are hidden mangled globals — a local or parameter record's fields
+each get their own ordinary frame slot, exactly as if you'd declared them
+as separate scalar locals/parameters. That gives a local/parameter record
+proper per-call isolation, including under recursion: two active calls
+each get their own independent copy of the record, the same guarantee
+every other local/parameter already has.
+
+A record parameter is always **by value** — this compiler has no
+by-reference mechanism for scalars at all (unlike array parameters, which
+are always by reference), so passing a record copies every field at the
+call site, and mutating a parameter's fields inside the procedure never
+affects the caller's own record.
+
+A local/parameter record works exactly like a global one everywhere else
+— field access, whole-record assignment (`:=`), comparison (`=`/`<>`), a
+field as a `for` loop counter, and `readln` into a field — and local and
+global records of the same type can be freely mixed on either side of an
+assignment or comparison (`localRec := globalRec;`, `if localRec =
+globalRec then ...`).
+
 ### What's not supported yet
 
 - **Records as array elements, or an array as a field's own bounds
   varying per record** — the whole "mangled hidden global per field"
-  approach assumes exactly one, statically-known storage location per
-  field. `people[i].age`, where `i` is a runtime value, doesn't fit that
-  model — it would need a genuine addressing scheme, similar to how
-  arrays themselves work, not just sugar over existing globals.
-- **Record parameters or local records** — matching how arrays
-  themselves started global-only before parameters/locals became their
-  own feature.
+  approach (for a global record) assumes exactly one, statically-known
+  storage location per field. `people[i].age`, where `i` is a runtime
+  value, doesn't fit that model — it would need a genuine addressing
+  scheme, similar to how arrays themselves work, not just sugar over
+  existing globals.
+- **An array-typed field in a record parameter or local record** — a
+  compile error for now (a global record's field CAN be an array). Only
+  affects local/parameter records; a global record with an array field
+  still works.
+- **A `static` record local** — persisting a record's fields across calls
+  the way a `static` scalar local does isn't supported yet.
+- **`with` on a local or parameter record** — `with` still only accepts a
+  global record variable; access a local/parameter record's fields with
+  `recordVar.field` directly.
 - **Nested records** — a field can't itself be a record type.
 
 ## Procedures

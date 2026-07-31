@@ -222,7 +222,13 @@ array parameters and local 2D arrays, extending the existing by-
 reference/local-array machinery with two new opcodes
 (`LOAD_IDX2D_DYN`/`STORE_IDX2D_DYN`) mirroring the 1D dynamic ones (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#array-parameters-and-local-arrays)).
+Also working: record parameters and local records, always by value, with
+each field in its own per-call-isolated frame slot (unlike a global
+record's hidden-mangled-global fields) — no new opcodes, a record
+argument just flattens into N ordinary field-value pushes at the call
+site (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#record-parameters-and-local-records)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
-(so no array `copy`/slicing), and records as array elements, record
-parameters/locals, or nested records.
+(so no array `copy`/slicing), and records as array elements or nested
+records.
