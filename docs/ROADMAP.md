@@ -80,11 +80,24 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ### Language — records & arrays
 
-- [ ] `with` statement
+- [x] `with` statement — pure parser-time sugar, no AST node/codegen/VM
+      changes: a stack of active `with`-targets (`with_stack`) makes a
+      bare field name resolve exactly like `record.field` already did,
+      threaded through every identifier-resolution call site (`factor()`,
+      assignment, `inc`/`dec`, `readln`, `for`-loop counter, `low`/
+      `high`/`length`). Nests; a `with`-field shadows same-named locals/
+      globals (classic Pascal behavior). Single record only (no `with a,
+      b do`) — see [docs/LANGUAGE.md](LANGUAGE.md#the-with-statement).
 - [ ] Records as array elements (runtime-indexed record storage)
 - [ ] Record parameters and local records
 - [ ] Nested records
-- [ ] Record comparison (`=`, `<>`)
+- [x] Record comparison (`=`, `<>`) — desugars at parse time into a
+      field-by-field `and`-chain of ordinary comparisons (same "a record
+      isn't one runtime value" philosophy whole-record assignment
+      already uses), so it needed no new opcodes either. Rejects
+      different record types and records with an array field (whole-
+      array comparison isn't supported) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#record-comparison).
 - [ ] 2D array parameters and local 2D arrays (1D already supports both)
 - [ ] Three-or-more-dimensional arrays
 - [ ] Dynamic arrays (array `copy`/slicing)

@@ -206,9 +206,14 @@ point a value is stored into one — variables, array elements, record
 fields, parameters (checked at every call site), and return values —
 via two new opcodes (`CHECK_LOWER`/`CHECK_UPPER`) that peek and validate
 the value already on the stack, with no `.bin` format change (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#subrange-types)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#subrange-types)). Also working:
+record comparison (`p1 = p2`, `p1 <> p2`, desugaring to a field-by-field
+`and`-chain) and the `with` statement (`with p do ...`), both pure
+parser-time features needing no new opcodes — a bare identifier inside a
+`with` body resolves exactly as `p.field` already did (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#the-with-statement)).
 
 Not yet implemented: three-or-more-dimensional arrays, array
 parameters/locals for 2D arrays specifically, dynamic arrays (so no
 array `copy`/slicing), and records as array elements, record
-parameters/locals, nested records, or record comparison.
+parameters/locals, or nested records.

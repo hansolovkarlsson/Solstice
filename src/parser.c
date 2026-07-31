@@ -241,6 +241,34 @@ static int find_record_field(int record_type_idx, const char *field_name) {
     return -1;
 }
 
+// 'with recordVar do statement;' - a stack (nesting: 'with a do with b
+// do ...') of record_vars[] indices for whichever with-statement(s) are
+// currently being parsed. Purely a parser-time convenience: since a
+// record field already resolves to an ordinary mangled global by the
+// time anything downstream sees it (see the RecordTypeDef comment
+// above), 'with' needs no AST node, codegen, or type-checker changes at
+// all - it just lets a bare field name resolve the same way 'p.field'
+// already does, for as long as the stack is non-empty. Search order is
+// innermost-to-outermost, so a nested 'with's field shadows an outer
+// one of the same name - and, matching classic Pascal behavior, a
+// with-field takes priority over a local/global variable of the same
+// name too (checked at the same priority as "is this identifier itself
+// a record variable name" in every identifier-resolution call site).
+#define MAX_WITH_DEPTH 8
+static int with_stack[MAX_WITH_DEPTH];
+static int with_depth = 0;
+
+// Returns the mangled global sym_table[] index for 'name' if it names a
+// field of some currently-active 'with' target, else -1.
+static int find_with_field(const char *name) {
+    for (int i = with_depth - 1; i >= 0; i--) {
+        RecordVarDef *rv = &record_vars[with_stack[i]];
+        int field_idx = find_record_field(rv->record_type_idx, name);
+        if (field_idx != -1) return rv->field_sym_idx[field_idx];
+    }
+    return -1;
+}
+
 // The proc_table index of the function whose body is currently being
 // parsed, or -1 if we're not inside a function body (either not inside
 // any procedure/function at all, or inside a plain procedure). Used to
@@ -681,6 +709,19 @@ static int try_get_array_bounds_here(int *lower, int *upper) {
         match(TOKEN_IDENTIFIER);
         return 1;
     }
+    {
+        int with_field_idx = find_with_field(token.text);
+        if (with_field_idx != -1) {
+            if (!sym_table[with_field_idx].is_array) return 0; // not an array - let the caller fall back to a general expression
+            if (sym_table[with_field_idx].is_2d) {
+                compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", token.text);
+            }
+            match(TOKEN_IDENTIFIER);
+            *lower = sym_table[with_field_idx].array_lower;
+            *upper = sym_table[with_field_idx].array_upper;
+            return 1;
+        }
+    }
     int rv_idx = find_record_var(token.text);
     if (rv_idx == -1) return 0;
     char rec_name[MAX_NAME];
@@ -1018,6 +1059,85 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
     return node;
 }
 
+// 'p1 = p2' / 'p1 <> p2' where both are record variables of the SAME
+// record type - called from factor() the moment it sees '='/'<>' right
+// after a record variable name (i.e. this consumes the operator itself,
+// instead of leaving it for expression()'s ordinary comparison-operator
+// loop, since a "whole record value" isn't one ASTNode/DataType this
+// compiler can represent - there's no single opcode that could ever
+// compare two records as a unit). Desugars into an AND-chain comparing
+// each field pair (NOT-wrapped for '<>'), field by field - the same
+// "a record isn't one runtime value, just several ordinary globals
+// under mangled names" philosophy parse_whole_record_assignment() above
+// already uses for ':='. Reuses the ordinary NODE_BINARY_OP(EQ)/
+// NODE_BINARY_OP(AND)/NODE_UNARY_OP(NOT) machinery - ONLY the leaf
+// NODE_VARIABLE nodes need expression_type set explicitly (matching
+// parse_global_symbol_reference() above); type_check()'s existing
+// generic recursion fills in every wrapper node normally once parsing
+// finishes, exactly as if a user had written the field-by-field chain
+// by hand.
+static ASTNode *parse_record_comparison(int rv_idx, const char *rec_name) {
+    TokenType op = token.type; // TOKEN_EQ or TOKEN_NEQ
+    match(op);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a record variable of the same type as '%s'", rec_name);
+    }
+    int other_rv_idx = find_record_var(token.text);
+    if (other_rv_idx == -1) {
+        compile_error(token.line, "'%s' is not a record variable", token.text);
+    }
+    RecordVarDef *rv1 = &record_vars[rv_idx];
+    RecordVarDef *rv2 = &record_vars[other_rv_idx];
+    if (rv1->record_type_idx != rv2->record_type_idx) {
+        compile_error(token.line, "Cannot compare '%s' (type '%s') to '%s' (type '%s') - different record types",
+                       rec_name, record_types[rv1->record_type_idx].name,
+                       token.text, record_types[rv2->record_type_idx].name);
+    }
+    match(TOKEN_IDENTIFIER);
+
+    RecordTypeDef *rt = &record_types[rv1->record_type_idx];
+    ASTNode *result = NULL;
+    for (int i = 0; i < rt->field_count; i++) {
+        if (rt->fields[i].is_array) {
+            compile_error(token.line, "Cannot compare record '%s': field '%s' is an array, and this compiler doesn't support whole-array comparison",
+                           rec_name, rt->fields[i].name);
+        }
+        ASTNode *left = create_node(NODE_VARIABLE);
+        left->data.var_idx = rv1->field_sym_idx[i];
+        left->expression_type = sym_table[rv1->field_sym_idx[i]].type;
+        ASTNode *right = create_node(NODE_VARIABLE);
+        right->data.var_idx = rv2->field_sym_idx[i];
+        right->expression_type = sym_table[rv2->field_sym_idx[i]].type;
+        ASTNode *eq = create_node(NODE_BINARY_OP);
+        eq->op = TOKEN_EQ;
+        eq->left = left;
+        eq->right = right;
+        if (!result) {
+            result = eq;
+        } else {
+            ASTNode *and_node = create_node(NODE_BINARY_OP);
+            and_node->op = TOKEN_AND;
+            and_node->left = result;
+            and_node->right = eq;
+            result = and_node;
+        }
+    }
+    if (!result) {
+        // A zero-field record type (an empty 'record ... end;') - two
+        // instances of it are vacuously always equal.
+        result = create_node(NODE_BOOLEAN);
+        result->data.num_value = 1;
+        result->expression_type = TYPE_BOOLEAN;
+    }
+    if (op == TOKEN_NEQ) {
+        ASTNode *not_node = create_node(NODE_UNARY_OP);
+        not_node->op = TOKEN_NOT;
+        not_node->left = result;
+        result = not_node;
+    }
+    return result;
+}
+
 static ASTNode *factor(void) {
     if (token.type == TOKEN_MINUS || token.type == TOKEN_NOT) {
         TokenType op = token.type;
@@ -1293,13 +1413,22 @@ static ASTNode *factor(void) {
             return node;
         }
 
+        int with_field_idx = find_with_field(token.text);
+        if (with_field_idx != -1) {
+            match(TOKEN_IDENTIFIER);
+            return parse_global_symbol_reference(with_field_idx, line);
+        }
+
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
             char rec_name[MAX_NAME];
             strcpy(rec_name, token.text);
             match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_EQ || token.type == TOKEN_NEQ) {
+                return parse_record_comparison(rv_idx, rec_name);
+            }
             if (token.type != TOKEN_PERIOD) {
-                compile_error(token.line, "'%s' is a record variable and can't be used directly here - access a field with '%s.fieldname', or use whole-record assignment ('%s := otherRecord;')",
+                compile_error(token.line, "'%s' is a record variable and can't be used directly here - access a field with '%s.fieldname', compare it with '=' or '<>', or use whole-record assignment ('%s := otherRecord;')",
                               rec_name, rec_name, rec_name);
             }
             match(TOKEN_PERIOD);
@@ -1708,6 +1837,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     type_alias_count = 0;
     enum_type_count = 0;
     subrange_type_count = 0;
+    with_depth = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -2028,7 +2158,7 @@ static void subroutine_declaration(int is_function_decl) {
 static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
-           t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC;
+           t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH;
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
@@ -2060,8 +2190,18 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     DataType target_type;
     int target_is_subrange = 0, target_subrange_lower = 0, target_subrange_upper = 0;
 
+    int with_field_idx = find_with_field(name);
     int rv_idx = find_record_var(name);
-    if (rv_idx != -1) {
+    if (with_field_idx != -1) {
+        global_idx = with_field_idx;
+        if (sym_table[global_idx].is_array) {
+            compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
+        }
+        target_type = sym_table[global_idx].type;
+        target_is_subrange = sym_table[global_idx].is_subrange;
+        target_subrange_lower = sym_table[global_idx].subrange_lower;
+        target_subrange_upper = sym_table[global_idx].subrange_upper;
+    } else if (rv_idx != -1) {
         if (token.type != TOKEN_PERIOD) {
             compile_error(token.line, "'%s' is a record - '%s' expects a field, e.g. '%s.field'", name, name_str, name);
         }
@@ -2289,6 +2429,14 @@ static ASTNode *statement(void) {
             }
         }
 
+        {
+            int with_field_idx = find_with_field(token.text);
+            if (with_field_idx != -1) {
+                match(TOKEN_IDENTIFIER);
+                return parse_global_assignment(with_field_idx);
+            }
+        }
+
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
             char rec_name[MAX_NAME];
@@ -2438,6 +2586,23 @@ static ASTNode *statement(void) {
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "readln expects a variable identifier");
         }
+        {
+            int with_field_idx = find_with_field(token.text);
+            if (with_field_idx != -1) {
+                match(TOKEN_IDENTIFIER);
+                if (sym_table[with_field_idx].is_array) {
+                    compile_error(token.line, "readln into an array is not supported");
+                }
+                if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE) {
+                    compile_error(token.line, "readln into an enumerated value is not supported");
+                }
+                match(TOKEN_RPAREN);
+                ASTNode *stmt = create_node(NODE_READLN);
+                stmt->data.var_idx = with_field_idx;
+                return stmt;
+            }
+        }
+
         int rv_idx = find_record_var(token.text);
         if (rv_idx != -1) {
             char rec_name[MAX_NAME];
@@ -2523,28 +2688,35 @@ static ASTNode *statement(void) {
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "'for' expects a variable identifier");
         }
-        int rv_idx = find_record_var(token.text);
-        if (rv_idx != -1) {
-            char rec_name[MAX_NAME];
-            strcpy(rec_name, token.text);
-            match(TOKEN_IDENTIFIER);
-            if (token.type != TOKEN_PERIOD) {
-                compile_error(token.line, "'%s' is a record - 'for' expects a field, e.g. '%s.field'", rec_name, rec_name);
+        int with_field_idx = find_with_field(token.text);
+        int rv_idx = (with_field_idx == -1) ? find_record_var(token.text) : -1;
+        if (with_field_idx != -1 || rv_idx != -1) {
+            int field_sym_idx;
+            if (with_field_idx != -1) {
+                field_sym_idx = with_field_idx;
+                match(TOKEN_IDENTIFIER);
+            } else {
+                char rec_name[MAX_NAME];
+                strcpy(rec_name, token.text);
+                match(TOKEN_IDENTIFIER);
+                if (token.type != TOKEN_PERIOD) {
+                    compile_error(token.line, "'%s' is a record - 'for' expects a field, e.g. '%s.field'", rec_name, rec_name);
+                }
+                match(TOKEN_PERIOD);
+                if (token.type != TOKEN_IDENTIFIER) {
+                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+                }
+                RecordVarDef *rv = &record_vars[rv_idx];
+                int field_idx = find_record_field(rv->record_type_idx, token.text);
+                if (field_idx == -1) {
+                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+                }
+                field_sym_idx = rv->field_sym_idx[field_idx];
+                match(TOKEN_IDENTIFIER);
             }
-            match(TOKEN_PERIOD);
-            if (token.type != TOKEN_IDENTIFIER) {
-                compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-            }
-            RecordVarDef *rv = &record_vars[rv_idx];
-            int field_idx = find_record_field(rv->record_type_idx, token.text);
-            if (field_idx == -1) {
-                compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-            }
-            int field_sym_idx = rv->field_sym_idx[field_idx];
             if (sym_table[field_sym_idx].type != TYPE_INTEGER) {
                 compile_error(token.line, "'for' loop variable must be integer");
             }
-            match(TOKEN_IDENTIFIER);
             ASTNode *stmt = create_node(NODE_FOR);
             stmt->data.var_idx = field_sym_idx;
             match(TOKEN_ASSIGN);
@@ -2642,6 +2814,35 @@ static ASTNode *statement(void) {
         match(TOKEN_UNTIL);
         stmt->right = expression();      // until-condition
         return stmt;
+    }
+
+    if (token.type == TOKEN_WITH) {
+        // 'with recordVar do statement;' - pure parser-time sugar, no
+        // AST node of its own: pushing rv_idx onto with_stack (see the
+        // comment above it) makes every bare field name inside the body
+        // resolve exactly as 'recordVar.field' already would, via the
+        // find_with_field() checks now threaded through every
+        // identifier-resolution call site. The body's own parsed AST is
+        // returned completely unwrapped - this statement contributes
+        // nothing to the tree beyond whatever 'statement()' below
+        // produces on its own.
+        match(TOKEN_WITH);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "'with' expects a record variable");
+        }
+        int rv_idx = find_record_var(token.text);
+        if (rv_idx == -1) {
+            compile_error(token.line, "'%s' is not a record variable", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_DO);
+        if (with_depth >= MAX_WITH_DEPTH) {
+            compile_error(token.line, "'with' statements nested too deeply (limit is %d)", MAX_WITH_DEPTH);
+        }
+        with_stack[with_depth++] = rv_idx;
+        ASTNode *body = statement();
+        with_depth--;
+        return body;
     }
 
     if (token.type == TOKEN_BREAK) {

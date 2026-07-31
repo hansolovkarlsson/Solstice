@@ -1145,6 +1145,57 @@ all (see [Arrays](#arrays)), so there'd be no correct way to copy that
 field as part of copying the whole record. Copy such fields (and any
 others) individually instead.
 
+### Record comparison
+
+```pascal
+if p1 = p2 then
+    writeln('same point');
+if p1 <> p2 then
+    writeln('different point');
+```
+
+`p1 = p2` / `p1 <> p2` (both plain record variables of the exact same
+record type) compare every field pairwise, combined with `and` — `p1 =
+p2` desugars to `(p1.f1 = p2.f1) and (p1.f2 = p2.f2) and ...`, and `<>`
+is just that negated. Comparing two records of *different* record types
+is a compile-time error (matching whole-record assignment's own
+restriction), and — also matching whole-record assignment — a record
+with an array field can't be compared at all (whole-array comparison
+isn't supported, so there'd be no correct way to compare that field).
+
+### The `with` statement
+
+```pascal
+with p do begin
+    x := 1;
+    y := 2;
+end;
+writeln(p.x, ' ', p.y);   { 1 2 }
+```
+
+Inside a `with recordVar do <statement>;` body, a bare identifier that
+names one of `recordVar`'s fields resolves exactly as `recordVar.field`
+would — usable for reading, assignment, `inc`/`dec`, `readln`, a `for`
+loop counter, and `low`/`high`/`length` on an array field. Purely a
+parser-time convenience — `with` doesn't change *how* a field is
+resolved, only lets you skip writing `recordVar.` in front of it, so
+there's no restriction here beyond what already applies to
+`recordVar.field` written out explicitly.
+
+- **`with` statements nest** (`with a do with b do ...`), and an inner
+  `with`'s field shadows an outer one of the same name.
+- **A `with`-target's field takes priority over everything else with the
+  same name** — a local variable, parameter, or global with the same
+  name as a field is shadowed for the duration of the `with` body. This
+  matches classic Pascal behavior (and is a well-known source of subtle
+  bugs in real Pascal code — a field name accidentally colliding with an
+  outer variable silently redirects to the field instead).
+- Only one record per `with` (`with a, b do ...`, real Pascal's
+  multi-record form, isn't accepted) — nest two `with` statements
+  instead (`with a do with b do ...`) for the same effect.
+- The `with`-target must be a plain record variable; it can't be an
+  expression.
+
 ### What's not supported yet
 
 - **Records as array elements, or an array as a field's own bounds
@@ -1157,11 +1208,6 @@ others) individually instead.
   themselves started global-only before parameters/locals became their
   own feature.
 - **Nested records** — a field can't itself be a record type.
-- **Record comparison** (`p1 = p2`) — not defined. Using a record
-  variable directly anywhere other than `.field` access or whole-record
-  assignment (`writeln(p)`, `p1 = p2`, passing one as a procedure
-  argument, and so on) is a clear compile-time error rather than a
-  confusing parser failure.
 
 ## Procedures
 
