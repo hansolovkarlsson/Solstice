@@ -2730,6 +2730,94 @@ ASTNode *parse_ast(const char *source, const char *filename) {
 // previous forward declaration (no parameter list or return type here -
 // both were already given).
 //
+// Uninitialized-local-variable warning pass, run once per procedure/
+// function right after its body is fully parsed (see the call site in
+// subroutine_declaration() below) - this is the only point current_locals[]
+// (a parser-only, per-procedure scratch table) still holds this
+// procedure's own local metadata (name, is_array/is_static/is_var_param),
+// which is why this lives here rather than as a separate pass over
+// proc_table[] later: nothing after parsing retains that per-local
+// detail. Non-fatal: prints to stderr and returns, never calls
+// fatal_abort() - this is a heuristic diagnostic, not a hard guarantee.
+//
+// Deliberately FLOW-INSENSITIVE: this only asks "is this local ever
+// read, and is it ever assigned, ANYWHERE in this body" - it does NOT
+// try to determine whether every code path assigns a variable before
+// every read of it (e.g. 'if cond then x := 1; writeln(x);' is not
+// flagged, even though x might be unassigned when cond is false). A
+// precise, branch-aware analysis would need to correctly model every
+// statement kind's control flow (if/while/for/repeat/case merge
+// points, break/continue, and this compiler's unrestricted goto) -
+// real complexity with real risk of false positives on totally valid
+// code. This simpler pass only ever under-warns (misses some real
+// bugs), never over-warns on correct code - the right tradeoff for a
+// warning nobody's forced to act on. See docs/LANGUAGE.md for the exact
+// documented scope.
+//
+// Also deliberately scoped to PLAIN scalar locals of THIS ONE body:
+//  - Not parameters (always initialized by the caller) or 'var'
+//    parameters (a valid reference regardless of what it points to).
+//  - Not 'static' locals - they persist across calls, so "never
+//    assigned in THIS body" doesn't mean "never assigned", and relying
+//    on the implicit zero from a prior (or the very first) call is a
+//    common, intentional reason to reach for 'static' in the first
+//    place.
+//  - Not arrays - this pass doesn't track per-element initialization.
+//  - Not global variables AT ALL, including the main program's own
+//    top-level 'var' section - correctly telling "already initialized
+//    by an earlier procedure call" from "genuinely never initialized"
+//    needs whole-program interprocedural analysis this pass doesn't
+//    attempt; checking only what a single call graph edge could prove
+//    isn't worth the false-positive risk on the (very common) pattern
+//    of a helper procedure initializing a global before main uses it.
+static void scan_local_usage(ASTNode *node, char *read_flag, char *assigned_flag) {
+    if (!node) return;
+
+    if (node->type == NODE_LOCAL_VAR) {
+        read_flag[node->data.var_idx] = 1;
+    } else if (node->type == NODE_LOCAL_ASSIGN || node->type == NODE_LOCAL_FOR ||
+               node->type == NODE_LOCAL_READLN || node->type == NODE_LOCAL_VAR_REF) {
+        // NODE_LOCAL_VAR_REF (passing this local by reference to another
+        // procedure as a 'var' argument) is conservatively treated as an
+        // assignment too - the callee might set it through that
+        // reference, and this pass would rather miss a real bug than
+        // wrongly warn about a value a callee legitimately provides.
+        assigned_flag[node->data.var_idx] = 1;
+    }
+
+    scan_local_usage(node->left, read_flag, assigned_flag);
+    scan_local_usage(node->right, read_flag, assigned_flag);
+    scan_local_usage(node->next, read_flag, assigned_flag);
+    scan_local_usage(node->extra, read_flag, assigned_flag);
+}
+
+static void check_uninitialized_locals(int proc_idx, ASTNode *body, int decl_line) {
+    char read_flag[MAX_LOCALS] = {0};
+    char assigned_flag[MAX_LOCALS] = {0};
+    scan_local_usage(body, read_flag, assigned_flag);
+
+    int param_slot_count = proc_table[proc_idx].param_slot_count;
+    int is_function = proc_table[proc_idx].is_function;
+    int local_end = current_local_count - (is_function ? 1 : 0); // exclude the hidden return_slot - checked separately below, never via current_locals[] (its entry there is stale/unpopulated - see the return_slot comment in subroutine_declaration())
+
+    for (int i = param_slot_count; i < local_end; i++) {
+        if (current_locals[i].is_array || current_locals[i].is_array_ref ||
+            current_locals[i].is_static || current_locals[i].is_var_param) {
+            continue;
+        }
+        if (read_flag[i] && !assigned_flag[i]) {
+            fprintf(stderr, "%s:%d: Warning: local variable '%s' in %s '%s' is read but never assigned a value\n",
+                    current_filename, decl_line, current_locals[i].name,
+                    is_function ? "function" : "procedure", proc_table[proc_idx].name);
+        }
+    }
+
+    if (is_function && !assigned_flag[proc_table[proc_idx].return_slot]) {
+        fprintf(stderr, "%s:%d: Warning: function '%s' never assigns a value to its own name - it will always return an undefined value\n",
+                current_filename, decl_line, proc_table[proc_idx].name);
+    }
+}
+
 // Registers the name (via add_proc) before parsing anything else, so a
 // call to this procedure's own name inside its body - recursion -
 // resolves correctly. Parameter info is written back to proc_table right
@@ -2986,6 +3074,8 @@ static void subroutine_declaration(int is_function_decl) {
     proc_table[proc_idx].body = body;
     proc_table[proc_idx].local_count = current_local_count; // params + locals (+ return_slot, for a function)
     proc_table[proc_idx].is_forward = 0; // completed now (harmless if it wasn't forward to begin with)
+
+    check_uninitialized_locals(proc_idx, body, decl_line);
 
     in_procedure = 0;
     current_local_count = 0;

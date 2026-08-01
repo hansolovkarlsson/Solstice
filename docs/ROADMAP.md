@@ -275,7 +275,28 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       form. Distinct from Procedural types (Phase 2, non-standard): this
       needs no named, storable "pointer to a function" type — just the
       parameter written out inline, same as any other formal parameter
-- [ ] Uninitialized-variable warning pass
+- [x] Uninitialized-variable warning pass — the first non-fatal
+      diagnostic this compiler emits (`file:line: Warning: ...`, printed
+      to stderr, compilation still succeeds). Deliberately
+      flow-insensitive (only "ever assigned anywhere in this body", not
+      "assigned on every path that reaches this read" - avoids the real
+      false-positive risk a full branch/goto-aware analysis would carry)
+      and scoped to one procedure/function body at a time: flags a local
+      read-but-never-assigned, and a function that never assigns its own
+      return value. `var` parameters, `static` locals, arrays, and -
+      deliberately, for now - all global variables (including the main
+      program's own top-level `var` section) aren't checked, since
+      telling "initialized by an earlier procedure call" from
+      "genuinely uninitialized" needs whole-program analysis this pass
+      doesn't attempt. Runs at parse time, inside
+      `subroutine_declaration()`, since that's the only point
+      `current_locals[]` (a parser-only scratch table) still holds this
+      procedure's own local metadata. Found a real, pre-existing latent
+      bug on its first run: `examples/test/test_local_for_recursion.pas`
+      declared `factorialViaLoop` as a `function` that never set its own
+      return value (only ever called as a statement, for its side
+      effects) - fixed by redeclaring it `procedure` - see
+      [docs/LANGUAGE.md](LANGUAGE.md#warnings).
 
 ### VM / bytecode
 

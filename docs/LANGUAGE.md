@@ -1872,6 +1872,51 @@ undefined behavior reachable from valid or invalid Pascal source; a bug in
 your program produces a clear error message, not a silent wrong answer or
 a crash.
 
+## Warnings
+
+Unlike an error, a `file:line: Warning: message` **doesn't** stop
+compilation — it's a heuristic diagnostic about code that compiles and
+runs fine, but might be a mistake. Currently the only warning is an
+uninitialized-variable check, run once per procedure/function:
+
+```pascal
+function Average(a, b: integer): integer;
+begin
+    { forgot: Average := (a + b) div 2; }
+end;
+```
+```
+file.pas:1: Warning: function 'Average' never assigns a value to its own name - it will always return an undefined value
+```
+
+- Flags a local variable that's **read but never assigned a value
+  anywhere** in its own procedure/function body, and a function that
+  **never assigns to its own name** anywhere in its body (so it can
+  never return a meaningful value).
+- Deliberately **flow-insensitive**: it only asks "is this ever
+  assigned, anywhere in this body" — not "is it assigned on every path
+  that reaches this read". `if cond then x := 1; writeln(x);` is **not**
+  flagged, even though `x` is only actually assigned when `cond` is
+  true. A precise, path-aware version would need to correctly model
+  every statement kind's control flow (`if`/`while`/`for`/`repeat`/`case`
+  merge points, `break`/`continue`, and this compiler's unrestricted
+  `goto`) — real complexity, with real risk of false-warning noise on
+  correct code. This simpler check only ever *under*-warns; it never
+  incorrectly warns about valid code.
+- Scope is deliberately narrow — only plain scalar locals of one
+  procedure/function body:
+  - Not parameters (always initialized by the caller) or `var`
+    parameters (a valid reference regardless of what it points to).
+  - Not `static` locals — they persist across calls, so reading the
+    implicit zero on the first call is often exactly the point.
+  - Not arrays — per-element initialization isn't tracked.
+  - **Not global variables at all, including the main program's own
+    top-level `var` section.** Telling "already initialized by an
+    earlier procedure call" from "genuinely never initialized" needs
+    whole-program analysis this pass doesn't attempt — so, unlike most
+    other diagnostics in this compiler, an uninitialized *global* simply
+    isn't caught at all yet.
+
 ## What's not implemented
 
 - Three-or-more-dimensional arrays, and array parameters/locals for 2D

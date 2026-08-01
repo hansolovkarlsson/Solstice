@@ -1,6 +1,6 @@
 program TestLocalForRecursion;
 
-function factorialViaLoop(n: integer): integer;
+procedure factorialViaLoop(n: integer);
 var i, result: integer;
 begin
     result := 1;

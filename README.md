@@ -259,6 +259,11 @@ backpatching technique `break`/`continue` already use (see
 parse-time desugaring into an ordinary `for` loop plus an `in` test,
 zero new opcodes (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#iterating-a-set-for-x-in-s-do)).
+Also working: an uninitialized-variable warning pass — the compiler's
+first non-fatal diagnostic (compilation still succeeds), flagging a
+local variable read but never assigned, or a function that never sets
+its own return value, within one procedure/function body at a time (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#warnings)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
 (so no array `copy`/slicing), records as array elements or nested
