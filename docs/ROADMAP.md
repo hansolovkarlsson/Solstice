@@ -138,16 +138,23 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       goto that jumps into the middle of a structured statement
       (if/while/for/case/with) from outside it — see
       [docs/LANGUAGE.md](LANGUAGE.md#goto-and-labels).
-- [ ] `for x in s do` — iterate a variable over the members of a
-      [set](LANGUAGE.md#sets) (ascending bit order). Not standard Wirth
-      Pascal (a later-dialect extension), but natural to add now that
-      sets exist — noted after `examples/test/test_set_print.pas` (kept
-      in the repo for reference) turned out to use this syntax, which
-      the current `for` loop doesn't accept (`for` only iterates an
-      ordinal range via `to`/`downto`, not a set's members). Would need
-      a way to walk a bitmask's set bits, most likely by generating an
-      ordinary counting loop over `0..31` in codegen with a hidden
-      `in`-test guarding the body, rather than a new opcode.
+- [x] `for x in s do` — iterates `x` over a [set](LANGUAGE.md#sets)'s
+      members in ascending order. Not standard Wirth Pascal (a later-
+      dialect extension), added after `examples/test/test_set_print.pas`
+      turned out to use this syntax. Implemented entirely as a parse-
+      time desugaring into AST nodes this compiler already had - zero
+      new NodeType, zero new opcodes: `s` is cached once into a hidden
+      set-typed temporary (exactly like an ordinary `for` loop's end-
+      bound), then an ordinary `for x := 0 to 31 do` wraps an
+      `if x in <cached s> then <body>`, reusing the same fixed 0..31
+      sweep `in`/set construction already rely on internally. `x` must
+      be plain `integer` (not `boolean`/an enum, even for a `set of
+      boolean`/`set of TColor`) - a set's bit position already *is* the
+      raw ordinal, and a set's declared base type is discarded after
+      declaration, so there's nothing to hand back except that raw
+      value. Works everywhere an ordinary `for` loop counter can be
+      (global, local, parameter's record field, `static` local) - see
+      [docs/LANGUAGE.md](LANGUAGE.md#iterating-a-set-for-x-in-s-do).
 
 ### Language — records & arrays
 

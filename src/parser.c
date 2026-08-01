@@ -3687,6 +3687,134 @@ static ASTNode *parse_local_for_tail(int field_local_idx) {
     return compound;
 }
 
+// Parses the 'in <set expr> do <body>' tail of 'for x in s do stmt',
+// given the loop variable already resolved to a GLOBAL scalar
+// (sym_idx - a plain global, a with-field, a global record field, or a
+// static local's mangled global). Desugars entirely into AST nodes this
+// compiler already knows how to generate - no new NodeType, no new
+// opcode:
+//
+//     __for_in_setN := s;              { the set expr, evaluated once }
+//     for x := 0 to MAX_SET_BITS - 1 do
+//         if x in __for_in_setN then stmt
+//
+// A set's bit position IS its member's ordinal value directly (see
+// TYPE_SET in common.h) - a set's declared base type's bounds are only
+// ever checked at declaration time, then discarded - so sweeping the
+// full, fixed 0..MAX_SET_BITS-1 range and testing membership each time
+// is always correct, regardless of what the set was originally declared
+// over. x itself must be plain integer (checked by the caller, exactly
+// like an ordinary 'for' loop variable) - since a set's element "flavor"
+// (integer/enum/boolean) isn't tracked past declaration either, there's
+// no way to hand back anything but a raw ordinal.
+static ASTNode *parse_for_in_tail_global(int sym_idx) {
+    match(TOKEN_IN);
+    ASTNode *set_expr = arithmetic_expression();
+    match(TOKEN_DO);
+
+    char hidden_name[MAX_NAME];
+    snprintf(hidden_name, MAX_NAME, "__for_in_set%d", sym_count);
+    int set_sym_idx = sym_count;
+    add_var(hidden_name, TYPE_SET);
+
+    ASTNode *cache_assign = create_node(NODE_ASSIGN);
+    cache_assign->data.var_idx = set_sym_idx;
+    cache_assign->expression_type = TYPE_SET;
+    cache_assign->left = set_expr;
+
+    ASTNode *for_node = create_node(NODE_FOR);
+    for_node->data.var_idx = sym_idx;
+    for_node->op = TOKEN_TO;
+    ASTNode *lo = create_node(NODE_NUMBER);
+    lo->data.num_value = 0;
+    lo->expression_type = TYPE_INTEGER;
+    for_node->left = lo;
+    ASTNode *hi = create_node(NODE_NUMBER);
+    hi->data.num_value = MAX_SET_BITS - 1;
+    hi->expression_type = TYPE_INTEGER;
+    for_node->right = hi;
+
+    ASTNode *x_read = create_node(NODE_VARIABLE);
+    x_read->data.var_idx = sym_idx;
+    x_read->expression_type = TYPE_INTEGER;
+    ASTNode *set_read = create_node(NODE_VARIABLE);
+    set_read->data.var_idx = set_sym_idx;
+    set_read->expression_type = TYPE_SET;
+    ASTNode *in_test = create_node(NODE_SET_IN);
+    in_test->left = x_read;
+    in_test->right = set_read;
+    in_test->expression_type = TYPE_BOOLEAN;
+
+    ASTNode *if_node = create_node(NODE_IF);
+    if_node->left = in_test;
+
+    loop_depth++;
+    if_node->right = statement();   // body
+    loop_depth--;
+    for_node->extra = if_node;
+
+    cache_assign->next = for_node;
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = cache_assign;
+    return compound;
+}
+
+// Same as parse_for_in_tail_global() above, but for a loop variable that
+// resolved to a LOCAL frame slot (a plain local, or one field of a
+// local/parameter record) - mirrors parse_local_for_tail()'s use of a
+// hidden local (rather than a hidden global) to cache the (here, set-
+// typed) value that must only be evaluated once.
+static ASTNode *parse_for_in_tail_local(int local_idx) {
+    match(TOKEN_IN);
+    ASTNode *set_expr = arithmetic_expression();
+    match(TOKEN_DO);
+
+    char hidden_name[MAX_NAME];
+    snprintf(hidden_name, MAX_NAME, "__for_in_set_local%d", current_local_count);
+    int set_slot = add_local(hidden_name, TYPE_SET);
+
+    ASTNode *cache_assign = create_node(NODE_LOCAL_ASSIGN);
+    cache_assign->data.var_idx = set_slot;
+    cache_assign->expression_type = TYPE_SET;
+    cache_assign->left = set_expr;
+
+    ASTNode *for_node = create_node(NODE_LOCAL_FOR);
+    for_node->data.var_idx = local_idx;
+    for_node->op = TOKEN_TO;
+    ASTNode *lo = create_node(NODE_NUMBER);
+    lo->data.num_value = 0;
+    lo->expression_type = TYPE_INTEGER;
+    for_node->left = lo;
+    ASTNode *hi = create_node(NODE_NUMBER);
+    hi->data.num_value = MAX_SET_BITS - 1;
+    hi->expression_type = TYPE_INTEGER;
+    for_node->right = hi;
+
+    ASTNode *x_read = create_node(NODE_LOCAL_VAR);
+    x_read->data.var_idx = local_idx;
+    x_read->expression_type = TYPE_INTEGER;
+    ASTNode *set_read = create_node(NODE_LOCAL_VAR);
+    set_read->data.var_idx = set_slot;
+    set_read->expression_type = TYPE_SET;
+    ASTNode *in_test = create_node(NODE_SET_IN);
+    in_test->left = x_read;
+    in_test->right = set_read;
+    in_test->expression_type = TYPE_BOOLEAN;
+
+    ASTNode *if_node = create_node(NODE_IF);
+    if_node->left = in_test;
+
+    loop_depth++;
+    if_node->right = statement();   // body
+    loop_depth--;
+    for_node->extra = if_node;
+
+    cache_assign->next = for_node;
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = cache_assign;
+    return compound;
+}
+
 static ASTNode *parse_write_arg(void) {
     ASTNode *value = expression();
     ASTNode *arg = create_node(NODE_WRITE_ARG);
@@ -4051,10 +4179,16 @@ static ASTNode *statement(void) {
                 if (current_locals[field_local_idx].type != TYPE_INTEGER) {
                     compile_error(token.line, "'for' loop variable must be integer");
                 }
+                if (token.type == TOKEN_IN) {
+                    return parse_for_in_tail_local(field_local_idx);
+                }
                 return parse_local_for_tail(field_local_idx);
             }
             if (sym_table[field_sym_idx].type != TYPE_INTEGER) {
                 compile_error(token.line, "'for' loop variable must be integer");
+            }
+            if (token.type == TOKEN_IN) {
+                return parse_for_in_tail_global(field_sym_idx);
             }
             ASTNode *stmt = create_node(NODE_FOR);
             stmt->data.var_idx = field_sym_idx;
@@ -4090,9 +4224,12 @@ static ASTNode *statement(void) {
             if (sym_table[static_idx].type != TYPE_INTEGER) {
                 compile_error(token.line, "'for' loop variable must be integer");
             }
+            match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_IN) {
+                return parse_for_in_tail_global(static_idx);
+            }
             ASTNode *stmt = create_node(NODE_FOR);
             stmt->data.var_idx = static_idx;
-            match(TOKEN_IDENTIFIER);
             match(TOKEN_ASSIGN);
             stmt->left = expression(); // start bound
             if (token.type == TOKEN_TO) {
@@ -4116,11 +4253,21 @@ static ASTNode *statement(void) {
                 compile_error(token.line, "'for' loop variable must be integer");
             }
             match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_IN) {
+                return parse_for_in_tail_local(local_idx);
+            }
             return parse_local_for_tail(local_idx);
         }
-        ASTNode *stmt = create_node(NODE_FOR);
-        stmt->data.var_idx = find_var(token.text);
+        int global_idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
+        if (token.type == TOKEN_IN) {
+            if (sym_table[global_idx].type != TYPE_INTEGER) {
+                compile_error(token.line, "'for' loop variable must be integer");
+            }
+            return parse_for_in_tail_global(global_idx);
+        }
+        ASTNode *stmt = create_node(NODE_FOR);
+        stmt->data.var_idx = global_idx;
         match(TOKEN_ASSIGN);
         stmt->left = expression();       // start bound
         if (token.type == TOKEN_TO) {

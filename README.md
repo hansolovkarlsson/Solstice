@@ -254,7 +254,11 @@ zero new ones added, and work anywhere a scalar type can (variables,
 block-scoped `label` declarations, compiling straight to the VM's
 existing unconditional jump with zero new opcodes, via the same
 backpatching technique `break`/`continue` already use (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#goto-and-labels)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#goto-and-labels)). Also working:
+`for x in s do`, iterating a variable over a set's members - a pure
+parse-time desugaring into an ordinary `for` loop plus an `in` test,
+zero new opcodes (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#iterating-a-set-for-x-in-s-do)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
 (so no array `copy`/slicing), records as array elements or nested

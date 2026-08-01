@@ -1276,6 +1276,38 @@ a record field, or a function's return type. `write`/`writeln` can't
 print a set directly — standard Pascal defines no textual representation
 for one — and `readln` into a set isn't supported either.
 
+### Iterating a set: `for x in s do`
+
+```pascal
+s := [1, 3, 5, 9];
+for x in s do
+    writeln(x);   { prints 1, 3, 5, 9 - ascending order, each member once }
+```
+
+`x` must be a plain `integer` variable (a global, local, parameter,
+record field, or `static` local - anywhere an ordinary `for` loop
+counter can be, except a `var` parameter, which no `for` loop counter
+can be yet) - not `boolean` or an enumerated type, even when `s` was
+declared as `set of boolean` or `set of TColor`. This isn't a
+restriction chosen for its own sake: a set's bit position already *is*
+the member's raw ordinal value (see above), and a set's declared base
+type is discarded after declaration, so there's no record of "this
+value came from `boolean`" or "this value came from `TColor`" to hand
+back — a set of an enumerated type still yields plain integer ordinals
+when iterated, matching whatever `ord()` of each member would give.
+
+`s` is evaluated exactly **once**, before the loop starts (like a
+`for` loop's own end-bound) — a set expression with a side effect (an
+unusual thing to write, but possible if it calls a function) only runs
+once, not once per candidate member.
+
+No new bytecode is involved: this desugars entirely at compile time into
+an ordinary `for x := 0 to 31 do` wrapping an `if x in s then ...` — the
+same fixed 0..31 sweep `in`/set construction already use internally,
+since 32 is the hard cap on a set's size (see above). This means a
+`break`/`continue` inside the loop body works exactly as it would in any
+other `for` loop.
+
 ### What's not supported yet
 
 - **Combining two sets declared with different base types/ranges isn't
