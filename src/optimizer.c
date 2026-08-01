@@ -282,6 +282,25 @@ static int has_range_check(ASTNode *node) {
     return node && node->type == NODE_RANGE_CHECK;
 }
 
+// A NODE_SET_CONSTRUCTOR or NODE_SET_IN has an observable runtime effect
+// of its own wherever it appears in an expression - each element/operand
+// compiles to '1 << value', and OP_SHL's own existing bounds check
+// (0..31) is what catches an out-of-range set element or 'in' operand
+// (see codegen.c) - so an assignment carrying one must never be swept
+// away as "dead" just because its target happens to be otherwise
+// unread, same reasoning as has_range_check() above. Unlike
+// has_range_check(), though, this needs a genuine recursive search
+// rather than a shallow check on the immediate child: a set constructor
+// isn't always the assignment's direct child (e.g. 's := [x] + other;'
+// has it nested one level inside a NODE_BINARY_OP). Deliberately doesn't
+// recurse into ->next - that's the NEXT STATEMENT in a sequence, not
+// part of THIS expression.
+static int has_set_side_effect(ASTNode *node) {
+    if (!node) return 0;
+    if (node->type == NODE_SET_CONSTRUCTOR || node->type == NODE_SET_IN) return 1;
+    return has_set_side_effect(node->left) || has_set_side_effect(node->right) || has_set_side_effect(node->extra);
+}
+
 static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
@@ -313,7 +332,8 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         int var_idx = node->data.var_idx;
         node->next = sweep_dead_assignments(node->next);
 
-        if (!var_used_tracker[var_idx] && !has_range_check(node->left) && !has_range_check(node->right)) {
+        if (!var_used_tracker[var_idx] && !has_range_check(node->left) && !has_range_check(node->right)
+            && !has_set_side_effect(node->left) && !has_set_side_effect(node->right)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
                        sym_table[var_idx].name);
@@ -345,7 +365,7 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         int var_idx = node->data.var_idx;
         node->next = sweep_dead_assignments(node->next);
 
-        if (!var_used_tracker[var_idx] && !has_range_check(node->extra)) {
+        if (!var_used_tracker[var_idx] && !has_range_check(node->extra) && !has_set_side_effect(node->extra)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
                        sym_table[var_idx].name);

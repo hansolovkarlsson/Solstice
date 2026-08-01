@@ -277,21 +277,49 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_BINARY_OP: {
+            // Set subset ('<=')/superset ('>=') tests need a DUP between
+            // generating the two operands (A <= B is (A AND B) == A,
+            // which needs A available twice - once for the AND, once for
+            // the final comparison - and this VM has no stack-shuffling
+            // opcode that could produce that from the ordinary
+            // [left, right] the generic preamble below leaves on the
+            // stack). Handled as a special case, before that preamble
+            // runs, rather than restructuring it for every operator.
+            // '>=' is the same test with the operands swapped (A >= B is
+            // B <= A), so it generates right before left.
+            if (node->left->expression_type == TYPE_SET && (node->op == TOKEN_LTE || node->op == TOKEN_GTE)) {
+                if (node->op == TOKEN_LTE) {
+                    generate_code(node->left);
+                    emit(OP_DUP, 0);
+                    generate_code(node->right);
+                } else {
+                    generate_code(node->right);
+                    emit(OP_DUP, 0);
+                    generate_code(node->left);
+                }
+                emit(OP_BAND, 0);
+                emit(OP_EQ, 0);
+                break;
+            }
             generate_code(node->left);
             generate_code(node->right);
             int operand_is_real = (node->left->expression_type == TYPE_REAL);
+            int operand_is_set = (node->left->expression_type == TYPE_SET);
             switch (node->op) {
                 case TOKEN_PLUS:
                     if (is_string_type(node->left->expression_type)) emit(OP_SCONCAT, 0);
                     else if (operand_is_real) emit(OP_FADD, 0);
+                    else if (operand_is_set) emit(OP_BOR, 0); // union
                     else emit(OP_ADD, 0);
                     break;
                 case TOKEN_MINUS:
                     if (operand_is_real) emit(OP_FSUB, 0);
+                    else if (operand_is_set) { emit(OP_BNOT, 0); emit(OP_BAND, 0); } // difference: left AND (NOT right)
                     else emit(OP_SUB, 0);
                     break;
                 case TOKEN_MUL:
                     if (operand_is_real) emit(OP_FMUL, 0);
+                    else if (operand_is_set) emit(OP_BAND, 0); // intersection
                     else emit(OP_MUL, 0);
                     break;
                 case TOKEN_DIV:
@@ -830,6 +858,30 @@ void generate_code(ASTNode *node) {
             generate_code(node->left);                // the value
             emit(OP_STORE_REF, 0);
             generate_code(node->next);
+            break;
+
+        case NODE_SET_CONSTRUCTOR:
+            emit(OP_PUSH, 0); // empty-set accumulator
+            for (ASTNode *elem = node->left; elem; elem = elem->next) {
+                emit(OP_PUSH, 1);
+                generate_code(elem);
+                emit(OP_SHL, 0);  // 1 << element
+                emit(OP_BOR, 0);  // fold into the accumulator
+            }
+            break;
+
+        case NODE_SET_IN:
+            emit(OP_PUSH, 1);
+            generate_code(node->left); // the element
+            emit(OP_SHL, 0);           // 1 << element - OP_SHL's own
+                                       // existing bounds check (0..31)
+                                       // is what catches an out-of-range
+                                       // element at runtime; no separate
+                                       // check needed here
+            generate_code(node->right); // the set
+            emit(OP_BAND, 0);
+            emit(OP_PUSH, 0);
+            emit(OP_NEQ, 0);           // != 0 -> boolean
             break;
     }
 }

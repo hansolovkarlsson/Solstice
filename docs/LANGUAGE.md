@@ -1149,6 +1149,94 @@ end.
   before `type` (see [Program structure](#program-structure)) — a
   `const` can only ever reference an earlier `const`.
 
+## Sets
+
+```pascal
+var
+    s: set of 0..9;
+begin
+    s := [1, 3, 5];        { a set constructor - literal elements }
+    writeln(1 in s);       { TRUE }
+    writeln(2 in s);       { FALSE }
+
+    s := s + [7];          { union }
+    s := s - [3];          { difference }
+    s := [1, 2] * [2, 3];  { intersection - just {2} }
+
+    s := [1..5];           { a range inside a constructor }
+    s := [];                { the empty set }
+end.
+```
+
+A set holds a collection of ordinal values from a small, fixed range —
+represented internally as a single int, one bit per possible element (bit
+K set means value K is a member), so **a set's base type is capped at 32
+distinct values**. The base type, after `set of`, can be:
+
+- An inline range: `set of 0..9`
+- `boolean` (2 values)
+- A previously-declared enumerated type: `set of TColor`
+- A previously-declared subrange type (named, or a [type alias](#type-aliases) of one)
+
+`char`, `string`, `real`, and a bare `integer` (unbounded) can't be a
+set's base type — declaring one is a compile-time error, same as a base
+range wider than 32 values.
+
+### Set constructors
+
+`[e1, e2, e3..e4, ...]` builds a set value. Each element can be any
+expression of an ordinal type (`integer`, `boolean`, or an enumerated
+value) — not just a literal:
+
+```pascal
+s := [x, y, 10];
+```
+
+A range (`a..b`) inside a constructor must have **compile-time-constant**
+integer bounds (a literal, or a `const` reference) — this compiler
+doesn't have a runtime loop primitive to build one from a variable range,
+so it unrolls a constant range into its individual elements at compile
+time instead. `[]` is the empty set.
+
+An out-of-range element (negative, or 32 or higher) is a **runtime**
+error, not a compile-time one, when it isn't a literal — the same check
+that would reject an out-of-range `shl`/`shr` amount.
+
+### Operators
+
+| Operator | Meaning |
+|---|---|
+| `+` | Union |
+| `-` | Difference |
+| `*` | Intersection |
+| `=` / `<>` | Equality / inequality |
+| `<=` / `>=` | Subset-or-equal / superset-or-equal |
+| `in` | Membership: `x in s` |
+
+`<` and `>` are **not** defined for sets (matching standard Pascal) — use
+`<=`/`>=` for subset/superset, or `=`/`<>` for equality. `x in s`
+requires an ordinal `x` (`integer`, `boolean`, or an enumerated value)
+and a set `s`.
+
+A set can be a `var`/`const`/local/global variable, a by-value parameter,
+a record field, or a function's return type. `write`/`writeln` can't
+print a set directly — standard Pascal defines no textual representation
+for one — and `readln` into a set isn't supported either.
+
+### What's not supported yet
+
+- **Combining two sets declared with different base types/ranges isn't
+  checked** — `(set of 0..9) + (set of TColor)` is accepted, since both
+  are just bitmasks under the hood; this compiler doesn't track which
+  declared base type a given set value "belongs to" the way it does for
+  enums. A deliberate simplification — mixing set shapes like this is a
+  programmer error this compiler won't catch, not a feature.
+
+A set works as a `var` parameter (mutated correctly through the
+reference), and as an array element type (`array[1..3] of set of 0..9`),
+in every position an ordinary scalar type can appear — there's nothing
+set-specific to call out there.
+
 ## Records
 
 ```pascal

@@ -454,7 +454,8 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
                 else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', or 'real')", type_str); return; }
+                else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
                 add_var(line_no, name, type);
             } else if (strcasecmp(directive, "array") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
@@ -468,7 +469,8 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
                 else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', or 'real')", type_str); return; }
+                else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
                 add_array_var(line_no, name, type, lower, upper);
             } else if (strcasecmp(directive, "array2d") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];
@@ -482,7 +484,8 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
                 else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', or 'real')", type_str); return; }
+                else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
                 add_array_var_2d(line_no, name, type, lower, upper, lower2, upper2);
             } else {
                 asm_error(line_no, "Unknown directive '.%s' (expected .var, .array, or .array2d)", directive);

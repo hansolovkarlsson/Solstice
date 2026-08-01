@@ -243,7 +243,14 @@ global variable or one of the caller's own local/parameter slots (see
 line, so several values can be read off one line), multiple targets in
 one `read`/`readln` call, and the `eof`/`eoln` predicates for stdin,
 usable bare (`while not eof do readln(x);`) like real Pascal (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#read-and-readln)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#read-and-readln)). Also working:
+sets (`set of 0..9`, `set of TColor`, `set of boolean`), represented as
+a single int (one bit per possible element, capping a set's base type
+at 32 distinct values) — construction, `in`, union/intersection/
+difference, and subset/superset all reuse existing bitwise opcodes with
+zero new ones added, and work anywhere a scalar type can (variables,
+`var` parameters, array elements, record fields, return types) (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#sets)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
 (so no array `copy`/slicing), records as array elements or nested

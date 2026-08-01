@@ -75,7 +75,30 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       function return types. Chains (`TYears = TAge;`) work; aliasing a
       record type doesn't (only the 5 scalar types) — see
       [docs/LANGUAGE.md](LANGUAGE.md#type-aliases).
-- [ ] Sets
+- [x] Sets (`set of 0..9`, `set of TColor`, `set of boolean`) — a set is
+      a single int at runtime, one bit per possible element (bit K set
+      means value K is a member), so a set's declared base type is
+      capped at 32 distinct values; the base type's bounds are only
+      validated at declaration time, then discarded (`TYPE_SET` is one
+      opaque `DataType`, not parameterized per declared shape, unlike
+      enums). Zero new VM opcodes — set construction, union/
+      intersection/difference, and `in` all reuse `SHL`/`BOR`/`BAND`/
+      `BNOT`/`EQ`; subset/superset (`<=`/`>=`) reuse `DUP` plus `BAND`/
+      `EQ`. Because `parse_scalar_type()` is the one centralized hook
+      every scalar-type call site already goes through, sets work
+      everywhere a scalar type can appear for free: variables, `var`
+      parameters, array elements, record fields, and function return
+      types. Known gaps: combining two sets declared with different
+      base types/ranges isn't checked (both are just bitmasks), no
+      `write`/`writeln`/`readln` support, and `<`/`>` are rejected
+      (matching standard Pascal — use `<=`/`>=` or `=`/`<>`). Along the
+      way, fixed two real bugs: dead-code elimination was silently
+      dropping a set constructor/`in`'s runtime side effect (same class
+      of bug the subrange range-check fix caught earlier), and `solas`
+      couldn't reassemble a disassembled program with set-typed globals
+      (its `.var`/`.array`/`.array2d` directive parsers didn't recognize
+      `"set"` as a type string) — see
+      [docs/LANGUAGE.md](LANGUAGE.md#sets).
 - [ ] Pointers (`^Type`, `new`, `dispose`)
 
 ### Language — control flow

@@ -221,7 +221,15 @@ void type_check(ASTNode *node) {
                 widen_to_real(&node->right);
                 node->expression_type = TYPE_REAL;
             } else if (node->op == TOKEN_PLUS || node->op == TOKEN_MINUS || node->op == TOKEN_MUL) {
-                if (enum_ordinal_arith) {
+                if (left_t == TYPE_SET && right_t == TYPE_SET) {
+                    // + is union, - is difference, * is intersection -
+                    // see codegen.c's NODE_BINARY_OP case for how each
+                    // reuses existing bitwise opcodes (no new ones). A
+                    // set combined with a non-set is already rejected
+                    // above (the general left_t != right_t guard), so
+                    // there's nothing to check here beyond "both sets".
+                    node->expression_type = TYPE_SET;
+                } else if (enum_ordinal_arith) {
                     // No range-checking against the enum's actual value
                     // count (e.g. succ() of its last value) - same as
                     // this compiler's ordinary integer arithmetic never
@@ -230,7 +238,7 @@ void type_check(ASTNode *node) {
                 } else if ((left_t != TYPE_INTEGER && left_t != TYPE_REAL) || (right_t != TYPE_INTEGER && right_t != TYPE_REAL)) {
                     fprintf(stderr, "%s:%d: Type Error: Arithmetic operations require integer or real operands%s\n",
                             get_current_filename(), node->line,
-                            node->op == TOKEN_PLUS ? " (or, for '+', string/char operands)" : "");
+                            node->op == TOKEN_PLUS ? " (or, for '+', string/char operands, or two sets)" : "");
                     fatal_abort();
                 } else if (left_t == TYPE_REAL || right_t == TYPE_REAL) {
                     widen_to_real(&node->left);
@@ -255,8 +263,22 @@ void type_check(ASTNode *node) {
                 // DIFFERENT enum types here, since left_t != right_t in
                 // that case.
                 int both_enum = (left_t == right_t && is_enum_type(left_t));
-                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool && !both_numeric && !both_enum) {
-                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, real, boolean, string, char, or matching enumerated-type operands\n", get_current_filename(), node->line);
+                // Two sets: '=' and '<>' are ordinary bitmask equality
+                // (no codegen change needed - two ints being equal
+                // already means the same bits are set); '<=' and '>='
+                // are subset-or-equal / superset-or-equal (real
+                // codegen support, see codegen.c). '<' and '>' aren't
+                // defined for sets in standard Pascal at all - rejected
+                // explicitly below, rather than silently doing a
+                // meaningless raw-int comparison.
+                int both_set = (left_t == TYPE_SET && right_t == TYPE_SET);
+                if (both_set && (node->op == TOKEN_LT || node->op == TOKEN_GT)) {
+                    fprintf(stderr, "%s:%d: Type Error: '<'/'>' aren't defined for sets - use '<='/'>=' for subset/superset, or '='/'<>' for equality\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                if (!(is_string_type(left_t) && is_string_type(right_t)) && !both_bool && !both_numeric && !both_enum && !both_set) {
+                    fprintf(stderr, "%s:%d: Type Error: Comparisons require integer, real, boolean, string, char, matching enumerated-type, or matching set operands\n", get_current_filename(), node->line);
                     fatal_abort();
                 }
                 if (both_numeric && (left_t == TYPE_REAL || right_t == TYPE_REAL)) {
@@ -536,6 +558,14 @@ void type_check(ASTNode *node) {
         }
 
         case NODE_WRITE_ARG:
+            if (node->left->expression_type == TYPE_SET) {
+                // Standard Pascal defines no textual representation for a
+                // set at all - rejected here rather than silently
+                // printing the raw bitmask as a meaningless integer.
+                fprintf(stderr, "%s:%d: Type Error: write/writeln can't print a set - there's no standard textual representation for one\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
             if (node->right && node->right->expression_type != TYPE_INTEGER) {
                 fprintf(stderr, "%s:%d: Type Error: write/writeln field width must be integer\n",
                         get_current_filename(), node->line);
@@ -657,6 +687,32 @@ void type_check(ASTNode *node) {
                              // validated from NODE_CASE's own case, once
                              // the selector's type is known
             break;
+
+        case NODE_SET_CONSTRUCTOR:
+            for (ASTNode *elem = node->left; elem; elem = elem->next) {
+                DataType et = elem->expression_type;
+                if (et != TYPE_INTEGER && et != TYPE_BOOLEAN && !is_enum_type(et)) {
+                    fprintf(stderr, "%s:%d: Type Error: A set element must be an ordinal value (integer, boolean, or enumerated) - not real, string, char, or another set\n",
+                            get_current_filename(), elem->line);
+                    fatal_abort();
+                }
+            }
+            break;
+
+        case NODE_SET_IN: {
+            DataType lt = node->left->expression_type;
+            if (lt != TYPE_INTEGER && lt != TYPE_BOOLEAN && !is_enum_type(lt)) {
+                fprintf(stderr, "%s:%d: Type Error: 'in' requires an ordinal value (integer, boolean, or enumerated) on the left\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (node->right->expression_type != TYPE_SET) {
+                fprintf(stderr, "%s:%d: Type Error: 'in' requires a set on the right\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+        }
 
         default:
             break;

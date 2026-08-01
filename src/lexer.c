@@ -106,6 +106,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "read") == 0) token.type = TOKEN_READ;
         else if (strcasecmp(token.text, "eoln") == 0) token.type = TOKEN_EOLN;
         else if (strcasecmp(token.text, "eof") == 0) token.type = TOKEN_EOF_FN;
+        else if (strcasecmp(token.text, "set") == 0) token.type = TOKEN_SET;
+        else if (strcasecmp(token.text, "in") == 0) token.type = TOKEN_IN;
         else if (strcasecmp(token.text, "and") == 0) token.type = TOKEN_AND;
         else if (strcasecmp(token.text, "or") == 0) token.type = TOKEN_OR;
         else if (strcasecmp(token.text, "not") == 0) token.type = TOKEN_NOT;

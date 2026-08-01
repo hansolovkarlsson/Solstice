@@ -17,6 +17,10 @@
                            // needs at least one label), which is what
                            // codegen.c's per-arm jump-patch array sizes
                            // itself against
+#define MAX_SET_BITS 32    // a 'set of <T>' base type's range (its number
+                           // of distinct possible values) can't exceed
+                           // this - see TYPE_SET below for why (one plain
+                           // int, one bit per element)
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -73,6 +77,8 @@ typedef enum {
                   // an unrelated, pre-existing concept this name could
                   // otherwise be confused with).
     TOKEN_EOLN,   // the 'eoln' builtin function.
+    TOKEN_SET,    // the 'set' keyword ('set of <ordinal type>').
+    TOKEN_IN,     // the 'in' set-membership operator.
     TOKEN_EOF
 } TokenType;
 
@@ -90,6 +96,27 @@ typedef enum {
                 // vm.c's bits_to_float/float_to_bits) - not a double,
                 // specifically so a real value still fits in exactly one
                 // slot, matching every other type's storage model.
+    TYPE_SET,   // 'set of <ordinal type>' - represented as a single plain
+                // int, one bit per possible element (bit K set means
+                // ordinal value K is a member), so the base type's range
+                // is capped at 32 distinct values (see
+                // parse_scalar_type()'s TOKEN_SET branch in parser.c,
+                // which enforces this at the declaration site and then
+                // deliberately discards the bounds - nothing downstream
+                // needs to remember them, since every set operation
+                // either builds a bitmask directly from the operand
+                // values (set constructors, 'in') or combines two
+                // bitmasks with ordinary bitwise ops (+/-/*/=/<>/<=/>=)
+                // - unlike TYPE_ENUM_BASE below, this is ONE plain type
+                // for every declared set, not one per distinct base type;
+                // this compiler doesn't stop you from combining a 'set of
+                // 0..9' with a 'set of TColor' (both are just bitmasks at
+                // that point) - a deliberate simplification, documented
+                // in docs/LANGUAGE.md. No new opcodes needed anywhere:
+                // NODE_SET_CONSTRUCTOR/NODE_SET_IN and the set-aware
+                // branches of NODE_BINARY_OP in codegen.c build everything
+                // from PUSH/DUP/SHL/BOR/BAND/BNOT/EQ/NEQ, all of which
+                // already existed.
     TYPE_ENUM_BASE // Not a real type by itself - a specific enumerated
                 // type ('type TColor = (Red, Green, Blue);') is encoded
                 // as TYPE_ENUM_BASE + its enum_types[] index, so DataType
@@ -716,13 +743,35 @@ typedef enum {
                        // an ENCODED REFERENCE (from one of the two node
                        // types above, or a forwarded one), not the value
                        // itself.
-    NODE_VAR_PARAM_ASSIGN // Writes through a 'var' parameter. left =
+    NODE_VAR_PARAM_ASSIGN, // Writes through a 'var' parameter. left =
                        // value expression. data.var_idx = the parameter's
                        // own local frame slot (see NODE_VAR_PARAM_READ).
                        // expression_type = the target's declared type -
                        // needed for the same reason NODE_LOCAL_ASSIGN
                        // needs it (type_checker.c has no table to look a
                        // local's type up in later).
+    NODE_SET_CONSTRUCTOR, // '[e1, e2, e3..e4, ...]' - a set literal. left
+                       // = head of a chain of ordinal-valued element
+                       // expressions (each already an ordinary
+                       // int-producing expression - a range 'a..b' is
+                       // unrolled into (b-a+1) individual NODE_NUMBER
+                       // elements at parse time, since this compiler
+                       // doesn't have a runtime loop primitive to build
+                       // one otherwise), chained via each element's own
+                       // ->next (same technique as NODE_WRITELN's
+                       // argument list). expression_type = TYPE_SET.
+                       // Codegen starts with an empty (0) accumulator and
+                       // ORs in '1 << element' for each one - no new
+                       // opcodes needed (PUSH/SHL/BOR already exist).
+    NODE_SET_IN        // 'x in s' - set membership test. left = the
+                       // ordinal value (x), right = the set expression
+                       // (s), expression_type = TYPE_BOOLEAN. Deliberately
+                       // its own node type rather than folded into
+                       // NODE_BINARY_OP: codegen needs '1 << x' evaluated
+                       // BEFORE combining with s, an ordering the generic
+                       // NODE_BINARY_OP codegen (which always generates
+                       // left then right first) can't produce without a
+                       // stack-shuffling opcode this VM doesn't have.
 } NodeType;
 
 typedef struct ASTNode {

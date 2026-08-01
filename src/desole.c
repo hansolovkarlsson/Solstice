@@ -147,6 +147,10 @@ static const char *type_name(DataType type) {
         case TYPE_STRING:  return "string";
         case TYPE_CHAR:    return "char";
         case TYPE_REAL:    return "real";
+        case TYPE_SET:     return "set"; // its actual runtime representation
+                           // is a plain int bitmask - see TYPE_SET's
+                           // comment in common.h - but "set" is more
+                           // informative in a variable-dump than "integer"
         default:           return "unknown";
     }
 }

@@ -318,6 +318,27 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_SET_CONSTRUCTOR: {
+            printf("[Set Constructor]\n");
+            int elem_num = 1;
+            for (ASTNode *elem = node->left; elem; elem = elem->next) {
+                print_indent(indent + 1);
+                printf("Elem %d:\n", elem_num++);
+                print_ast(elem, indent + 2);
+            }
+            break;
+        }
+
+        case NODE_SET_IN:
+            printf("[Set In]\n");
+            print_indent(indent + 1);
+            printf("Element:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Set:\n");
+            print_ast(node->right, indent + 2);
+            break;
+
         case NODE_BREAK:
             printf("[Break]\n");
             if (node->next) {

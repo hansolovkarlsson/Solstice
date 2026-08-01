@@ -1052,14 +1052,57 @@ static int scalar_type_is_subrange = 0;
 static int scalar_type_subrange_lower = 0;
 static int scalar_type_subrange_upper = 0;
 
+// Parses the '<base-type>' after 'set of' and validates it, WITHOUT
+// keeping the bounds around afterward - nothing downstream needs them
+// (see TYPE_SET's comment in common.h for why). Accepts an inline
+// subrange ('0..9'), 'boolean' (2 values), a previously-declared
+// enumerated type name, or a previously-declared subrange type name/
+// alias - and rejects anything whose range exceeds MAX_SET_BITS distinct
+// values (integer/char/string/real, or an enum/subrange too wide to fit
+// in one bitmask).
+static void parse_set_base_type(void) {
+    int lower, upper;
+    if (token.type == TOKEN_NUMBER || token.type == TOKEN_MINUS) {
+        lower = parse_int_literal();
+        match(TOKEN_DOTDOT);
+        upper = parse_int_literal();
+        if (upper < lower) {
+            compile_error(token.line, "Invalid set base range: upper (%d) must be >= lower (%d)", upper, lower);
+        }
+    } else if (token.type == TOKEN_BOOLEAN) {
+        match(TOKEN_BOOLEAN);
+        lower = 0;
+        upper = 1;
+    } else if (token.type == TOKEN_IDENTIFIER && find_enum_type(token.text) != -1) {
+        int enum_type_idx = find_enum_type(token.text);
+        match(TOKEN_IDENTIFIER);
+        lower = 0;
+        upper = enum_types[enum_type_idx].value_count - 1;
+    } else if (token.type == TOKEN_IDENTIFIER && find_subrange_type(token.text) != -1) {
+        int subrange_idx = find_subrange_type(token.text);
+        match(TOKEN_IDENTIFIER);
+        lower = subrange_types[subrange_idx].lower;
+        upper = subrange_types[subrange_idx].upper;
+    } else {
+        compile_error(token.line, "Expected a set base type: an inline range ('0..9'), 'boolean', an enumerated type, or a subrange type (integer/char/string/real have too many, or too few, defined values to be one)");
+        return; // unreachable
+    }
+    if (lower < 0) {
+        compile_error(token.line, "A set base type's range can't include a negative value (%d)", lower);
+    }
+    if (upper - lower + 1 > MAX_SET_BITS) {
+        compile_error(token.line, "Set base range is too large (%d distinct values; limit is %d)", upper - lower + 1, MAX_SET_BITS);
+    }
+}
+
 // A scalar type - one of the five built-in keywords, a previously
-// declared type alias, enumerated type, or subrange type resolving to
-// one of them (see TypeAliasDef/EnumTypeDef/SubrangeTypeDef above). This
-// is the one centralized function every scalar-type call site goes
-// through (parameters, procedure-locals, record fields, function return
-// types, and plain/array var declarations), so alias/enum/subrange
-// support and any future scalar-type keyword only needs to be added here
-// once.
+// declared type alias, enumerated type, subrange type, or 'set of ...'
+// resolving to one of them (see TypeAliasDef/EnumTypeDef/SubrangeTypeDef/
+// TYPE_SET above). This is the one centralized function every scalar-
+// type call site goes through (parameters, procedure-locals, record
+// fields, function return types, and plain/array var declarations), so
+// alias/enum/subrange/set support and any future scalar-type keyword
+// only needs to be added here once.
 static DataType parse_scalar_type(void) {
     scalar_type_is_subrange = 0;
     if (token.type == TOKEN_INTEGER) { match(TOKEN_INTEGER); return TYPE_INTEGER; }
@@ -1067,6 +1110,12 @@ static DataType parse_scalar_type(void) {
     if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
     if (token.type == TOKEN_CHAR_TYPE) { match(TOKEN_CHAR_TYPE); return TYPE_CHAR; }
     if (token.type == TOKEN_REAL_TYPE) { match(TOKEN_REAL_TYPE); return TYPE_REAL; }
+    if (token.type == TOKEN_SET) {
+        match(TOKEN_SET);
+        match(TOKEN_OF);
+        parse_set_base_type();
+        return TYPE_SET;
+    }
     if (token.type == TOKEN_IDENTIFIER) {
         int alias_idx = find_type_alias(token.text);
         if (alias_idx != -1) {
@@ -1088,7 +1137,7 @@ static DataType parse_scalar_type(void) {
             return TYPE_INTEGER;
         }
     }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', a declared type alias, an enumerated type, or a subrange type)");
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', 'set of ...', a declared type alias, an enumerated type, or a subrange type)");
     return TYPE_UNKNOWN;
 }
 
@@ -1835,6 +1884,58 @@ static ASTNode *factor(void) {
         ASTNode *node = expression();
         match(TOKEN_RPAREN);
         return node;
+    } else if (token.type == TOKEN_LBRACKET) {
+        // '[e1, e2, e3..e4, ...]' - a set constructor ('[]' is the empty
+        // set). A range's bounds ('a..b') must be compile-time-constant
+        // integers - unrolled into (b-a+1) individual elements right
+        // here, since this compiler has no runtime loop primitive to
+        // build one otherwise; a single (non-range) element can be any
+        // ordinal expression, constant or not (see NODE_SET_CONSTRUCTOR's
+        // codegen, which just ORs '1 << element' into an accumulator for
+        // each one - a literal and a runtime-computed element compile
+        // identically).
+        match(TOKEN_LBRACKET);
+        ASTNode *node = create_node(NODE_SET_CONSTRUCTOR);
+        node->expression_type = TYPE_SET;
+        ASTNode *head = NULL;
+        ASTNode *tail = NULL;
+        if (token.type != TOKEN_RBRACKET) {
+            while (1) {
+                ASTNode *elem = expression();
+                if (token.type == TOKEN_DOTDOT) {
+                    if (elem->type != NODE_NUMBER) {
+                        compile_error(token.line, "A set range's bounds must be constant integers");
+                    }
+                    int lo = elem->data.num_value;
+                    free_ast(elem);
+                    match(TOKEN_DOTDOT);
+                    ASTNode *upper_node = expression();
+                    if (upper_node->type != NODE_NUMBER) {
+                        compile_error(token.line, "A set range's bounds must be constant integers");
+                    }
+                    int hi = upper_node->data.num_value;
+                    free_ast(upper_node);
+                    if (hi < lo) {
+                        compile_error(token.line, "Invalid set range: upper (%d) must be >= lower (%d)", hi, lo);
+                    }
+                    for (int v = lo; v <= hi; v++) {
+                        ASTNode *n = create_node(NODE_NUMBER);
+                        n->data.num_value = v;
+                        n->expression_type = TYPE_INTEGER;
+                        if (!head) head = n; else tail->next = n;
+                        tail = n;
+                    }
+                } else {
+                    if (!head) head = elem; else tail->next = elem;
+                    tail = elem;
+                }
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
+            }
+        }
+        match(TOKEN_RBRACKET);
+        node->left = head;
+        return node;
     } else if (token.type == TOKEN_NUMBER) {
         ASTNode *node = create_node(NODE_NUMBER);
         node->data.num_value = token.value;
@@ -2129,6 +2230,19 @@ static ASTNode *expression(void) {
         next_token();
         op_node->right = arithmetic_expression();
         node = op_node;
+    }
+    // 'x in s' - same precedence level as the relational operators above,
+    // but its own node type (not NODE_BINARY_OP) - see NODE_SET_IN's
+    // comment in common.h for why. Not part of the while loop above:
+    // chaining 'in' with itself or with =/<>/etc. isn't meaningful, so a
+    // single optional check here is enough.
+    if (token.type == TOKEN_IN) {
+        match(TOKEN_IN);
+        ASTNode *in_node = create_node(NODE_SET_IN);
+        in_node->left = node;
+        in_node->right = arithmetic_expression();
+        in_node->expression_type = TYPE_BOOLEAN;
+        node = in_node;
     }
     return node;
 }
@@ -2969,6 +3083,9 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
             }
+            if (sym_table[with_field_idx].type == TYPE_SET) {
+                compile_error(token.line, "readln into a set is not supported");
+            }
             ASTNode *stmt = create_node(NODE_READLN);
             stmt->data.var_idx = with_field_idx;
             return stmt;
@@ -3001,6 +3118,9 @@ static ASTNode *parse_read_target(void) {
                 if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE) {
                     compile_error(token.line, "readln into an enumerated value is not supported");
                 }
+                if (current_locals[resolved_idx].type == TYPE_SET) {
+                    compile_error(token.line, "readln into a set is not supported");
+                }
                 ASTNode *stmt = create_node(NODE_LOCAL_READLN);
                 stmt->data.var_idx = resolved_idx;
                 stmt->expression_type = current_locals[resolved_idx].type;
@@ -3011,6 +3131,9 @@ static ASTNode *parse_read_target(void) {
             }
             if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            if (sym_table[resolved_idx].type == TYPE_SET) {
+                compile_error(token.line, "readln into a set is not supported");
             }
             ASTNode *stmt = create_node(NODE_READLN);
             stmt->data.var_idx = resolved_idx;
@@ -3029,6 +3152,9 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[static_idx].type >= TYPE_ENUM_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
             }
+            if (sym_table[static_idx].type == TYPE_SET) {
+                compile_error(token.line, "readln into a set is not supported");
+            }
             ASTNode *stmt = create_node(NODE_READLN);
             stmt->data.var_idx = static_idx;
             return stmt;
@@ -3038,6 +3164,9 @@ static ASTNode *parse_read_target(void) {
         }
         if (current_locals[local_idx].type >= TYPE_ENUM_BASE) {
             compile_error(token.line, "readln into an enumerated value is not supported");
+        }
+        if (current_locals[local_idx].type == TYPE_SET) {
+            compile_error(token.line, "readln into a set is not supported");
         }
         ASTNode *stmt = create_node(NODE_LOCAL_READLN);
         stmt->data.var_idx = local_idx;
@@ -3049,6 +3178,9 @@ static ASTNode *parse_read_target(void) {
     int readln_var_idx = find_var(token.text);
     if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE) {
         compile_error(token.line, "readln into an enumerated value is not supported");
+    }
+    if (sym_table[readln_var_idx].type == TYPE_SET) {
+        compile_error(token.line, "readln into a set is not supported");
     }
     ASTNode *stmt = create_node(NODE_READLN);
     stmt->data.var_idx = readln_var_idx;
