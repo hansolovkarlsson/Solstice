@@ -416,6 +416,59 @@ end;
   re-checking the loop condition — it doesn't skip incrementing the loop
   variable.
 
+### `goto` and labels
+
+```pascal
+program GotoDemo;
+label 1, 2;
+var
+    i: integer;
+begin
+    i := 1;
+    1: writeln(i);        { a labelled statement - '1:' can be jumped to }
+    i := i + 1;
+    if i <= 3 then goto 1;    { jump back - prints 1, 2, 3 }
+    goto 2;
+    writeln('skipped');
+    2: writeln('done');
+end.
+```
+
+- Every label a block uses must be declared up front in a `label`
+  section — a comma-separated list of unsigned integers, e.g.
+  `label 1, 2, 100;`. Like `const`/`type`/`var`, at most one `label`
+  section per block, and it must come first (before `const`/`type`/`var`
+  and, in a procedure/function, before its own `var` section).
+- `N: statement` attaches label `N` to a statement. Every declared label
+  must label **exactly one** statement somewhere in its block — a
+  declared-but-never-used label, or a label attached to two different
+  statements, is a compile-time error.
+- `goto N;` jumps to whichever statement label `N` marks — forward
+  (a label appearing later in the source) or backward (earlier), either
+  way with no restriction, since `label`/`goto` don't build a runtime
+  loop at all - it's just an unconditional jump.
+- **A label's scope is exactly one block** (the main program, or one
+  procedure/function) — a `goto` can only target a label declared in the
+  *same* block it appears in. A procedure's own `label`/`goto` are
+  completely independent of the main program's and of every other
+  procedure's; the same label number can be reused freely across blocks
+  without conflict, and a `goto` can never jump into or out of a
+  procedure.
+
+#### What's not supported yet
+
+- **This compiler doesn't check that a `goto` stays outside every
+  structured statement (`if`/`while`/`for`/`case`/`with`) it doesn't
+  already enclose** — standard Pascal forbids jumping directly into the
+  middle of one of these from outside it; this compiler allows it (the
+  jump just lands wherever the label's bytecode address is, skipping
+  whatever came before it in that same body). A deliberate simplification
+  — this is a programmer error this compiler won't catch, not a feature.
+- **No empty statement** (`1: ;` as a do-nothing target) — this compiler
+  doesn't support an empty statement anywhere, not just after a label, so
+  a label meant to mark a fall-through/exit point needs a real trailing
+  statement to attach to (e.g. a harmless `writeln` or assignment).
+
 ### `write` and `writeln`
 
 ```pascal

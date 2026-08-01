@@ -26,6 +26,38 @@ static const char *current_filename = "<source>";
 // loop right where they're written, rather than only failing at codegen.
 static int loop_depth = 0;
 
+// Labels declared in the CURRENT block's 'label' section (the main
+// program, or whichever procedure/function is being parsed right now) -
+// reset at the start of each block (parse_ast() for the main program,
+// subroutine_declaration() for a procedure/function), since each block
+// has its own independent label namespace: a goto can only target a
+// label declared in that same block, never across a procedure boundary.
+// 'defined' tracks whether the label has already been used as a
+// 'N: statement' prefix somewhere in this block - needed to catch both a
+// duplicate definition (two statements claiming the same label) and, at
+// the end of the block, a label that was declared but never used to
+// label any statement (a standard Pascal requirement, not just a stray
+// warning - see check_all_labels_defined()). Because procedure bodies
+// are parsed (via subroutine_declaration(), which resets this same
+// table) in between the main program's own declarations and its body,
+// parse_ast() stashes and restores its own declared_labels/count around
+// that procedure-parsing loop - see the comment there.
+#define MAX_DECLARED_LABELS 64
+typedef struct {
+    int id;
+    int decl_line;
+    int defined;
+} DeclaredLabel;
+static DeclaredLabel declared_labels[MAX_DECLARED_LABELS];
+static int declared_label_count = 0;
+
+static int find_declared_label(int id) {
+    for (int i = 0; i < declared_label_count; i++) {
+        if (declared_labels[i].id == id) return i;
+    }
+    return -1;
+}
+
 // The parameters and local variables of whichever procedure is currently
 // being parsed - a fresh, tiny scope, reset at the start of each
 // procedure_declaration() and cleared again once it's done. Empty (and
@@ -2247,6 +2279,51 @@ static ASTNode *expression(void) {
     return node;
 }
 
+// Parses a 'label' section: 'label 1, 2, 100;' - one or more comma-
+// separated unsigned integer labels (no sign, no const/enum reference -
+// ISO Pascal defines a label as literally an unsigned-integer, unlike
+// case labels or subrange bounds which accept more).
+static void parse_label_section(void) {
+    match(TOKEN_LABEL);
+    while (1) {
+        int line = token.line;
+        if (token.type != TOKEN_NUMBER) {
+            compile_error(line, "Expected an unsigned integer label");
+        }
+        int id = token.value;
+        match(TOKEN_NUMBER);
+        if (find_declared_label(id) != -1) {
+            compile_error(line, "Duplicate label declaration '%d'", id);
+        }
+        if (declared_label_count >= MAX_DECLARED_LABELS) {
+            compile_error(line, "Too many label declarations (limit is %d)", MAX_DECLARED_LABELS);
+        }
+        declared_labels[declared_label_count].id = id;
+        declared_labels[declared_label_count].decl_line = line;
+        declared_labels[declared_label_count].defined = 0;
+        declared_label_count++;
+        if (token.type == TOKEN_COMMA) {
+            match(TOKEN_COMMA);
+            continue;
+        }
+        break;
+    }
+    match(TOKEN_SEMI);
+}
+
+// Every label declared in the current block's 'label' section must label
+// exactly one statement somewhere in that block (standard Pascal
+// requirement) - called once the block's whole statement list has been
+// parsed, so a label that's declared but never used is caught rather
+// than silently accepted as dead documentation.
+static void check_all_labels_defined(void) {
+    for (int i = 0; i < declared_label_count; i++) {
+        if (!declared_labels[i].defined) {
+            compile_error(declared_labels[i].decl_line, "Label %d was declared but never labels a statement", declared_labels[i].id);
+        }
+    }
+}
+
 // Parses a 'type' section: one or more 'TypeName = record ... end;'
 // declarations. Only record types exist right now - there's no type
 // aliasing ('type TAge = integer;') and no nested records (a field can't
@@ -2501,10 +2578,15 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     enum_type_count = 0;
     subrange_type_count = 0;
     with_depth = 0;
+    declared_label_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
     match(TOKEN_SEMI);
+
+    if (token.type == TOKEN_LABEL) {
+        parse_label_section();
+    }
 
     if (token.type == TOKEN_CONST) {
         parse_const_section();
@@ -2596,6 +2678,15 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         }
     }
 
+    // The main program's own label declarations (if any) must survive
+    // parsing every procedure/function below - each one resets and
+    // reuses this same static declared_labels table for its own,
+    // independent label namespace (see subroutine_declaration()).
+    // Stashed here, restored just before parsing the main body itself.
+    DeclaredLabel main_labels[MAX_DECLARED_LABELS];
+    int main_label_count = declared_label_count;
+    memcpy(main_labels, declared_labels, sizeof(DeclaredLabel) * declared_label_count);
+
     while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
         subroutine_declaration(token.type == TOKEN_FUNCTION);
     }
@@ -2607,7 +2698,11 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         }
     }
 
+    memcpy(declared_labels, main_labels, sizeof(DeclaredLabel) * main_label_count);
+    declared_label_count = main_label_count;
+
     ASTNode *root = compound_statement();
+    check_all_labels_defined();
     match(TOKEN_PERIOD);
     return root;
 }
@@ -2665,6 +2760,7 @@ static void subroutine_declaration(int is_function_decl) {
     in_procedure = 1;
     current_local_count = 0;
     local_record_var_count = 0;
+    declared_label_count = 0;
 
     if (completing_forward) {
         if (token.type == TOKEN_LPAREN) {
@@ -2830,6 +2926,10 @@ static void subroutine_declaration(int is_function_decl) {
         return; // the real body comes later, in a completing declaration
     }
 
+    if (token.type == TOKEN_LABEL) {
+        parse_label_section();
+    }
+
     if (token.type == TOKEN_VAR) {
         match(TOKEN_VAR);
         while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_STATIC) {
@@ -2880,6 +2980,7 @@ static void subroutine_declaration(int is_function_decl) {
     }
 
     ASTNode *body = compound_statement();
+    check_all_labels_defined();
     match(TOKEN_SEMI);
 
     proc_table[proc_idx].body = body;
@@ -3243,7 +3344,11 @@ static int is_statement_start(TokenType t) {
     return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN || t == TOKEN_READ ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
-           t == TOKEN_ASSERT || t == TOKEN_CASE;
+           t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
+           t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
+                              // statement - it can only be a 'N: statement'
+                              // label prefix (see statement()) - so this is
+                              // unambiguous.
 }
 
 // Parses exactly one statement - an assignment, writeln/readln call,
@@ -3599,6 +3704,45 @@ static ASTNode *parse_write_arg(void) {
 }
 
 static ASTNode *statement(void) {
+    if (token.type == TOKEN_NUMBER) {
+        // A bare integer literal can only ever appear here as a
+        // 'N: statement' label prefix - no other Pascal statement starts
+        // with one, so there's nothing to disambiguate (see
+        // is_statement_start()'s comment).
+        int line = token.line;
+        ASTNode *stmt = create_node(NODE_LABEL);
+        int id = token.value;
+        match(TOKEN_NUMBER);
+        match(TOKEN_COLON);
+        int idx = find_declared_label(id);
+        if (idx == -1) {
+            compile_error(line, "Label %d wasn't declared in this block's 'label' section", id);
+        }
+        if (declared_labels[idx].defined) {
+            compile_error(line, "Label %d already labels another statement", id);
+        }
+        declared_labels[idx].defined = 1;
+        stmt->data.num_value = id;
+        stmt->left = statement();
+        return stmt;
+    }
+
+    if (token.type == TOKEN_GOTO) {
+        int line = token.line;
+        ASTNode *stmt = create_node(NODE_GOTO);
+        match(TOKEN_GOTO);
+        if (token.type != TOKEN_NUMBER) {
+            compile_error(token.line, "Expected a label number after 'goto'");
+        }
+        int id = token.value;
+        match(TOKEN_NUMBER);
+        if (find_declared_label(id) == -1) {
+            compile_error(line, "'goto %d' references a label not declared in this block's 'label' section", id);
+        }
+        stmt->data.num_value = id;
+        return stmt;
+    }
+
     if (token.type == TOKEN_BEGIN) {
         return compound_statement();
     }

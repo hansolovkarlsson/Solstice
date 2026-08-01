@@ -79,6 +79,9 @@ typedef enum {
     TOKEN_EOLN,   // the 'eoln' builtin function.
     TOKEN_SET,    // the 'set' keyword ('set of <ordinal type>').
     TOKEN_IN,     // the 'in' set-membership operator.
+    TOKEN_LABEL,  // the 'label' keyword introducing a block's label
+                  // declaration section ('label 1, 2, 100;').
+    TOKEN_GOTO,   // the 'goto' statement keyword.
     TOKEN_EOF
 } TokenType;
 
@@ -763,7 +766,7 @@ typedef enum {
                        // Codegen starts with an empty (0) accumulator and
                        // ORs in '1 << element' for each one - no new
                        // opcodes needed (PUSH/SHL/BOR already exist).
-    NODE_SET_IN        // 'x in s' - set membership test. left = the
+    NODE_SET_IN,       // 'x in s' - set membership test. left = the
                        // ordinal value (x), right = the set expression
                        // (s), expression_type = TYPE_BOOLEAN. Deliberately
                        // its own node type rather than folded into
@@ -772,6 +775,35 @@ typedef enum {
                        // NODE_BINARY_OP codegen (which always generates
                        // left then right first) can't produce without a
                        // stack-shuffling opcode this VM doesn't have.
+    NODE_LABEL,        // '<N>: statement' - a labelled statement, where N
+                       // is an unsigned integer declared in the enclosing
+                       // block's 'label' section. data.num_value = the
+                       // label's id; left = the wrapped statement (this
+                       // node itself threads ->next to whatever statement
+                       // follows it in the enclosing list, exactly like
+                       // any other statement node - the wrapping is
+                       // transparent to that chain). Codegen (see
+                       // codegen.c's label_table) records this label's
+                       // code_idx the moment it's reached, patching any
+                       // NODE_GOTO placeholders recorded against this id
+                       // beforehand (a forward goto - one appearing
+                       // earlier in the source than the label it targets).
+    NODE_GOTO          // 'goto <N>;' - data.num_value = the target
+                       // label's id, already validated at parse time
+                       // against the enclosing block's 'label' section
+                       // (parser.c's declared_labels[]). Compiles to a
+                       // single unconditional OP_JMP: straight to the
+                       // label's code_idx if already known (a backward
+                       // goto), or a placeholder patched once that label
+                       // is reached (a forward goto) - the same emit-
+                       // then-patch technique NODE_IF/NODE_WHILE/etc.
+                       // already use, keyed by label id instead of a
+                       // loop's break/continue targets. Restricted to
+                       // targeting a label in the SAME block (procedure
+                       // or main program): the label table is reset at
+                       // the start of every block's own codegen (see
+                       // generate_block()), so a goto can never - even
+                       // accidentally - jump across a procedure boundary.
 } NodeType;
 
 typedef struct ASTNode {

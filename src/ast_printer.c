@@ -353,6 +353,21 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_LABEL:
+            printf("[Label] %d:\n", node->data.num_value);
+            print_ast(node->left, indent + 1);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_GOTO:
+            printf("[Goto] -> %d\n", node->data.num_value);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_CALL: {
             ProcSymbol *proc = &proc_table[node->data.var_idx];
             printf("[Call] -> %s: %s\n", proc->is_function ? "Function" : "Procedure", proc->name);

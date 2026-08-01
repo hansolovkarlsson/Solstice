@@ -156,6 +156,51 @@ static void patch_loop(int continue_target, int break_target) {
     for (int i = 0; i < lc->break_count; i++) code[lc->break_jumps[i]].arg = break_target;
 }
 
+// goto/label support: one entry per label id seen so far in the CURRENT
+// block (main program or procedure/function body - see generate_block()
+// below, which resets this table at the start of each one). A NODE_GOTO
+// reached before its target NODE_LABEL has been generated (a forward
+// goto) can't know the real jump address yet, so it emits a placeholder
+// and records its instruction index here; once NODE_LABEL is reached,
+// every pending placeholder recorded against that id gets patched to the
+// label's actual code_idx - same emit-then-patch idea as break/continue
+// above, just keyed by label id instead of "current innermost loop". A
+// backward goto (label already generated) skips the placeholder entirely
+// and emits the real jump immediately, exactly like NODE_WHILE's jump
+// back to its own condition.
+#define MAX_LABELS_PER_BLOCK 64
+#define MAX_LABEL_PENDING_JUMPS 32
+
+typedef struct {
+    int id;
+    int code_idx;       // -1 until this label has actually been generated
+    int pending_jumps[MAX_LABEL_PENDING_JUMPS];
+    int pending_count;
+} LabelEntry;
+
+static LabelEntry label_table[MAX_LABELS_PER_BLOCK];
+static int label_table_count = 0;
+
+// Finds this label's entry in the current block's table, creating one
+// (code_idx == -1, meaning "not generated yet") on first sight - a
+// forward goto will always see its target for the first time this way,
+// since the label itself hasn't been generated yet.
+static int find_or_add_label(int id) {
+    for (int i = 0; i < label_table_count; i++) {
+        if (label_table[i].id == id) return i;
+    }
+    if (label_table_count >= MAX_LABELS_PER_BLOCK) {
+        fprintf(stderr, "%s: Compile Error: Too many labels in one block (limit is %d)\n",
+                get_current_filename(), MAX_LABELS_PER_BLOCK);
+        fatal_abort();
+    }
+    LabelEntry *le = &label_table[label_table_count];
+    le->id = id;
+    le->code_idx = -1;
+    le->pending_count = 0;
+    return label_table_count++;
+}
+
 // Procedure-call target resolution: forward declarations mean a CALL's
 // target entry_address isn't always known yet when the CALL itself is
 // generated (procedure A can call forward-declared procedure B before B's
@@ -599,6 +644,35 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_LABEL: {
+            int idx = find_or_add_label(node->data.num_value);
+            label_table[idx].code_idx = code_idx;
+            for (int i = 0; i < label_table[idx].pending_count; i++) {
+                code[label_table[idx].pending_jumps[i]].arg = code_idx;
+            }
+            label_table[idx].pending_count = 0;
+            generate_code(node->left);
+            generate_code(node->next);
+            break;
+        }
+
+        case NODE_GOTO: {
+            int idx = find_or_add_label(node->data.num_value);
+            if (label_table[idx].code_idx != -1) {
+                emit(OP_JMP, label_table[idx].code_idx); // backward goto - target already known
+            } else {
+                if (label_table[idx].pending_count >= MAX_LABEL_PENDING_JUMPS) {
+                    fprintf(stderr, "%s: Compile Error: Too many 'goto' statements targeting one label (limit is %d)\n",
+                            get_current_filename(), MAX_LABEL_PENDING_JUMPS);
+                    fatal_abort();
+                }
+                label_table[idx].pending_jumps[label_table[idx].pending_count++] = code_idx;
+                emit(OP_JMP, 0); // placeholder - patched once NODE_LABEL is reached
+            }
+            generate_code(node->next);
+            break;
+        }
+
         case NODE_BUILTIN_CALL:
             generate_code(node->left);
             if (node->op == TOKEN_LENGTH) {
@@ -910,6 +984,16 @@ void generate_code(ASTNode *node) {
 // in the source. So every CALL target is backpatched (record_call()
 // above), resolved in the final pass below once every procedure's
 // entry_address is known.
+// Generates one whole block's code (a procedure/function body, or the
+// main program body) - resetting the goto/label table first, since each
+// block has its own independent label namespace and generate_code()
+// itself is called recursively for every node, not just at block
+// boundaries, so it can't do this reset itself.
+static void generate_block(ASTNode *body) {
+    label_table_count = 0;
+    generate_code(body);
+}
+
 void generate_program(ASTNode *main_body) {
     pending_call_count = 0;
 
@@ -932,7 +1016,7 @@ void generate_program(ASTNode *main_body) {
             for (int p = proc_table[i].param_slot_count - 1; p >= 0; p--) {
                 emit(OP_STORE_LOCAL, p);
             }
-            generate_code(proc_table[i].body);
+            generate_block(proc_table[i].body);
             if (proc_table[i].is_function) {
                 emit(OP_LOAD_LOCAL, proc_table[i].return_slot);
             }
@@ -941,7 +1025,7 @@ void generate_program(ASTNode *main_body) {
 
         code[jmp_idx].arg = code_idx; // main starts here
     }
-    generate_code(main_body);
+    generate_block(main_body);
 
     for (int i = 0; i < pending_call_count; i++) {
         code[pending_calls[i].call_instr_idx].arg = proc_table[pending_calls[i].target_proc_idx].entry_address;

@@ -122,7 +122,32 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       Known gaps: no range labels (`2..5:` - lists values individually
       instead), no `otherwise` as an alternate spelling of `else` — see
       [docs/LANGUAGE.md](LANGUAGE.md#case--of).
-- [ ] `goto` and `label` declarations
+- [x] `goto` and `label` declarations — a block-scoped `label` section
+      (an unsigned-integer list, parsed before `const`/`type`/`var`, same
+      declaration-order convention as those) and `N: statement`/
+      `goto N;`. Zero new opcodes: both compile straight to the
+      existing `OP_JMP`, using the same emit-then-patch backpatching
+      technique `break`/`continue` already use for a loop's jump
+      targets, just keyed by label id instead of "current innermost
+      loop" (see codegen.c's label_table/generate_block()). A label's
+      scope is exactly one block (the main program or one procedure/
+      function) - the label table resets per block, so a goto can never
+      cross a procedure boundary, and every declared label must label
+      exactly one statement in its own block (checked at parse time).
+      Known gap: unlike standard Pascal, this compiler doesn't reject a
+      goto that jumps into the middle of a structured statement
+      (if/while/for/case/with) from outside it — see
+      [docs/LANGUAGE.md](LANGUAGE.md#goto-and-labels).
+- [ ] `for x in s do` — iterate a variable over the members of a
+      [set](LANGUAGE.md#sets) (ascending bit order). Not standard Wirth
+      Pascal (a later-dialect extension), but natural to add now that
+      sets exist — noted after `examples/test/test_set_print.pas` (kept
+      in the repo for reference) turned out to use this syntax, which
+      the current `for` loop doesn't accept (`for` only iterates an
+      ordinal range via `to`/`downto`, not a set's members). Would need
+      a way to walk a bitmask's set bits, most likely by generating an
+      ordinary counting loop over `0..31` in codegen with a hidden
+      `in`-test guarding the body, rather than a new opcode.
 
 ### Language — records & arrays
 

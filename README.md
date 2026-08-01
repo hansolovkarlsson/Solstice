@@ -250,7 +250,11 @@ at 32 distinct values) — construction, `in`, union/intersection/
 difference, and subset/superset all reuse existing bitwise opcodes with
 zero new ones added, and work anywhere a scalar type can (variables,
 `var` parameters, array elements, record fields, return types) (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#sets)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#sets)). Also working: `goto` and
+block-scoped `label` declarations, compiling straight to the VM's
+existing unconditional jump with zero new opcodes, via the same
+backpatching technique `break`/`continue` already use (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#goto-and-labels)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
 (so no array `copy`/slicing), records as array elements or nested
