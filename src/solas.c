@@ -202,6 +202,10 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"PUSH_LOCAL_REF", OP_PUSH_LOCAL_REF, OPERAND_IMMEDIATE},
     {"LOAD_REF",  OP_LOAD_REF,  OPERAND_NONE},
     {"STORE_REF", OP_STORE_REF, OPERAND_NONE},
+    {"LOAD_IDXND",  OP_LOAD_IDXND,  OPERAND_VAR},
+    {"STORE_IDXND", OP_STORE_IDXND, OPERAND_VAR},
+    {"LOAD_IDXND_DYN",  OP_LOAD_IDXND_DYN,  OPERAND_IMMEDIATE}, // operand = dimension count, not a symbol reference
+    {"STORE_IDXND_DYN", OP_STORE_IDXND_DYN, OPERAND_IMMEDIATE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
@@ -332,6 +336,44 @@ static void add_array_var_2d(int line_no, const char *name, DataType elem_type,
     sym_table[sym_count].is_2d = 1;
     sym_table[sym_count].array_lower2 = lower2;
     sym_table[sym_count].array_upper2 = upper2;
+    array_mem_count += size;
+    sym_count++;
+}
+
+static void add_array_var_nd(int line_no, const char *name, DataType elem_type,
+                              int dims, const int *lower, const int *upper) {
+    if (strlen(name) >= MAX_NAME) {
+        asm_error(line_no, "Array name '%s' too long (limit is %d characters)", name, MAX_NAME - 1);
+    }
+    if (find_var(name) != -1) {
+        asm_error(line_no, "Duplicate variable declaration '%s'", name);
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        asm_error(line_no, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    int size = 1;
+    for (int d = 0; d < dims; d++) {
+        if (upper[d] < lower[d]) {
+            asm_error(line_no, "Invalid array bounds in dimension %d: upper (%d) must be >= lower (%d)", d + 1, upper[d], lower[d]);
+        }
+        size *= (upper[d] - lower[d] + 1);
+    }
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        asm_error(line_no, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = elem_type;
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = 0;
+    sym_table[sym_count].array_upper = 0;
+    sym_table[sym_count].array_base = array_mem_count;
+    sym_table[sym_count].is_2d = 0;
+    sym_table[sym_count].is_nd = 1;
+    sym_table[sym_count].nd_dims = dims;
+    for (int d = 0; d < dims; d++) {
+        sym_table[sym_count].nd_lower[d] = lower[d];
+        sym_table[sym_count].nd_upper[d] = upper[d];
+    }
     array_mem_count += size;
     sym_count++;
 }
@@ -487,8 +529,52 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
                 else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
                 add_array_var_2d(line_no, name, type, lower, upper, lower2, upper2);
+            } else if (strcasecmp(directive, "arraynd") == 0) {
+                // Variable-arity (3+ dimensions), unlike .array/.array2d's
+                // fixed-field sscanf format - tokenized by hand instead:
+                // '.arrayNd <name> <dims> <lower1> <upper1> ... <type>'.
+                char line_copy[512];
+                strncpy(line_copy, line, sizeof(line_copy) - 1);
+                line_copy[sizeof(line_copy) - 1] = '\0';
+                strtok(line_copy, " \t"); // the directive itself - discarded
+                char *name_tok = strtok(NULL, " \t");
+                char *dims_tok = strtok(NULL, " \t");
+                int dims;
+                if (!name_tok || !dims_tok || sscanf(dims_tok, "%d", &dims) != 1 || dims < 3 || dims > MAX_ARRAY_DIMS) {
+                    asm_error(line_no, "Malformed directive (expected: .arrayNd <name> <dims (3..%d)> <lower1> <upper1> ... <type>)", MAX_ARRAY_DIMS);
+                    return;
+                }
+                char name[MAX_NAME];
+                strncpy(name, name_tok, MAX_NAME - 1);
+                name[MAX_NAME - 1] = '\0';
+                int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
+                for (int d = 0; d < dims; d++) {
+                    char *lo_tok = strtok(NULL, " \t");
+                    char *hi_tok = strtok(NULL, " \t");
+                    if (!lo_tok || !hi_tok || sscanf(lo_tok, "%d", &lower[d]) != 1 || sscanf(hi_tok, "%d", &upper[d]) != 1) {
+                        asm_error(line_no, "Malformed directive (expected: .arrayNd <name> <dims> <lower1> <upper1> ... <type>)");
+                        return;
+                    }
+                }
+                char *type_tok = strtok(NULL, " \t");
+                if (!type_tok) {
+                    asm_error(line_no, "Malformed directive (missing element type)");
+                    return;
+                }
+                char type_str[MAX_NAME];
+                strncpy(type_str, type_tok, MAX_NAME - 1);
+                type_str[MAX_NAME - 1] = '\0';
+                DataType type;
+                if (strcasecmp(type_str, "integer") == 0) type = TYPE_INTEGER;
+                else if (strcasecmp(type_str, "boolean") == 0) type = TYPE_BOOLEAN;
+                else if (strcasecmp(type_str, "string") == 0) type = TYPE_STRING;
+                else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
+                else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
+                else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
+                add_array_var_nd(line_no, name, type, dims, lower, upper);
             } else {
-                asm_error(line_no, "Unknown directive '.%s' (expected .var, .array, or .array2d)", directive);
+                asm_error(line_no, "Unknown directive '.%s' (expected .var, .array, .array2d, or .arrayNd)", directive);
             }
         } else if (is_label_line(line)) {
             char label_name[MAX_NAME];

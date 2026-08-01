@@ -443,6 +443,34 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_REF_ARRAY_ACCESS_ND: {
+            printf("[Array-Ref Access ND] -> param slot %d\n", node->data.var_idx);
+            int idx_num = 1;
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                print_indent(indent + 1);
+                printf("Index %d:\n", idx_num++);
+                print_ast(idx, indent + 2);
+            }
+            break;
+        }
+
+        case NODE_REF_ARRAY_ASSIGN_ND: {
+            printf("[Array-Ref Assignment ND] -> param slot %d\n", node->data.var_idx);
+            int idx_num = 1;
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                print_indent(indent + 1);
+                printf("Index %d:\n", idx_num++);
+                print_ast(idx, indent + 2);
+            }
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
+
         case NODE_ARRAY_REF:
             printf("[Array Ref] -> sym_table index %d\n", node->data.var_idx);
             break;
@@ -532,6 +560,34 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->next, indent);
             }
             break;
+
+        case NODE_ARRAY_ACCESS_ND: {
+            printf("[ND Array Access] -> Array: %s\n", sym_table[node->data.var_idx].name);
+            int idx_num = 1;
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                print_indent(indent + 1);
+                printf("Index %d:\n", idx_num++);
+                print_ast(idx, indent + 2);
+            }
+            break;
+        }
+
+        case NODE_ARRAY_ASSIGN_ND: {
+            printf("[ND Array Assignment] -> Array: %s\n", sym_table[node->data.var_idx].name);
+            int idx_num = 1;
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                print_indent(indent + 1);
+                printf("Index %d:\n", idx_num++);
+                print_ast(idx, indent + 2);
+            }
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
     }
 }
 

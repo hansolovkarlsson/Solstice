@@ -172,6 +172,36 @@ static int vm_array_offset_2d(int var_idx, int i, int j) {
     return sym->array_base + (i - sym->array_lower) * dim2_size + (j - sym->array_lower2);
 }
 
+// Same as vm_array_offset()/vm_array_offset_2d(), but for an array with
+// 3 OR MORE dimensions: bounds-checks each index against its own
+// dimension (sym->nd_lower[d]/nd_upper[d]), then computes the row-major
+// offset via Horner's method - the direct generalization of
+// vm_array_offset_2d()'s '(i-lower1)*dim2_size+(j-lower2)' formula to
+// however many dimensions there are. 'dims' is passed separately from
+// sym->nd_dims (rather than just trusting the symbol) so a mismatch
+// (possible from hand-written .sasm bytecode, which isn't compiler-
+// validated the way parser.c's own output is) is caught here instead of
+// silently reading/writing the wrong offset.
+static int vm_array_offset_nd(int var_idx, int dims, const int *indices) {
+    vm_var_index(var_idx);
+    Symbol *sym = &sym_table[var_idx];
+    if (!sym->is_array || !sym->is_nd || sym->nd_dims != dims) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not a %d-dimensional array\n", sym->name, dims);
+        fatal_abort();
+    }
+    int offset = 0;
+    for (int d = 0; d < dims; d++) {
+        if (indices[d] < sym->nd_lower[d] || indices[d] > sym->nd_upper[d]) {
+            fprintf(stderr, "VM Runtime Error: Array index %d out of range (%d..%d) in dimension %d for '%s'\n",
+                    indices[d], sym->nd_lower[d], sym->nd_upper[d], d + 1, sym->name);
+            fatal_abort();
+        }
+        int dim_size = sym->nd_upper[d] - sym->nd_lower[d] + 1;
+        offset = offset * dim_size + (indices[d] - sym->nd_lower[d]);
+    }
+    return sym->array_base + offset;
+}
+
 // Resolves a frame-relative local slot (k) to an absolute vm_frame_stack[]
 // index, validating both that a frame is currently active (fp >= 0 - an
 // OP_ENTER must have run) and that k falls within that frame's actual
@@ -454,6 +484,62 @@ void run_vm(void) {
                 int i = vm_pop(&sp);
                 int array_ref = vm_pop(&sp);
                 int offset = vm_array_offset_2d(array_ref, i, j);
+                if (sym_table[array_ref].type == TYPE_CHAR) {
+                    vm_check_char(val, sym_table[array_ref].name);
+                }
+                vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_LOAD_IDXND: {
+                int dims = sym_table[instr.arg].nd_dims;
+                int indices[MAX_ARRAY_DIMS];
+                for (int d = dims - 1; d >= 0; d--) {
+                    indices[d] = vm_pop(&sp); // dimension d+1 was pushed
+                                               // d-th-to-last, so it comes
+                                               // off the stack in this order
+                }
+                int offset = vm_array_offset_nd(instr.arg, dims, indices);
+                vm_push(&sp, vm_array_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_IDXND: {
+                int val = vm_pop(&sp);
+                int dims = sym_table[instr.arg].nd_dims;
+                int indices[MAX_ARRAY_DIMS];
+                for (int d = dims - 1; d >= 0; d--) {
+                    indices[d] = vm_pop(&sp);
+                }
+                int offset = vm_array_offset_nd(instr.arg, dims, indices);
+                if (sym_table[instr.arg].type == TYPE_CHAR) {
+                    vm_check_char(val, sym_table[instr.arg].name);
+                }
+                vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_LOAD_IDXND_DYN: {
+                int dims = instr.arg; // fixed, compile-time-known - see the opcode's comment in common.h
+                int indices[MAX_ARRAY_DIMS];
+                for (int d = dims - 1; d >= 0; d--) {
+                    indices[d] = vm_pop(&sp);
+                }
+                int array_ref = vm_pop(&sp);
+                int offset = vm_array_offset_nd(array_ref, dims, indices);
+                vm_push(&sp, vm_array_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_IDXND_DYN: {
+                int val = vm_pop(&sp);
+                int dims = instr.arg;
+                int indices[MAX_ARRAY_DIMS];
+                for (int d = dims - 1; d >= 0; d--) {
+                    indices[d] = vm_pop(&sp);
+                }
+                int array_ref = vm_pop(&sp);
+                int offset = vm_array_offset_nd(array_ref, dims, indices);
                 if (sym_table[array_ref].type == TYPE_CHAR) {
                     vm_check_char(val, sym_table[array_ref].name);
                 }
@@ -965,12 +1051,26 @@ void run_vm(void) {
                         }
                         if (sym_table[i].is_array) {
                             printf("%s = [", sym_table[i].name);
-                            int lower = sym_table[i].array_lower;
-                            int upper = sym_table[i].array_upper;
+                            // Total flattened element count - a plain
+                            // product of every dimension's size, so this
+                            // correctly covers 1D, 2D, and N-D uniformly
+                            // (each is just "how many dimensions", 1/2/N).
+                            int total;
+                            if (sym_table[i].is_nd) {
+                                total = 1;
+                                for (int d = 0; d < sym_table[i].nd_dims; d++) {
+                                    total *= (sym_table[i].nd_upper[d] - sym_table[i].nd_lower[d] + 1);
+                                }
+                            } else if (sym_table[i].is_2d) {
+                                total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
+                                        (sym_table[i].array_upper2 - sym_table[i].array_lower2 + 1);
+                            } else {
+                                total = sym_table[i].array_upper - sym_table[i].array_lower + 1;
+                            }
                             int base = sym_table[i].array_base;
-                            for (int j = lower; j <= upper; j++) {
-                                if (j > lower) printf(", ");
-                                int elem = vm_array_mem[base + (j - lower)];
+                            for (int j = 0; j < total; j++) {
+                                if (j > 0) printf(", ");
+                                int elem = vm_array_mem[base + j];
                                 if (is_string_type(sym_table[i].type)) {
                                     if (elem >= 0 && elem < string_count) printf("%s", string_pool[elem]);
                                     else printf("<invalid string index %d>", elem);

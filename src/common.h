@@ -21,6 +21,14 @@
                            // of distinct possible values) can't exceed
                            // this - see TYPE_SET below for why (one plain
                            // int, one bit per element)
+#define MAX_ARRAY_DIMS 6   // an N-dimensional array (3 or more - 1D and 2D
+                           // are their own separate, older mechanism, with
+                           // their own dedicated fields/opcodes) can have
+                           // at most this many dimensions. Bounds the
+                           // fixed-size nd_lower[]/nd_upper[] fields below
+                           // and the VM's own fixed-size per-opcode index
+                           // buffer (see vm.c's OP_LOAD_IDXND etc.) - a
+                           // generous, arbitrary cap, not a language rule.
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -178,6 +186,21 @@ typedef struct {
                       // case - the fields below are unused); 1 for 2D
     int array_lower2; // only meaningful if is_2d: the SECOND dimension's bounds
     int array_upper2;
+    int is_nd;        // 1 if this array has 3 OR MORE dimensions - mutually
+                      // exclusive with is_2d (is_array is still 1 either
+                      // way). Unlike is_2d (which still uses array_lower/
+                      // array_upper for its first dimension), an is_nd
+                      // array stores EVERY dimension's bounds uniformly in
+                      // nd_lower[]/nd_upper[] below (index 0..nd_dims-1) -
+                      // array_lower/array_upper/array_lower2/array_upper2
+                      // stay unused (0) when is_nd is set. array_base still
+                      // means the same thing: the base offset of the whole
+                      // flattened, row-major region (size = the product of
+                      // every dimension's size) in the shared array memory
+                      // region every array (1D, 2D, or N-D) draws from.
+    int nd_dims;      // only meaningful if is_nd: the dimension count (3..MAX_ARRAY_DIMS)
+    int nd_lower[MAX_ARRAY_DIMS]; // only meaningful if is_nd, indices 0..nd_dims-1
+    int nd_upper[MAX_ARRAY_DIMS];
     int is_subrange;      // 1 if this symbol's VALUE (the scalar itself,
                           // or - if is_array - each element) is
                           // constrained to a declared subrange
@@ -508,11 +531,47 @@ typedef enum {
     OP_EOF,       // Peek at stdin (via fgetc()+ungetc(), so nothing is
                   // actually consumed); push 1 if there's no more input,
                   // else 0.
-    OP_EOLN       // Peek at stdin the same way; push 1 if the very next
+    OP_EOLN,      // Peek at stdin the same way; push 1 if the very next
                   // character is a newline OR there's no more input
                   // (matching every real Pascal implementation's
                   // convention that end-of-file also counts as
                   // end-of-line), else 0.
+    OP_LOAD_IDXND,  // N-dimensional (N=3 or more) array read. arg =
+                  // array's symbol index; N itself isn't a separate
+                  // operand here - the VM looks it up as
+                  // sym_table[arg].nd_dims. Pops N runtime indices
+                  // (pushed dimension-1-first by codegen, so dimension N
+                  // ends up on top - popped first); bounds-checks each
+                  // against its own dimension (sym_table[arg].nd_lower/
+                  // nd_upper); pushes the element at the row-major
+                  // offset (computed via nested multiplication - see
+                  // vm_array_offset_nd() in vm.c - the direct
+                  // generalization of OP_LOAD_IDX2D's
+                  // '(i-lower1)*dim2_size+(j-lower2)' formula to however
+                  // many dimensions there are).
+    OP_STORE_IDXND, // arg = array's symbol index. Pops a value (pushed
+                  // last by codegen, so it's on top), then N indices
+                  // (same order/bounds-checking as OP_LOAD_IDXND); stores
+                  // at the same offset OP_LOAD_IDXND computes.
+    OP_LOAD_IDXND_DYN,  // Same as OP_LOAD_IDXND, but for an N-dimensional
+                  // array-REFERENCE parameter, where *which* array is
+                  // also popped from the stack instead of coming from
+                  // arg - needed for the same reason OP_LOAD_IDX_DYN/
+                  // OP_LOAD_IDX2D_DYN already exist for 1D/2D (different
+                  // calls can pass different arrays). Unlike those,
+                  // though, arg here holds N itself (the dimension
+                  // count) - always a fixed, compile-time-known property
+                  // of the PARAMETER's own declared shape (exactly like
+                  // is_2d already is), not something that needs
+                  // discovering from the runtime array reference. Pop
+                  // order: N indices first (dimension N on top, same as
+                  // OP_LOAD_IDXND), THEN the array reference (a
+                  // sym_table[] index, pushed first/deepest by codegen -
+                  // before any of the indices) - bounds/base then come
+                  // from THAT symbol, not arg.
+    OP_STORE_IDXND_DYN, // Same as OP_LOAD_IDXND_DYN, but pops a value
+                  // (pushed last by codegen, on top of everything) before
+                  // the N indices and the array reference.
 } Opcode;
 
 typedef struct {
@@ -579,6 +638,31 @@ typedef enum {
                        // local slot. left/right = the two index
                        // expressions, extra = value expr - same field
                        // layout as NODE_ARRAY_ASSIGN_2D's global version.
+    NODE_REF_ARRAY_ACCESS_ND, // 'arr[i1, ..., iN]' (N>=3) where arr is a
+                       // by-reference N-dimensional array parameter.
+                       // data.var_idx = the parameter's local slot
+                       // (holding a runtime sym_table[] index). left =
+                       // head of the index-expression chain (N nodes,
+                       // each linked via its OWN ->next - NOT this
+                       // node's ->next, which stays free the same way
+                       // NODE_WRITELN's argument list and NODE_SET_
+                       // CONSTRUCTOR's element list already chain their
+                       // own children without disturbing the enclosing
+                       // statement-list ->next). Exists as its own node
+                       // type (rather than trying to fit into
+                       // NODE_REF_ARRAY_ACCESS_2D's left/right pair)
+                       // because ASTNode has only 4 child pointers and a
+                       // 3+D access/assignment needs a variable-length
+                       // index list - the sibling-chain technique is the
+                       // established way this project already handles
+                       // "a node needs an arbitrary-length list of
+                       // children" without growing the struct.
+    NODE_REF_ARRAY_ASSIGN_ND, // 'arr[i1, ..., iN] := val' (N>=3) for a
+                       // by-reference N-dimensional array parameter.
+                       // data.var_idx = the parameter's local slot.
+                       // left = head of the index-expression chain,
+                       // right = value expression, next = next
+                       // statement (extra unused).
     NODE_ARRAY_REF,    // Pushes a global (or mangled-local, which is just
                        // a hidden global) array's sym_table[] index as a
                        // compile-time-known literal - used when passing
@@ -617,6 +701,21 @@ typedef enum {
                        // data.var_idx = the array's symbol index.
                        // left = first index, right = second index,
                        // extra = value expression.
+    NODE_ARRAY_ACCESS_ND, // 'arr[i1, ..., iN]' (N>=3) as an expression,
+                       // for a GLOBAL (or local, which is just a hidden
+                       // global - see add_local_array()) N-dimensional
+                       // array. data.var_idx = the array's symbol index.
+                       // left = head of the index-expression chain (N
+                       // nodes, each linked via its OWN ->next - see
+                       // NODE_REF_ARRAY_ACCESS_ND's comment above for why
+                       // this needs its own node type rather than more
+                       // named pointer fields).
+    NODE_ARRAY_ASSIGN_ND,  // 'arr[i1, ..., iN] := val' (N>=3) for a
+                       // GLOBAL/local N-dimensional array. data.var_idx =
+                       // the array's symbol index. left = head of the
+                       // index-expression chain, right = value
+                       // expression, next = next statement (extra
+                       // unused).
     NODE_WRITE_ARG,    // One argument to write/writeln, wrapping its
                        // optional ':width[:precision]' field-width
                        // syntax. left = the value expression, right =
@@ -868,6 +967,19 @@ typedef struct {
                                     // param_is_array_ref is set
     int param_array_lower2[MAX_PARAMS]; // only meaningful if param_is_2d:
     int param_array_upper2[MAX_PARAMS]; // the second dimension's bounds
+    int param_is_nd[MAX_PARAMS];        // 1 if this array-ref parameter has
+                                    // 3 OR MORE dimensions - mutually
+                                    // exclusive with param_is_2d, only
+                                    // meaningful if param_is_array_ref is
+                                    // set. See Symbol.is_nd in common.h
+                                    // for why every dimension's bounds
+                                    // live uniformly in param_nd_lower/
+                                    // param_nd_upper below rather than
+                                    // reusing param_array_lower/upper for
+                                    // dimension 1 the way param_is_2d does.
+    int param_nd_dims[MAX_PARAMS];      // only meaningful if param_is_nd
+    int param_nd_lower[MAX_PARAMS][MAX_ARRAY_DIMS]; // only meaningful if
+    int param_nd_upper[MAX_PARAMS][MAX_ARRAY_DIMS]; // param_is_nd, indices 0..param_nd_dims[p]-1
     int param_is_subrange[MAX_PARAMS];  // 1 if this parameter (or, if
                                     // param_is_array_ref is set, each of
                                     // its elements) is subrange-

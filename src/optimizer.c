@@ -305,7 +305,8 @@ static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
     if (node->type == NODE_VARIABLE || node->type == NODE_ARRAY_ACCESS || node->type == NODE_ARRAY_REF
-        || node->type == NODE_STRING_INDEX || node->type == NODE_ARRAY_ACCESS_2D || node->type == NODE_VAR_REF) {
+        || node->type == NODE_STRING_INDEX || node->type == NODE_ARRAY_ACCESS_2D || node->type == NODE_ARRAY_ACCESS_ND
+        || node->type == NODE_VAR_REF) {
         var_used_tracker[node->data.var_idx] = 1;
     }
 
@@ -332,7 +333,18 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         int var_idx = node->data.var_idx;
         node->next = sweep_dead_assignments(node->next);
 
-        if (!var_used_tracker[var_idx] && !has_range_check(node->left) && !has_range_check(node->right)
+        // sym_table[var_idx].is_array: an array-element assignment
+        // ('arr[i] := val;') is never eliminated even when 'arr' itself
+        // is otherwise unread - unlike a plain scalar assignment, its
+        // INDEX expression carries an observable runtime side effect
+        // (an implicit bounds check - an out-of-range index is a Runtime
+        // Error) that "is the target ever read" alone can't account
+        // for. Same class of gap has_range_check()/has_set_side_effect()
+        // exist to close for subrange/set assignments - see the matching
+        // fix on NODE_ARRAY_ASSIGN_2D/NODE_ARRAY_ASSIGN_ND/
+        // NODE_STRING_INDEX_ASSIGN below.
+        if (!var_used_tracker[var_idx] && !sym_table[var_idx].is_array
+            && !has_range_check(node->left) && !has_range_check(node->right)
             && !has_set_side_effect(node->left) && !has_set_side_effect(node->right)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
@@ -362,60 +374,32 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
     }
 
     if (node->type == NODE_ARRAY_ASSIGN_2D) {
-        int var_idx = node->data.var_idx;
+        // Never eliminated via DCE, even when the array itself is
+        // otherwise unread - see NODE_ASSIGN's comment above for why an
+        // array-element assignment's index expressions always carry a
+        // potential runtime side effect (the implicit bounds check) that
+        // a dead-target check alone can't account for.
         node->next = sweep_dead_assignments(node->next);
-
-        if (!var_used_tracker[var_idx] && !has_range_check(node->extra) && !has_set_side_effect(node->extra)) {
-            if (verbose_mode) {
-                printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
-                       sym_table[var_idx].name);
-            }
-
-            ASTNode *next_cached = node->next;
-            node->left = optimize_ast(node->left);
-            free_ast(node->left);
-            node->left = NULL;
-            node->right = optimize_ast(node->right);
-            free_ast(node->right);
-            node->right = NULL;
-            node->extra = optimize_ast(node->extra);
-            free_ast(node->extra);
-            node->extra = NULL;
-            node->next = NULL;
-            free(node);
-
-            return next_cached;
-        }
-
         node->left = sweep_dead_assignments(node->left);
         node->right = sweep_dead_assignments(node->right);
         node->extra = sweep_dead_assignments(node->extra);
         return node;
     }
 
-    if (node->type == NODE_STRING_INDEX_ASSIGN) {
-        int var_idx = node->data.var_idx;
+    if (node->type == NODE_ARRAY_ASSIGN_ND) {
+        // Never eliminated - see NODE_ARRAY_ASSIGN_2D's comment above.
         node->next = sweep_dead_assignments(node->next);
+        node->left = sweep_dead_assignments(node->left);
+        node->right = sweep_dead_assignments(node->right);
+        return node;
+    }
 
-        if (!var_used_tracker[var_idx]) {
-            if (verbose_mode) {
-                printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
-                       sym_table[var_idx].name);
-            }
-
-            ASTNode *next_cached = node->next;
-            node->left = optimize_ast(node->left);
-            free_ast(node->left);
-            node->left = NULL;
-            node->right = optimize_ast(node->right);
-            free_ast(node->right);
-            node->right = NULL;
-            node->next = NULL;
-            free(node);
-
-            return next_cached;
-        }
-
+    if (node->type == NODE_STRING_INDEX_ASSIGN) {
+        // Never eliminated - 's[i] := val;' bounds-checks i against s's
+        // actual length at runtime (a Runtime Error if out of range),
+        // the same observable side effect NODE_ARRAY_ASSIGN_2D/ND's
+        // comment above describes for an array index.
+        node->next = sweep_dead_assignments(node->next);
         node->left = sweep_dead_assignments(node->left);
         node->right = sweep_dead_assignments(node->right);
         return node;

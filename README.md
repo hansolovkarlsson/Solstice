@@ -263,8 +263,12 @@ Also working: an uninitialized-variable warning pass — the compiler's
 first non-fatal diagnostic (compilation still succeeds), flagging a
 local variable read but never assigned, or a function that never sets
 its own return value, within one procedure/function body at a time (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#warnings)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#warnings)). Also working: arrays
+with three or more dimensions (up to 6), with full parity with 1D/2D -
+a global/local variable, or a by-reference parameter with exact-shape
+call-site validation (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#three-or-more-dimensional-arrays)).
 
-Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
-(so no array `copy`/slicing), records as array elements or nested
-records, and a whole record or an array element as a `var` argument.
+Not yet implemented: dynamic arrays (so no array `copy`/slicing),
+records as array elements or nested records, and a whole record or an
+array element as a `var` argument.

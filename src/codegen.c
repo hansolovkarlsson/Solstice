@@ -750,6 +750,22 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_ARRAY_ACCESS_ND:
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                generate_code(idx);
+            }
+            emit(OP_LOAD_IDXND, node->data.var_idx);
+            break;
+
+        case NODE_ARRAY_ASSIGN_ND:
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                generate_code(idx);
+            }
+            generate_code(node->right); // value
+            emit(OP_STORE_IDXND, node->data.var_idx);
+            generate_code(node->next);
+            break;
+
         case NODE_WRITE_ARG:
             // Structurally unreachable: NODE_WRITELN's own case unwraps
             // a NODE_WRITE_ARG's left/right/extra directly and never
@@ -816,6 +832,34 @@ void generate_code(ASTNode *node) {
             emit(OP_STORE_IDX2D_DYN, 0);
             generate_code(node->next);
             break;
+
+        case NODE_REF_ARRAY_ACCESS_ND: {
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference (sym_table index)
+            int dims = 0;
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                generate_code(idx);
+                dims++;
+            }
+            // arg = dims, NOT the array reference - see OP_LOAD_IDXND_DYN's
+            // comment in common.h: unlike the array reference itself,
+            // dimension count is always a fixed, compile-time-known
+            // property of this PARAMETER's declared shape.
+            emit(OP_LOAD_IDXND_DYN, dims);
+            break;
+        }
+
+        case NODE_REF_ARRAY_ASSIGN_ND: {
+            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference
+            int dims = 0;
+            for (ASTNode *idx = node->left; idx; idx = idx->next) {
+                generate_code(idx);
+                dims++;
+            }
+            generate_code(node->right); // the value
+            emit(OP_STORE_IDXND_DYN, dims);
+            generate_code(node->next);
+            break;
+        }
 
         case NODE_RANGE_CHECK:
             generate_code(node->left); // the value - left on the stack afterward

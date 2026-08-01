@@ -1013,18 +1013,44 @@ end.
   own independent bounds (and its own bounds check at runtime).
 - Indexed with `arr[i, j]`, matching the declaration syntax — not the
   chained `arr[i][j]` form some other languages use.
-- **Exactly two dimensions** — there's no three-or-more-dimensional
-  array. This isn't an oversight: a 2D array *write* needs three
-  sub-expressions (two indices plus a value), which is the most this
-  compiler's AST nodes can hold without growing every node in the
-  compiler just for this one case. Nest a 1D array of a 2D array's rows,
-  or just use a 1D array with manual index arithmetic, if you need more
-  dimensions.
 - A 2D array can also be a **parameter** (always by reference, exactly
   like a 1D array parameter) or a **local variable** — see [Array
   parameters and local arrays](#array-parameters-and-local-arrays),
   which covers 1D and 2D together.
 - Stored row-major, in the same shared array-memory pool 1D arrays use.
+
+### Three-or-more-dimensional arrays
+
+```pascal
+var
+    cube: array[1..2, 1..2, 1..2] of integer;
+    x, y, z, n: integer;
+begin
+    n := 0;
+    for x := 1 to 2 do
+        for y := 1 to 2 do
+            for z := 1 to 2 do begin
+                n := n + 1;
+                cube[x, y, z] := n;
+            end;
+    writeln(cube[2, 2, 2]);   { 8 }
+end.
+```
+
+- Same syntax as 2D, just with more comma-separated dimensions —
+  `array[lo1..hi1, lo2..hi2, lo3..hi3, ...] of T`, indexed with
+  `arr[i, j, k, ...]`. Up to 6 dimensions total.
+- Works everywhere a 1D/2D array does: a global/local variable, or a
+  **parameter** (always by reference — see [Array parameters and local
+  arrays](#array-parameters-and-local-arrays)). A parameter's declared
+  shape (element type, dimension count, and every dimension's bounds)
+  must exactly match whatever array is passed at each call site, same
+  as 1D/2D.
+- Stored row-major in the same shared array-memory pool every array
+  (1D, 2D, or more) draws from — a 3D array's element count is simply
+  the product of all three dimensions' sizes.
+- `low`/`high`/`length` don't support a multi-dimensional array (2D or
+  more) — same pre-existing limitation 2D arrays already have.
 
 ## Type aliases
 
@@ -1834,11 +1860,12 @@ end.
   conversion.
 - A procedure/function can have any mix of scalar and array parameters,
   in any order.
-- **2D array parameters work too** (`procedure foo(arr: array[1..3,
-  1..3] of integer);`), with the same by-reference semantics and exact-
-  bounds-match requirement — including the second dimension. `low`/
-  `high`/`length` still don't support 2D arrays (parameter or global),
-  matching [Two-dimensional arrays](#two-dimensional-arrays).
+- **2D (and 3-or-more-dimensional) array parameters work too**
+  (`procedure foo(arr: array[1..3, 1..3] of integer);`), with the same
+  by-reference semantics and exact-bounds-match requirement — including
+  every dimension. `low`/`high`/`length` still don't support a multi-
+  dimensional array (parameter or global), matching [Two-dimensional
+  arrays](#two-dimensional-arrays).
 
 ### Local arrays
 
@@ -1858,9 +1885,9 @@ end.
   not by your own chosen name.
 - A local array can itself be passed as an array-reference argument to
   another call, exactly like a global array can.
-- **2D local arrays work too** (`var grid: array[1..3, 1..3] of
-  integer;`), with the same "shared across every call, not per-call
-  isolated" behavior as a 1D local array.
+- **2D (and 3-or-more-dimensional) local arrays work too** (`var grid:
+  array[1..3, 1..3] of integer;`), with the same "shared across every
+  call, not per-call isolated" behavior as a 1D local array.
 
 ## Errors
 

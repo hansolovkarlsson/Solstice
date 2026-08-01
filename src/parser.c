@@ -82,6 +82,16 @@ typedef struct {
                         // by-reference array parameter is 2D
     int array_lower2;    // only meaningful if is_2d: the second
     int array_upper2;    // dimension's bounds
+    int is_nd;            // only meaningful if is_array_ref: 1 if this
+                        // by-reference array parameter has 3 OR MORE
+                        // dimensions - mutually exclusive with is_2d.
+                        // See Symbol.is_nd in common.h for why every
+                        // dimension's bounds live uniformly in
+                        // nd_lower/nd_upper below instead of reusing
+                        // array_lower/array_upper for dimension 1.
+    int nd_dims;          // only meaningful if is_nd
+    int nd_lower[MAX_ARRAY_DIMS]; // only meaningful if is_nd, indices 0..nd_dims-1
+    int nd_upper[MAX_ARRAY_DIMS];
     int is_subrange;     // this SCALAR local/parameter (or, if
                         // is_array_ref, each element the referenced
                         // array holds) is subrange-constrained - see
@@ -548,6 +558,7 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     sym_table[sym_count].array_upper = upper;
     sym_table[sym_count].array_base = array_mem_count;
     sym_table[sym_count].is_2d = 0; // defensive reset (see comment above the Symbol struct)
+    sym_table[sym_count].is_nd = 0; // defensive reset
     sym_table[sym_count].is_subrange = 0;
     sym_table[sym_count].subrange_lower = 0;
     sym_table[sym_count].subrange_upper = 0;
@@ -593,6 +604,66 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
     sym_table[sym_count].is_2d = 1;
     sym_table[sym_count].array_lower2 = lower2;
     sym_table[sym_count].array_upper2 = upper2;
+    sym_table[sym_count].is_nd = 0; // defensive reset
+    sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
+    sym_table[sym_count].subrange_lower = 0;
+    sym_table[sym_count].subrange_upper = 0;
+    array_mem_count += size;
+    sym_count++;
+}
+
+// Same as add_array_var()/add_array_var_2d(), but for an array with 3 OR
+// MORE dimensions ('name: array[lo1..hi1, lo2..hi2, lo3..hi3, ...] of
+// type'). Unlike add_array_var_2d() (which still uses array_lower/
+// array_upper for its first dimension), this stores EVERY dimension's
+// bounds uniformly in nd_lower[]/nd_upper[] (index 0..dims-1) -
+// array_lower/array_upper/array_lower2/array_upper2 stay unused
+// (defensively zeroed) - simpler to reason about than mixing "dimension
+// 0 lives in the old fields, the rest live in the new ones". Bounds
+// must already be validated (lower <= upper, each dimension) by the
+// caller. Reserves the full product of every dimension's size - the
+// whole flattened, row-major region - from the same shared array-memory
+// pool every array (1D, 2D, or N-D) draws from.
+static void add_array_var_nd(const char *name, DataType elem_type, int dims, const int *lower, const int *upper) {
+    for (int i = 0; i < sym_count; i++) {
+        if (strcmp(sym_table[i].name, name) == 0) {
+            compile_error(token.line, "Duplicate variable declaration '%s'", name);
+        }
+    }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    int size = 1;
+    for (int d = 0; d < dims; d++) {
+        size *= (upper[d] - lower[d] + 1);
+    }
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = elem_type;
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = 0;
+    sym_table[sym_count].array_upper = 0;
+    sym_table[sym_count].array_base = array_mem_count;
+    sym_table[sym_count].is_2d = 0;
+    sym_table[sym_count].array_lower2 = 0;
+    sym_table[sym_count].array_upper2 = 0;
+    sym_table[sym_count].is_nd = 1;
+    sym_table[sym_count].nd_dims = dims;
+    for (int d = 0; d < dims; d++) {
+        sym_table[sym_count].nd_lower[d] = lower[d];
+        sym_table[sym_count].nd_upper[d] = upper[d];
+    }
     sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
     sym_table[sym_count].subrange_lower = 0;
     sym_table[sym_count].subrange_upper = 0;
@@ -727,16 +798,16 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
     if (local_idx != -1) {
         if (current_locals[local_idx].is_array) {
             int sym_idx = current_locals[local_idx].array_sym_idx;
-            if (sym_table[sym_idx].is_2d) {
-                compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", name);
+            if (sym_table[sym_idx].is_2d || sym_table[sym_idx].is_nd) {
+                compile_error(token.line, "'%s' is a multi-dimensional array - low/high/length don't support 2D/N-D arrays yet", name);
             }
             *lower = sym_table[sym_idx].array_lower;
             *upper = sym_table[sym_idx].array_upper;
             return 1;
         }
         if (current_locals[local_idx].is_array_ref) {
-            if (current_locals[local_idx].is_2d) {
-                compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", name);
+            if (current_locals[local_idx].is_2d || current_locals[local_idx].is_nd) {
+                compile_error(token.line, "'%s' is a multi-dimensional array - low/high/length don't support 2D/N-D arrays yet", name);
             }
             *lower = current_locals[local_idx].array_lower;
             *upper = current_locals[local_idx].array_upper;
@@ -746,8 +817,8 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
     }
     int global_idx = find_var_soft(name);
     if (global_idx != -1 && sym_table[global_idx].is_array) {
-        if (sym_table[global_idx].is_2d) {
-            compile_error(token.line, "'%s' is a 2D array - low/high/length don't support 2D arrays yet", name);
+        if (sym_table[global_idx].is_2d || sym_table[global_idx].is_nd) {
+            compile_error(token.line, "'%s' is a multi-dimensional array - low/high/length don't support 2D/N-D arrays yet", name);
         }
         *lower = sym_table[global_idx].array_lower;
         *upper = sym_table[global_idx].array_upper;
@@ -818,6 +889,7 @@ static int add_local_var_param(const char *name, DataType type, int is_subrange,
 // declared bounds every call site's argument must exactly match.
 static int add_local_array_ref(const char *name, DataType elem_type, int lower, int upper,
                                 int is_2d, int lower2, int upper2,
+                                int is_nd, int nd_dims, const int *nd_lower, const int *nd_upper,
                                 int is_subrange, int subrange_lower, int subrange_upper) {
     int idx = add_local(name, elem_type);
     current_locals[idx].is_array_ref = 1;
@@ -826,6 +898,12 @@ static int add_local_array_ref(const char *name, DataType elem_type, int lower, 
     current_locals[idx].is_2d = is_2d;
     current_locals[idx].array_lower2 = lower2;
     current_locals[idx].array_upper2 = upper2;
+    current_locals[idx].is_nd = is_nd;
+    current_locals[idx].nd_dims = nd_dims;
+    for (int d = 0; d < nd_dims; d++) {
+        current_locals[idx].nd_lower[d] = nd_lower[d];
+        current_locals[idx].nd_upper[d] = nd_upper[d];
+    }
     current_locals[idx].is_subrange = is_subrange;
     current_locals[idx].subrange_lower = subrange_lower;
     current_locals[idx].subrange_upper = subrange_upper;
@@ -843,6 +921,7 @@ static int add_local_array_ref(const char *name, DataType elem_type, int lower, 
 // get fresh, isolated storage per call.
 static int add_local_array(const char *name, DataType elem_type, int lower, int upper,
                             int is_2d, int lower2, int upper2,
+                            int is_nd, int nd_dims, const int *nd_lower, const int *nd_upper,
                             int is_subrange, int subrange_lower, int subrange_upper) {
     if (find_local(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
@@ -852,8 +931,10 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     }
     char mangled[MAX_NAME];
     snprintf(mangled, MAX_NAME, "__local_arr%d", sym_count);
-    int array_sym_idx = sym_count; // add_array_var()/add_array_var_2d() is about to append here
-    if (is_2d) {
+    int array_sym_idx = sym_count; // add_array_var()/add_array_var_2d()/add_array_var_nd() is about to append here
+    if (is_nd) {
+        add_array_var_nd(mangled, elem_type, nd_dims, nd_lower, nd_upper);
+    } else if (is_2d) {
         add_array_var_2d(mangled, elem_type, lower, upper, lower2, upper2);
     } else {
         add_array_var(mangled, elem_type, lower, upper);
@@ -1071,6 +1152,41 @@ static int parse_int_literal(void) {
     return val;
 }
 
+// Parses 'lo1..hi1 {, lo2..hi2}' - an array declaration's bound list, any
+// dimension count (1, 2, or more) - shared by every site that declares
+// array bounds (the global var section, and parse_name_group() for
+// parameters/locals). Does NOT consume the surrounding '[' ']' - callers
+// still do that themselves, exactly as before this helper existed; this
+// only replaces each site's own inner bound-parsing loop. Returns the
+// dimension count and fills lower[]/upper[] (each sized MAX_ARRAY_DIMS)
+// with the parsed, already-validated (lower <= upper) bounds, indices
+// 0..dims-1. Callers decide what to DO with a given dimension count (1
+// and 2 still go through add_array_var()/add_array_var_2d() and their
+// own dedicated Symbol fields, completely unchanged; 3+ goes through the
+// new add_array_var_nd() and nd_lower[]/nd_upper[]) - this function only
+// parses, it doesn't know or care which mechanism the result feeds.
+static int parse_array_bounds(int *lower, int *upper) {
+    int dims = 0;
+    while (1) {
+        if (dims >= MAX_ARRAY_DIMS) {
+            compile_error(token.line, "Array has too many dimensions (limit is %d)", MAX_ARRAY_DIMS);
+        }
+        lower[dims] = parse_int_literal();
+        match(TOKEN_DOTDOT);
+        upper[dims] = parse_int_literal();
+        if (upper[dims] < lower[dims]) {
+            compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper[dims], lower[dims]);
+        }
+        dims++;
+        if (token.type == TOKEN_COMMA) {
+            match(TOKEN_COMMA);
+            continue;
+        }
+        break;
+    }
+    return dims;
+}
+
 // Side-channel output of parse_scalar_type() below: whether the type it
 // JUST resolved was a subrange type, and if so, its bounds. A subrange
 // resolves to plain TYPE_INTEGER as parse_scalar_type()'s actual return
@@ -1188,6 +1304,15 @@ typedef struct {
                           // 'lo2..hi2' dimension was given)
     int array_lower2;
     int array_upper2;
+    int is_nd;             // 1 if this array has 3 OR MORE dimensions -
+                          // mutually exclusive with is_2d. See Symbol.
+                          // is_nd in common.h for why every dimension's
+                          // bounds live uniformly in nd_lower/nd_upper
+                          // below instead of reusing array_lower/
+                          // array_upper for dimension 1.
+    int nd_dims;           // only meaningful if is_nd
+    int nd_lower[MAX_ARRAY_DIMS]; // only meaningful if is_nd, indices 0..nd_dims-1
+    int nd_upper[MAX_ARRAY_DIMS];
     int is_subrange;      // see the Symbol comment in common.h
     int subrange_lower;
     int subrange_upper;
@@ -1205,6 +1330,7 @@ static NameGroup parse_name_group(void) {
     g.type = TYPE_INTEGER; // defensive default (see the Symbol comment in common.h) - only meaningful if !is_record
     g.is_array = 0;
     g.is_2d = 0;
+    g.is_nd = 0;
     g.is_record = 0;
     g.record_type_idx = 0;
     if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
@@ -1223,24 +1349,34 @@ static NameGroup parse_name_group(void) {
     if (token.type == TOKEN_ARRAY) {
         match(TOKEN_ARRAY);
         match(TOKEN_LBRACKET);
-        g.array_lower = parse_int_literal();
-        match(TOKEN_DOTDOT);
-        g.array_upper = parse_int_literal();
-        if (token.type == TOKEN_COMMA) {
-            match(TOKEN_COMMA);
-            g.array_lower2 = parse_int_literal();
-            match(TOKEN_DOTDOT);
-            g.array_upper2 = parse_int_literal();
-            if (g.array_upper2 < g.array_lower2) {
-                compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", g.array_upper2, g.array_lower2);
-            }
-            g.is_2d = 1;
-        }
+        int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
+        int dims = parse_array_bounds(lower, upper);
         match(TOKEN_RBRACKET);
-        if (g.array_upper < g.array_lower) {
-            compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", g.array_upper, g.array_lower);
-        }
         match(TOKEN_OF);
+        if (dims >= 3) {
+            // is_nd arrays keep array_lower/array_upper at 0 (unused) -
+            // every dimension's bounds live uniformly in nd_lower/
+            // nd_upper instead. Must match add_array_var_nd()'s exact
+            // same zeroing, since array_shapes_match() below compares
+            // array_lower/array_upper unconditionally (not just when
+            // !is_nd) when validating a call-site argument.
+            g.array_lower = 0;
+            g.array_upper = 0;
+            g.is_nd = 1;
+            g.nd_dims = dims;
+            for (int d = 0; d < dims; d++) {
+                g.nd_lower[d] = lower[d];
+                g.nd_upper[d] = upper[d];
+            }
+        } else {
+            g.array_lower = lower[0];
+            g.array_upper = upper[0];
+            if (dims == 2) {
+                g.is_2d = 1;
+                g.array_lower2 = lower[1];
+                g.array_upper2 = upper[1];
+            }
+        }
         g.type = parse_scalar_type();
         g.is_array = 1;
     } else if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
@@ -1262,6 +1398,33 @@ static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
 static void subroutine_declaration(int is_function_decl);
 
+// Parses 'idx1, idx2, ..., idxN]' (already past the opening '[') for an
+// N-dimensional (N=dims, always 3 or more - 1D/2D have their own
+// dedicated index parsing) array access/assignment. Chains each index
+// expression via its own ->next - NOT the caller's access/assignment
+// node's ->next, which stays free for whatever that node's own context
+// needs (statement-list chaining, for an assignment) - the same
+// sibling-chain technique NODE_WRITELN's argument list and NODE_SET_
+// CONSTRUCTOR's element list already use, needed here because ASTNode
+// has only 4 child pointers and an N-dimensional access already needs
+// its symbol/local index (in data.var_idx) plus, for an assignment, a
+// value expression too - no room left for N more named index fields.
+// Consumes the closing ']' itself, so the caller doesn't need to.
+static ASTNode *parse_nd_index_list(int dims) {
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    for (int d = 0; d < dims; d++) {
+        ASTNode *idx_node = expression();
+        if (!head) head = idx_node; else tail->next = idx_node;
+        tail = idx_node;
+        if (d < dims - 1) {
+            match(TOKEN_COMMA);
+        }
+    }
+    match(TOKEN_RBRACKET);
+    return head;
+}
+
 // Parses '(' [expr {',' expr}] ')' as a call's argument list, or nothing
 // if there are no parens at all - both are accepted for a zero-argument
 // call, matching how write/writeln also tolerate the parenless form.
@@ -1279,6 +1442,40 @@ static void subroutine_declaration(int is_function_decl);
 // or the caller's own array-reference parameter's current value (which
 // DOES vary per call, exactly like any other parameter - the caller may
 // itself just be forwarding an array it received).
+// A snapshot of an array's declared shape (element type + every
+// dimension's bounds) - used by parse_array_ref_argument() below to
+// compare a call-site argument's actual shape against a parameter's
+// expected one, for 1D, 2D, and N-D arrays uniformly. is_2d and is_nd
+// are mutually exclusive; lower2/upper2 are only meaningful if is_2d,
+// nd_dims/nd_lower/nd_upper only if is_nd.
+typedef struct {
+    DataType elem;
+    int lower, upper;
+    int is_2d;
+    int lower2, upper2;
+    int is_nd;
+    int nd_dims;
+    int nd_lower[MAX_ARRAY_DIMS];
+    int nd_upper[MAX_ARRAY_DIMS];
+} ArrayShape;
+
+static int array_shapes_match(const ArrayShape *a, const ArrayShape *b) {
+    if (a->elem != b->elem || a->lower != b->lower || a->upper != b->upper
+        || a->is_2d != b->is_2d || a->is_nd != b->is_nd) {
+        return 0;
+    }
+    if (a->is_2d && (a->lower2 != b->lower2 || a->upper2 != b->upper2)) {
+        return 0;
+    }
+    if (a->is_nd) {
+        if (a->nd_dims != b->nd_dims) return 0;
+        for (int d = 0; d < a->nd_dims; d++) {
+            if (a->nd_lower[d] != b->nd_lower[d] || a->nd_upper[d] != b->nd_upper[d]) return 0;
+        }
+    }
+    return 1;
+}
+
 static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected an array name for parameter %d of '%s'",
@@ -1289,36 +1486,52 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
     strcpy(arg_name, token.text);
     match(TOKEN_IDENTIFIER);
 
-    DataType expected_elem = proc_table[proc_idx].param_types[param_index];
-    int expected_lower = proc_table[proc_idx].param_array_lower[param_index];
-    int expected_upper = proc_table[proc_idx].param_array_upper[param_index];
-    int expected_is_2d = proc_table[proc_idx].param_is_2d[param_index];
-    int expected_lower2 = proc_table[proc_idx].param_array_lower2[param_index];
-    int expected_upper2 = proc_table[proc_idx].param_array_upper2[param_index];
+    ArrayShape expected = {0};
+    expected.elem = proc_table[proc_idx].param_types[param_index];
+    expected.lower = proc_table[proc_idx].param_array_lower[param_index];
+    expected.upper = proc_table[proc_idx].param_array_upper[param_index];
+    expected.is_2d = proc_table[proc_idx].param_is_2d[param_index];
+    expected.lower2 = proc_table[proc_idx].param_array_lower2[param_index];
+    expected.upper2 = proc_table[proc_idx].param_array_upper2[param_index];
+    expected.is_nd = proc_table[proc_idx].param_is_nd[param_index];
+    expected.nd_dims = proc_table[proc_idx].param_nd_dims[param_index];
+    for (int d = 0; d < expected.nd_dims; d++) {
+        expected.nd_lower[d] = proc_table[proc_idx].param_nd_lower[param_index][d];
+        expected.nd_upper[d] = proc_table[proc_idx].param_nd_upper[param_index][d];
+    }
 
     int local_idx = find_local(arg_name);
     if (local_idx != -1 && (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref)) {
-        DataType actual_elem;
-        int actual_lower, actual_upper, actual_is_2d, actual_lower2, actual_upper2;
+        ArrayShape actual = {0};
         if (current_locals[local_idx].is_array) {
             int s = current_locals[local_idx].array_sym_idx;
-            actual_elem = sym_table[s].type;
-            actual_lower = sym_table[s].array_lower;
-            actual_upper = sym_table[s].array_upper;
-            actual_is_2d = sym_table[s].is_2d;
-            actual_lower2 = sym_table[s].array_lower2;
-            actual_upper2 = sym_table[s].array_upper2;
+            actual.elem = sym_table[s].type;
+            actual.lower = sym_table[s].array_lower;
+            actual.upper = sym_table[s].array_upper;
+            actual.is_2d = sym_table[s].is_2d;
+            actual.lower2 = sym_table[s].array_lower2;
+            actual.upper2 = sym_table[s].array_upper2;
+            actual.is_nd = sym_table[s].is_nd;
+            actual.nd_dims = sym_table[s].nd_dims;
+            for (int d = 0; d < actual.nd_dims; d++) {
+                actual.nd_lower[d] = sym_table[s].nd_lower[d];
+                actual.nd_upper[d] = sym_table[s].nd_upper[d];
+            }
         } else {
-            actual_elem = current_locals[local_idx].type;
-            actual_lower = current_locals[local_idx].array_lower;
-            actual_upper = current_locals[local_idx].array_upper;
-            actual_is_2d = current_locals[local_idx].is_2d;
-            actual_lower2 = current_locals[local_idx].array_lower2;
-            actual_upper2 = current_locals[local_idx].array_upper2;
+            actual.elem = current_locals[local_idx].type;
+            actual.lower = current_locals[local_idx].array_lower;
+            actual.upper = current_locals[local_idx].array_upper;
+            actual.is_2d = current_locals[local_idx].is_2d;
+            actual.lower2 = current_locals[local_idx].array_lower2;
+            actual.upper2 = current_locals[local_idx].array_upper2;
+            actual.is_nd = current_locals[local_idx].is_nd;
+            actual.nd_dims = current_locals[local_idx].nd_dims;
+            for (int d = 0; d < actual.nd_dims; d++) {
+                actual.nd_lower[d] = current_locals[local_idx].nd_lower[d];
+                actual.nd_upper[d] = current_locals[local_idx].nd_upper[d];
+            }
         }
-        if (actual_elem != expected_elem || actual_lower != expected_lower || actual_upper != expected_upper
-            || actual_is_2d != expected_is_2d
-            || (expected_is_2d && (actual_lower2 != expected_lower2 || actual_upper2 != expected_upper2))) {
+        if (!array_shapes_match(&actual, &expected)) {
             compile_error(arg_line, "Array argument '%s' does not match parameter %d of '%s' (declared bounds/type)",
                            arg_name, param_index + 1, proc_table[proc_idx].name);
         }
@@ -1330,7 +1543,7 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
             node = create_node(NODE_LOCAL_VAR); // the caller's own array-ref param's runtime value
             node->data.var_idx = local_idx;
         }
-        node->expression_type = expected_elem;
+        node->expression_type = expected.elem;
         return node;
     }
 
@@ -1338,18 +1551,26 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
     if (!sym_table[global_idx].is_array) {
         compile_error(arg_line, "'%s' is not an array", arg_name);
     }
-    if (sym_table[global_idx].type != expected_elem ||
-        sym_table[global_idx].array_lower != expected_lower ||
-        sym_table[global_idx].array_upper != expected_upper ||
-        sym_table[global_idx].is_2d != expected_is_2d ||
-        (expected_is_2d && (sym_table[global_idx].array_lower2 != expected_lower2 ||
-                             sym_table[global_idx].array_upper2 != expected_upper2))) {
+    ArrayShape actual = {0};
+    actual.elem = sym_table[global_idx].type;
+    actual.lower = sym_table[global_idx].array_lower;
+    actual.upper = sym_table[global_idx].array_upper;
+    actual.is_2d = sym_table[global_idx].is_2d;
+    actual.lower2 = sym_table[global_idx].array_lower2;
+    actual.upper2 = sym_table[global_idx].array_upper2;
+    actual.is_nd = sym_table[global_idx].is_nd;
+    actual.nd_dims = sym_table[global_idx].nd_dims;
+    for (int d = 0; d < actual.nd_dims; d++) {
+        actual.nd_lower[d] = sym_table[global_idx].nd_lower[d];
+        actual.nd_upper[d] = sym_table[global_idx].nd_upper[d];
+    }
+    if (!array_shapes_match(&actual, &expected)) {
         compile_error(arg_line, "Array argument '%s' does not match parameter %d of '%s' (declared bounds/type)",
                        arg_name, param_index + 1, proc_table[proc_idx].name);
     }
     ASTNode *node = create_node(NODE_ARRAY_REF);
     node->data.var_idx = global_idx;
-    node->expression_type = expected_elem;
+    node->expression_type = expected.elem;
     return node;
 }
 
@@ -1589,6 +1810,14 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
             compile_error(token.line, "Array '%s' must be indexed", sym_table[idx].name);
         }
         match(TOKEN_LBRACKET);
+        if (sym_table[idx].is_nd) {
+            ASTNode *node = create_node(NODE_ARRAY_ACCESS_ND);
+            node->line = line;
+            node->data.var_idx = idx;
+            node->left = parse_nd_index_list(sym_table[idx].nd_dims); // consumes ']' itself
+            node->expression_type = sym_table[idx].type;
+            return node;
+        }
         if (sym_table[idx].is_2d) {
             ASTNode *node = create_node(NODE_ARRAY_ACCESS_2D);
             node->line = line;
@@ -2112,6 +2341,14 @@ static ASTNode *factor(void) {
                     compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
                 }
                 match(TOKEN_LBRACKET);
+                if (sym_table[arr_sym_idx].is_nd) {
+                    ASTNode *node = create_node(NODE_ARRAY_ACCESS_ND);
+                    node->line = line;
+                    node->data.var_idx = arr_sym_idx;
+                    node->left = parse_nd_index_list(sym_table[arr_sym_idx].nd_dims); // consumes ']' itself
+                    node->expression_type = sym_table[arr_sym_idx].type;
+                    return node;
+                }
                 if (sym_table[arr_sym_idx].is_2d) {
                     ASTNode *node = create_node(NODE_ARRAY_ACCESS_2D);
                     node->line = line;
@@ -2137,6 +2374,14 @@ static ASTNode *factor(void) {
                     compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
                 }
                 match(TOKEN_LBRACKET);
+                if (current_locals[local_idx].is_nd) {
+                    ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS_ND);
+                    node->line = line;
+                    node->data.var_idx = local_idx;
+                    node->left = parse_nd_index_list(current_locals[local_idx].nd_dims); // consumes ']' itself
+                    node->expression_type = current_locals[local_idx].type;
+                    return node;
+                }
                 if (current_locals[local_idx].is_2d) {
                     ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS_2D);
                     node->line = line;
@@ -2625,25 +2870,9 @@ ASTNode *parse_ast(const char *source, const char *filename) {
             } else if (token.type == TOKEN_ARRAY) {
                 match(TOKEN_ARRAY);
                 match(TOKEN_LBRACKET);
-                int lower = parse_int_literal();
-                match(TOKEN_DOTDOT);
-                int upper = parse_int_literal();
-                int is_2d = 0;
-                int lower2 = 0, upper2 = 0;
-                if (token.type == TOKEN_COMMA) {
-                    match(TOKEN_COMMA);
-                    lower2 = parse_int_literal();
-                    match(TOKEN_DOTDOT);
-                    upper2 = parse_int_literal();
-                    if (upper2 < lower2) {
-                        compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper2, lower2);
-                    }
-                    is_2d = 1;
-                }
+                int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
+                int dims = parse_array_bounds(lower, upper);
                 match(TOKEN_RBRACKET);
-                if (upper < lower) {
-                    compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
-                }
                 match(TOKEN_OF);
 
                 DataType elem_type = parse_scalar_type();
@@ -2652,10 +2881,12 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 int subrange_upper = scalar_type_subrange_upper;
 
                 for (int i = 0; i < count; i++) {
-                    if (is_2d) {
-                        add_array_var_2d(temporary_names[i], elem_type, lower, upper, lower2, upper2);
+                    if (dims == 1) {
+                        add_array_var(temporary_names[i], elem_type, lower[0], upper[0]);
+                    } else if (dims == 2) {
+                        add_array_var_2d(temporary_names[i], elem_type, lower[0], upper[0], lower[1], upper[1]);
                     } else {
-                        add_array_var(temporary_names[i], elem_type, lower, upper);
+                        add_array_var_nd(temporary_names[i], elem_type, dims, lower, upper);
                     }
                     sym_table[sym_count - 1].is_subrange = is_subrange;
                     sym_table[sym_count - 1].subrange_lower = subrange_lower;
@@ -2863,6 +3094,8 @@ static void subroutine_declaration(int is_function_decl) {
                                      proc_table[proc_idx].param_array_lower[i], proc_table[proc_idx].param_array_upper[i],
                                      proc_table[proc_idx].param_is_2d[i], proc_table[proc_idx].param_array_lower2[i],
                                      proc_table[proc_idx].param_array_upper2[i],
+                                     proc_table[proc_idx].param_is_nd[i], proc_table[proc_idx].param_nd_dims[i],
+                                     proc_table[proc_idx].param_nd_lower[i], proc_table[proc_idx].param_nd_upper[i],
                                      proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
                                      proc_table[proc_idx].param_subrange_upper[i]);
             } else if (proc_table[proc_idx].param_is_record[i]) {
@@ -2891,6 +3124,10 @@ static void subroutine_declaration(int is_function_decl) {
         int param_is_2d[MAX_PARAMS];
         int param_array_lower2[MAX_PARAMS];
         int param_array_upper2[MAX_PARAMS];
+        int param_is_nd[MAX_PARAMS];
+        int param_nd_dims[MAX_PARAMS];
+        int param_nd_lower[MAX_PARAMS][MAX_ARRAY_DIMS];
+        int param_nd_upper[MAX_PARAMS][MAX_ARRAY_DIMS];
         int param_is_subrange[MAX_PARAMS];
         int param_subrange_lower[MAX_PARAMS];
         int param_subrange_upper[MAX_PARAMS];
@@ -2928,6 +3165,7 @@ static void subroutine_declaration(int is_function_decl) {
                             // always by reference, with or without it.
                             add_local_array_ref(g.names[i], g.type, g.array_lower, g.array_upper,
                                                  g.is_2d, g.array_lower2, g.array_upper2,
+                                                 g.is_nd, g.nd_dims, g.nd_lower, g.nd_upper,
                                                  g.is_subrange, g.subrange_lower, g.subrange_upper);
                         } else if (g.is_record) {
                             add_local_record(g.names[i], g.record_type_idx);
@@ -2947,6 +3185,12 @@ static void subroutine_declaration(int is_function_decl) {
                         param_is_2d[param_count] = g.is_2d;
                         param_array_lower2[param_count] = g.array_lower2;
                         param_array_upper2[param_count] = g.array_upper2;
+                        param_is_nd[param_count] = g.is_nd;
+                        param_nd_dims[param_count] = g.nd_dims;
+                        for (int d = 0; d < g.nd_dims; d++) {
+                            param_nd_lower[param_count][d] = g.nd_lower[d];
+                            param_nd_upper[param_count][d] = g.nd_upper[d];
+                        }
                         param_is_subrange[param_count] = g.is_subrange;
                         param_subrange_lower[param_count] = g.subrange_lower;
                         param_subrange_upper[param_count] = g.subrange_upper;
@@ -2983,6 +3227,12 @@ static void subroutine_declaration(int is_function_decl) {
             proc_table[proc_idx].param_is_2d[i] = param_is_2d[i];
             proc_table[proc_idx].param_array_lower2[i] = param_array_lower2[i];
             proc_table[proc_idx].param_array_upper2[i] = param_array_upper2[i];
+            proc_table[proc_idx].param_is_nd[i] = param_is_nd[i];
+            proc_table[proc_idx].param_nd_dims[i] = param_nd_dims[i];
+            for (int d = 0; d < param_nd_dims[i]; d++) {
+                proc_table[proc_idx].param_nd_lower[i][d] = param_nd_lower[i][d];
+                proc_table[proc_idx].param_nd_upper[i][d] = param_nd_upper[i][d];
+            }
             proc_table[proc_idx].param_is_subrange[i] = param_is_subrange[i];
             proc_table[proc_idx].param_subrange_lower[i] = param_subrange_lower[i];
             proc_table[proc_idx].param_subrange_upper[i] = param_subrange_upper[i];
@@ -3040,6 +3290,7 @@ static void subroutine_declaration(int is_function_decl) {
                 } else if (g.is_array) {
                     add_local_array(g.names[i], g.type, g.array_lower, g.array_upper,
                                      g.is_2d, g.array_lower2, g.array_upper2,
+                                     g.is_nd, g.nd_dims, g.nd_lower, g.nd_upper,
                                      g.is_subrange, g.subrange_lower, g.subrange_upper);
                 } else if (g.is_record) {
                     add_local_record(g.names[i], g.record_type_idx);
@@ -3619,6 +3870,15 @@ static ASTNode *parse_global_assignment(int idx) {
             compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
         }
         match(TOKEN_LBRACKET);
+        if (sym_table[idx].is_nd) {
+            ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_ND);
+            stmt->data.var_idx = idx;
+            stmt->left = parse_nd_index_list(sym_table[idx].nd_dims); // consumes ']' itself
+            match(TOKEN_ASSIGN);
+            stmt->right = wrap_range_check(expression(), sym_table[idx].is_subrange,
+                                            sym_table[idx].subrange_lower, sym_table[idx].subrange_upper); // value
+            return stmt;
+        }
         if (sym_table[idx].is_2d) {
             ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_2D);
             stmt->data.var_idx = idx;
@@ -4057,6 +4317,16 @@ static ASTNode *statement(void) {
                 if (token.type != TOKEN_LBRACKET) {
                     compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
                 }
+                if (sym_table[arr_sym_idx].is_nd) {
+                    ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_ND);
+                    stmt->data.var_idx = arr_sym_idx;
+                    match(TOKEN_LBRACKET);
+                    stmt->left = parse_nd_index_list(sym_table[arr_sym_idx].nd_dims); // consumes ']' itself
+                    match(TOKEN_ASSIGN);
+                    stmt->right = wrap_range_check(expression(), sym_table[arr_sym_idx].is_subrange,
+                        sym_table[arr_sym_idx].subrange_lower, sym_table[arr_sym_idx].subrange_upper); // value
+                    return stmt;
+                }
                 if (sym_table[arr_sym_idx].is_2d) {
                     ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_2D);
                     stmt->data.var_idx = arr_sym_idx;
@@ -4084,6 +4354,17 @@ static ASTNode *statement(void) {
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
                     compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                }
+                if (current_locals[local_idx].is_nd) {
+                    ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN_ND);
+                    stmt->data.var_idx = local_idx;
+                    stmt->expression_type = current_locals[local_idx].type;
+                    match(TOKEN_LBRACKET);
+                    stmt->left = parse_nd_index_list(current_locals[local_idx].nd_dims); // consumes ']' itself
+                    match(TOKEN_ASSIGN);
+                    stmt->right = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
+                        current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper); // value
+                    return stmt;
                 }
                 if (current_locals[local_idx].is_2d) {
                     ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN_2D);

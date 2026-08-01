@@ -128,6 +128,10 @@ static const char *opcode_name(Opcode op) {
         case OP_READ_LOCAL_REAL_NOFLUSH: return "read_local_real_noflush";
         case OP_EOF:  return "eof";
         case OP_EOLN: return "eoln";
+        case OP_LOAD_IDXND:  return "load_idxnd";
+        case OP_STORE_IDXND: return "store_idxnd";
+        case OP_LOAD_IDXND_DYN:  return "load_idxnd_dyn";
+        case OP_STORE_IDXND_DYN: return "store_idxnd_dyn";
         default:       return NULL;
     }
 }
@@ -161,11 +165,15 @@ static int is_jump(Opcode op) {
     return op == OP_JMP || op == OP_JZ || op == OP_CALL;
 }
 
-// True for opcodes whose arg is a variable index into sym_table[].
+// True for opcodes whose arg is a variable index into sym_table[]. Note
+// OP_LOAD_IDXND_DYN/OP_STORE_IDXND_DYN are deliberately NOT included here -
+// unlike every other opcode in this list, their arg is a fixed dimension
+// count, not a symbol reference (see their comment in common.h).
 static int is_var_ref(Opcode op) {
     return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_READ_NOFLUSH
         || op == OP_LOAD_IDX || op == OP_STORE_IDX
-        || op == OP_LOAD_IDX2D || op == OP_STORE_IDX2D;
+        || op == OP_LOAD_IDX2D || op == OP_STORE_IDX2D
+        || op == OP_LOAD_IDXND || op == OP_STORE_IDXND;
 }
 
 // True for opcodes whose arg is a plain immediate value with no lookup -
@@ -201,7 +209,13 @@ static void mark_jump_targets(void) {
 static void disassemble(FILE *out) {
     if (sym_count > 0) {
         for (int i = 0; i < sym_count; i++) {
-            if (sym_table[i].is_array && sym_table[i].is_2d) {
+            if (sym_table[i].is_array && sym_table[i].is_nd) {
+                fprintf(out, ".arrayNd %s %d", sym_table[i].name, sym_table[i].nd_dims);
+                for (int d = 0; d < sym_table[i].nd_dims; d++) {
+                    fprintf(out, " %d %d", sym_table[i].nd_lower[d], sym_table[i].nd_upper[d]);
+                }
+                fprintf(out, " %s\n", type_name(sym_table[i].type));
+            } else if (sym_table[i].is_array && sym_table[i].is_2d) {
                 fprintf(out, ".array2d %s %d %d %d %d %s\n", sym_table[i].name,
                         sym_table[i].array_lower, sym_table[i].array_upper,
                         sym_table[i].array_lower2, sym_table[i].array_upper2, type_name(sym_table[i].type));

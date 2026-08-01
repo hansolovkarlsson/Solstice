@@ -196,7 +196,41 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       `low`/`high`/`length` still don't support 2D (parameter or
       global) — see
       [docs/LANGUAGE.md](LANGUAGE.md#array-parameters-and-local-arrays).
-- [ ] Three-or-more-dimensional arrays
+- [x] Three-or-more-dimensional arrays (`array[1..2, 1..2, 1..2] of T`,
+      up to `MAX_ARRAY_DIMS` = 6) — full parity with 1D/2D: a global/
+      local variable, or a by-reference parameter with exact-shape
+      call-site validation. Unlike 2D (which bolted a second hardcoded
+      dimension onto the 1D mechanism - named `array_lower2`/`is_2d`
+      fields, dedicated opcodes), this is a genuinely general N-
+      dimensional mechanism: a dimension count plus `nd_lower[]`/
+      `nd_upper[]` bounds arrays on `Symbol`/`LocalSymbol`/`ProcSymbol`,
+      and 4 new opcodes (`LOAD_IDXND`/`STORE_IDXND` + `_DYN` variants)
+      that read the dimension count from the symbol (or, for the `_DYN`
+      by-reference case, from a fixed compile-time-known operand) rather
+      than having it hardcoded per-opcode. A 3+D index list is chained
+      through each index's own `->next` (the same sibling-chain
+      technique `NODE_WRITELN`'s argument list already uses) rather than
+      adding a 5th `ASTNode` child pointer, since a 3+D assignment needs
+      more sub-expressions (indices plus a value) than `ASTNode` reserves.
+      1D and 2D arrays are completely untouched - separate mechanism,
+      zero shared code paths, zero regression risk to either.
+
+      Along the way, found and fixed a real, pre-existing bug (not
+      specific to this feature): dead-code elimination could silently
+      drop an array-element or string-index assignment's runtime bounds
+      check whenever the target array/string was otherwise unread
+      anywhere in the program - e.g. `arr[999] := 1;` on an array never
+      read elsewhere was silently eliminated instead of aborting with an
+      out-of-range error. Fixed for `NODE_ASSIGN`'s array form,
+      `NODE_ARRAY_ASSIGN_2D`, the new `NODE_ARRAY_ASSIGN_ND`, and
+      `NODE_STRING_INDEX_ASSIGN` - array/string-index assignments are
+      simply never eliminated by DCE now, regardless of whether the
+      target is otherwise read (same principle as the range-check/set-
+      side-effect DCE guards added earlier for subranges/sets). Also
+      fixed the `-v` verbose final-state variable dump, which only ever
+      printed a 2D array's first dimension's worth of elements (a
+      pre-existing, unrelated display bug) - see
+      [docs/LANGUAGE.md](LANGUAGE.md#three-or-more-dimensional-arrays).
 
 ### Language — I/O & error handling
 
