@@ -229,6 +229,122 @@ static int vm_intern_string(const char *s) {
     return string_count++;
 }
 
+// Reads one value from stdin into a GLOBAL variable (idx), matching its
+// declared type - shared by OP_READ ('readln' semantics: flush) and
+// OP_READ_NOFLUSH ('read' semantics: leave the rest of the line alone,
+// so a following read on the same line picks up where this one left
+// off). 'flush' only affects INTEGER/REAL/BOOLEAN (scanf-based): a
+// STRING/CHAR target always reads a whole line via fgets(), which
+// already consumes through the newline as part of reading it, so there
+// is nothing left to flush either way.
+static void vm_read_global(int idx, int flush) {
+    printf("> "); // Prompt user
+    if (is_string_type(sym_table[idx].type)) {
+        char line[MAX_STRING_LEN];
+        if (!fgets(line, sizeof(line), stdin)) {
+            fprintf(stderr, "VM Runtime Error: Invalid string input\n");
+            fatal_abort();
+        }
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+        if (sym_table[idx].type == TYPE_CHAR && strlen(line) != 1) {
+            fprintf(stderr, "VM Runtime Error: readln expected a single character for '%s', got \"%s\"\n",
+                    sym_table[idx].name, line);
+            fatal_abort();
+        }
+        vm_vars[idx] = vm_intern_string(line);
+    } else if (sym_table[idx].type == TYPE_REAL) {
+        float input_val;
+        if (scanf("%f", &input_val) != 1) {
+            fprintf(stderr, "VM Runtime Error: Invalid real input\n");
+            fatal_abort();
+        }
+        if (flush) {
+            int c;
+            while ((c = getchar()) != '\n' && c != EOF) { }
+        }
+        vm_vars[idx] = float_to_bits(input_val);
+    } else {
+        int input_val;
+        if (scanf("%d", &input_val) != 1) {
+            fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
+            fatal_abort();
+        }
+        if (flush) {
+            int c;
+            while ((c = getchar()) != '\n' && c != EOF) { }
+        }
+        if (sym_table[idx].type == TYPE_BOOLEAN && input_val != 0 && input_val != 1) {
+            fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1) for '%s', got %d\n",
+                    sym_table[idx].name, input_val);
+            fatal_abort();
+        }
+        vm_vars[idx] = input_val;
+    }
+}
+
+// Local-frame-slot equivalents of vm_read_global()'s int/bool/real
+// branches - kept as separate small functions (matching the existing
+// per-type OP_READ_LOCAL_* opcode split) rather than one function
+// branching on type, since a local slot carries no runtime type tag to
+// branch on in the first place; codegen already picked the right
+// function via the right opcode.
+static void vm_read_local_int(int slot, int flush) {
+    printf("> ");
+    int input_val;
+    if (scanf("%d", &input_val) != 1) {
+        fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
+        fatal_abort();
+    }
+    if (flush) {
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) { }
+    }
+    vm_frame_stack[slot] = input_val;
+}
+
+static void vm_read_local_bool(int slot, int flush) {
+    printf("> ");
+    int input_val;
+    if (scanf("%d", &input_val) != 1) {
+        fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
+        fatal_abort();
+    }
+    if (flush) {
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) { }
+    }
+    if (input_val != 0 && input_val != 1) {
+        fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1), got %d\n", input_val);
+        fatal_abort();
+    }
+    vm_frame_stack[slot] = input_val;
+}
+
+static void vm_read_local_real(int slot, int flush) {
+    printf("> ");
+    float input_val;
+    if (scanf("%f", &input_val) != 1) {
+        fprintf(stderr, "VM Runtime Error: Invalid real input\n");
+        fatal_abort();
+    }
+    if (flush) {
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) { }
+    }
+    vm_frame_stack[slot] = float_to_bits(input_val);
+}
+
+// Peeks at the next character on stdin without consuming it (via
+// fgetc()/ungetc() - safe for stdin, an ordinary FILE*). Used by
+// OP_EOF/OP_EOLN; no persisted "current line" buffer needed anywhere
+// else in this file for either of them.
+static int vm_peek_stdin(void) {
+    int c = fgetc(stdin);
+    if (c != EOF) ungetc(c, stdin);
+    return c;
+}
+
 void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
@@ -954,96 +1070,37 @@ void run_vm(void) {
                 printf("\n");
                 break;
 
-            case OP_READ: {
-                int idx = vm_var_index(instr.arg);
-                printf("> "); // Prompt user
-
-                if (is_string_type(sym_table[idx].type)) {
-                    char line[MAX_STRING_LEN];
-                    if (!fgets(line, sizeof(line), stdin)) {
-                        fprintf(stderr, "VM Runtime Error: Invalid string input\n");
-                        fatal_abort();
-                    }
-                    size_t len = strlen(line);
-                    if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
-                    if (sym_table[idx].type == TYPE_CHAR && strlen(line) != 1) {
-                        fprintf(stderr, "VM Runtime Error: readln expected a single character for '%s', got \"%s\"\n",
-                                sym_table[idx].name, line);
-                        fatal_abort();
-                    }
-                    vm_vars[idx] = vm_intern_string(line);
-                } else if (sym_table[idx].type == TYPE_REAL) {
-                    float input_val;
-                    if (scanf("%f", &input_val) != 1) {
-                        fprintf(stderr, "VM Runtime Error: Invalid real input\n");
-                        fatal_abort();
-                    }
-                    int c;
-                    while ((c = getchar()) != '\n' && c != EOF) { } // flush rest of the line
-                    vm_vars[idx] = float_to_bits(input_val);
-                } else {
-                    int input_val;
-                    if (scanf("%d", &input_val) != 1) {
-                        fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
-                        fatal_abort();
-                    }
-                    int c;
-                    while ((c = getchar()) != '\n' && c != EOF) { } // flush rest of the line
-                    if (sym_table[idx].type == TYPE_BOOLEAN && input_val != 0 && input_val != 1) {
-                        fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1) for '%s', got %d\n",
-                                sym_table[idx].name, input_val);
-                        fatal_abort();
-                    }
-                    vm_vars[idx] = input_val;
-                }
+            case OP_READ:
+                vm_read_global(vm_var_index(instr.arg), 1);
                 break;
-            }
 
-            case OP_READ_LOCAL_INT: {
-                int slot = vm_local_index(fp, frame_sp, instr.arg);
-                printf("> ");
-                int input_val;
-                if (scanf("%d", &input_val) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
-                    fatal_abort();
-                }
-                int c;
-                while ((c = getchar()) != '\n' && c != EOF) { }
-                vm_frame_stack[slot] = input_val;
+            case OP_READ_NOFLUSH:
+                vm_read_global(vm_var_index(instr.arg), 0);
                 break;
-            }
 
-            case OP_READ_LOCAL_BOOL: {
-                int slot = vm_local_index(fp, frame_sp, instr.arg);
-                printf("> ");
-                int input_val;
-                if (scanf("%d", &input_val) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Invalid integer input\n");
-                    fatal_abort();
-                }
-                int c;
-                while ((c = getchar()) != '\n' && c != EOF) { }
-                if (input_val != 0 && input_val != 1) {
-                    fprintf(stderr, "VM Runtime Error: readln expected a boolean value (0 or 1), got %d\n", input_val);
-                    fatal_abort();
-                }
-                vm_frame_stack[slot] = input_val;
+            case OP_READ_LOCAL_INT:
+                vm_read_local_int(vm_local_index(fp, frame_sp, instr.arg), 1);
                 break;
-            }
 
-            case OP_READ_LOCAL_REAL: {
-                int slot = vm_local_index(fp, frame_sp, instr.arg);
-                printf("> ");
-                float input_val;
-                if (scanf("%f", &input_val) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Invalid real input\n");
-                    fatal_abort();
-                }
-                int c;
-                while ((c = getchar()) != '\n' && c != EOF) { }
-                vm_frame_stack[slot] = float_to_bits(input_val);
+            case OP_READ_LOCAL_INT_NOFLUSH:
+                vm_read_local_int(vm_local_index(fp, frame_sp, instr.arg), 0);
                 break;
-            }
+
+            case OP_READ_LOCAL_BOOL:
+                vm_read_local_bool(vm_local_index(fp, frame_sp, instr.arg), 1);
+                break;
+
+            case OP_READ_LOCAL_BOOL_NOFLUSH:
+                vm_read_local_bool(vm_local_index(fp, frame_sp, instr.arg), 0);
+                break;
+
+            case OP_READ_LOCAL_REAL:
+                vm_read_local_real(vm_local_index(fp, frame_sp, instr.arg), 1);
+                break;
+
+            case OP_READ_LOCAL_REAL_NOFLUSH:
+                vm_read_local_real(vm_local_index(fp, frame_sp, instr.arg), 0);
+                break;
 
             case OP_READ_LOCAL_STR: {
                 int slot = vm_local_index(fp, frame_sp, instr.arg);
@@ -1074,6 +1131,16 @@ void run_vm(void) {
                     fatal_abort();
                 }
                 vm_frame_stack[slot] = vm_intern_string(line);
+                break;
+            }
+
+            case OP_EOF:
+                vm_push(&sp, vm_peek_stdin() == EOF);
+                break;
+
+            case OP_EOLN: {
+                int c = vm_peek_stdin();
+                vm_push(&sp, c == EOF || c == '\n');
                 break;
             }
 

@@ -238,7 +238,12 @@ jump/assert machinery (see
 just arrays), via three new opcodes (`PUSH_LOCAL_REF`/`LOAD_REF`/
 `STORE_REF`) that let one reference value transparently address either a
 global variable or one of the caller's own local/parameter slots (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#var-parameters)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#var-parameters)). Also working:
+`read` (distinct from `readln` — doesn't consume the rest of the input
+line, so several values can be read off one line), multiple targets in
+one `read`/`readln` call, and the `eof`/`eoln` predicates for stdin,
+usable bare (`while not eof do readln(x);`) like real Pascal (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#read-and-readln)).
 
 Not yet implemented: three-or-more-dimensional arrays, dynamic arrays
 (so no array `copy`/slicing), records as array elements or nested

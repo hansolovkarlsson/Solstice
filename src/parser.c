@@ -1681,6 +1681,25 @@ static ASTNode *factor(void) {
         node->right = expression(); // exponent
         match(TOKEN_RPAREN);
         return node;
+    } else if (token.type == TOKEN_EOF_FN || token.type == TOKEN_EOLN) {
+        // 'eof' / 'eoln' - real Pascal usage is almost always bare (no
+        // parens at all, e.g. 'while not eof do ...'), but '()' is
+        // accepted too (with no argument - there's no file type to name
+        // one of yet, only stdin). Unlike every other builtin here,
+        // these need a genuine runtime check (peeking at stdin), so -
+        // unlike 'pi' above - this does need a real opcode: NODE_BUILTIN_CALL
+        // with no children at all (generate_code(NULL) safely no-ops for
+        // node->left/right/extra), dispatched on node->op in codegen.
+        TokenType kind = token.type;
+        match(kind);
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            match(TOKEN_RPAREN);
+        }
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = kind;
+        node->expression_type = TYPE_BOOLEAN;
+        return node;
     } else if (token.type == TOKEN_ODD) {
         // odd(x) desugars to '(x mod 2) <> 0' - reuses the existing
         // mod/comparison machinery entirely, so type checking (x must be
@@ -2928,11 +2947,168 @@ static ASTNode *parse_case_statement(void) {
     return node;
 }
 
+// Parses ONE read/readln target (a variable - a with-target's field, a
+// record field (global or local), a plain local/parameter, a static
+// local, or a plain global) and returns the appropriate node
+// (NODE_READLN or NODE_LOCAL_READLN). Deliberately does NOT set the
+// returned node's ->op (the caller - parse_read_statement() below -
+// decides 'read' vs 'readln' semantics once it knows whether this is the
+// LAST target in the list) and does NOT consume ')' (more targets may
+// follow, comma-separated).
+static ASTNode *parse_read_target(void) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "readln expects a variable identifier");
+    }
+    {
+        int with_field_idx = find_with_field(token.text);
+        if (with_field_idx != -1) {
+            match(TOKEN_IDENTIFIER);
+            if (sym_table[with_field_idx].is_array) {
+                compile_error(token.line, "readln into an array is not supported");
+            }
+            if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE) {
+                compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            ASTNode *stmt = create_node(NODE_READLN);
+            stmt->data.var_idx = with_field_idx;
+            return stmt;
+        }
+    }
+
+    {
+        int rv_is_local, rv_record_type_idx;
+        const int *rv_field_idx;
+        if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            char rec_name[MAX_NAME];
+            strcpy(rec_name, token.text);
+            match(TOKEN_IDENTIFIER);
+            if (token.type != TOKEN_PERIOD) {
+                compile_error(token.line, "'%s' is a record - readln expects a field, e.g. '%s.field'", rec_name, rec_name);
+            }
+            match(TOKEN_PERIOD);
+            if (token.type != TOKEN_IDENTIFIER) {
+                compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+            }
+            int field_idx = find_record_field(rv_record_type_idx, token.text);
+            if (field_idx == -1) {
+                compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+            }
+            int resolved_idx = rv_field_idx[field_idx];
+            match(TOKEN_IDENTIFIER);
+            if (rv_is_local) {
+                // Never an array (add_local_record() rejects an array
+                // field) - only the enum check applies.
+                if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE) {
+                    compile_error(token.line, "readln into an enumerated value is not supported");
+                }
+                ASTNode *stmt = create_node(NODE_LOCAL_READLN);
+                stmt->data.var_idx = resolved_idx;
+                stmt->expression_type = current_locals[resolved_idx].type;
+                return stmt;
+            }
+            if (sym_table[resolved_idx].is_array) {
+                compile_error(token.line, "readln into an array is not supported");
+            }
+            if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE) {
+                compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            ASTNode *stmt = create_node(NODE_READLN);
+            stmt->data.var_idx = resolved_idx;
+            return stmt;
+        }
+    }
+
+    int local_idx = find_local(token.text);
+    if (local_idx != -1) {
+        if (current_locals[local_idx].is_var_param) {
+            compile_error(token.line, "readln into a 'var' parameter is not supported yet - readln into a plain local/global instead, then assign it through the parameter");
+        }
+        if (current_locals[local_idx].is_static) {
+            match(TOKEN_IDENTIFIER);
+            int static_idx = current_locals[local_idx].static_sym_idx;
+            if (sym_table[static_idx].type >= TYPE_ENUM_BASE) {
+                compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            ASTNode *stmt = create_node(NODE_READLN);
+            stmt->data.var_idx = static_idx;
+            return stmt;
+        }
+        if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
+            compile_error(token.line, "readln into an array is not supported");
+        }
+        if (current_locals[local_idx].type >= TYPE_ENUM_BASE) {
+            compile_error(token.line, "readln into an enumerated value is not supported");
+        }
+        ASTNode *stmt = create_node(NODE_LOCAL_READLN);
+        stmt->data.var_idx = local_idx;
+        stmt->expression_type = current_locals[local_idx].type;
+        match(TOKEN_IDENTIFIER);
+        return stmt;
+    }
+
+    int readln_var_idx = find_var(token.text);
+    if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE) {
+        compile_error(token.line, "readln into an enumerated value is not supported");
+    }
+    ASTNode *stmt = create_node(NODE_READLN);
+    stmt->data.var_idx = readln_var_idx;
+    match(TOKEN_IDENTIFIER);
+    return stmt;
+}
+
+// 'read(a[, b, c...])' / 'readln(a[, b, c...])' - a comma-separated list
+// of read targets (see parse_read_target() above). 'read' and 'readln'
+// differ only in whether the LAST target consumes the rest of the input
+// line afterward: 'read(a, b, c)' desugars to 'read(a); read(b);
+// read(c)' (none of them flush), while 'readln(a, b, c)' desugars to
+// 'read(a); read(b); readln(c)' (only the last one flushes) - matching
+// real Pascal's readln semantics exactly. Each target node's ->op is set
+// to TOKEN_READ or TOKEN_READLN accordingly (reused exactly like
+// NODE_WRITELN already reuses ->op for TOKEN_WRITE vs TOKEN_WRITELN) -
+// that's what codegen dispatches on to pick the flushing or non-flushing
+// opcode variant.
+// A single target - the overwhelmingly common case, and the only form
+// this compiler supported before multi-target reads existed - is
+// returned bare, unwrapped, exactly as before: existing single-target
+// programs compile to identical bytecode. Two or more targets are
+// chained via each node's own ->next and wrapped in one NODE_COMPOUND
+// (the same trick whole-record assignment already uses for its own
+// multi-node desugaring), since statement_list() manages ->next itself
+// for the ENCLOSING statement sequence and would otherwise silently
+// overwrite this chain's own links.
+static ASTNode *parse_read_statement(int is_readln) {
+    match(is_readln ? TOKEN_READLN : TOKEN_READ);
+    match(TOKEN_LPAREN);
+
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    while (1) {
+        ASTNode *target = parse_read_target();
+        target->op = TOKEN_READ; // provisional - the last one is fixed up below if this is a 'readln'
+        if (!head) head = target; else tail->next = target;
+        tail = target;
+        if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+        break;
+    }
+    match(TOKEN_RPAREN);
+
+    if (is_readln) {
+        tail->op = TOKEN_READLN; // only the last target flushes
+    }
+
+    if (head == tail) {
+        return head;
+    }
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = head;
+    return compound;
+}
+
 // True for every token that can legally start a statement. Used by
 // statement_list() to know when to stop (hitting END/ELSE/UNTIL, or EOF
 // on a malformed file, all correctly fail this check).
 static int is_statement_start(TokenType t) {
-    return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN ||
+    return t == TOKEN_IDENTIFIER || t == TOKEN_WRITELN || t == TOKEN_WRITE || t == TOKEN_READLN || t == TOKEN_READ ||
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
            t == TOKEN_ASSERT || t == TOKEN_CASE;
@@ -3525,110 +3701,11 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_READLN) {
-        match(TOKEN_READLN);
-        match(TOKEN_LPAREN);
-        if (token.type != TOKEN_IDENTIFIER) {
-            compile_error(token.line, "readln expects a variable identifier");
-        }
-        {
-            int with_field_idx = find_with_field(token.text);
-            if (with_field_idx != -1) {
-                match(TOKEN_IDENTIFIER);
-                if (sym_table[with_field_idx].is_array) {
-                    compile_error(token.line, "readln into an array is not supported");
-                }
-                if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE) {
-                    compile_error(token.line, "readln into an enumerated value is not supported");
-                }
-                match(TOKEN_RPAREN);
-                ASTNode *stmt = create_node(NODE_READLN);
-                stmt->data.var_idx = with_field_idx;
-                return stmt;
-            }
-        }
+        return parse_read_statement(1);
+    }
 
-        {
-            int rv_is_local, rv_record_type_idx;
-            const int *rv_field_idx;
-            if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
-                char rec_name[MAX_NAME];
-                strcpy(rec_name, token.text);
-                match(TOKEN_IDENTIFIER);
-                if (token.type != TOKEN_PERIOD) {
-                    compile_error(token.line, "'%s' is a record - readln expects a field, e.g. '%s.field'", rec_name, rec_name);
-                }
-                match(TOKEN_PERIOD);
-                if (token.type != TOKEN_IDENTIFIER) {
-                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-                }
-                int field_idx = find_record_field(rv_record_type_idx, token.text);
-                if (field_idx == -1) {
-                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-                }
-                int resolved_idx = rv_field_idx[field_idx];
-                match(TOKEN_IDENTIFIER);
-                if (rv_is_local) {
-                    // Never an array (add_local_record() rejects an array
-                    // field) - only the enum check applies.
-                    if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE) {
-                        compile_error(token.line, "readln into an enumerated value is not supported");
-                    }
-                    match(TOKEN_RPAREN);
-                    ASTNode *stmt = create_node(NODE_LOCAL_READLN);
-                    stmt->data.var_idx = resolved_idx;
-                    stmt->expression_type = current_locals[resolved_idx].type;
-                    return stmt;
-                }
-                if (sym_table[resolved_idx].is_array) {
-                    compile_error(token.line, "readln into an array is not supported");
-                }
-                if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE) {
-                    compile_error(token.line, "readln into an enumerated value is not supported");
-                }
-                match(TOKEN_RPAREN);
-                ASTNode *stmt = create_node(NODE_READLN);
-                stmt->data.var_idx = resolved_idx;
-                return stmt;
-            }
-        }
-        int local_idx = find_local(token.text);
-        if (local_idx != -1) {
-            if (current_locals[local_idx].is_var_param) {
-                compile_error(token.line, "readln into a 'var' parameter is not supported yet - readln into a plain local/global instead, then assign it through the parameter");
-            }
-            if (current_locals[local_idx].is_static) {
-                match(TOKEN_IDENTIFIER);
-                int static_idx = current_locals[local_idx].static_sym_idx;
-                if (sym_table[static_idx].type >= TYPE_ENUM_BASE) {
-                    compile_error(token.line, "readln into an enumerated value is not supported");
-                }
-                match(TOKEN_RPAREN);
-                ASTNode *stmt = create_node(NODE_READLN);
-                stmt->data.var_idx = static_idx;
-                return stmt;
-            }
-            if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
-                compile_error(token.line, "readln into an array is not supported");
-            }
-            if (current_locals[local_idx].type >= TYPE_ENUM_BASE) {
-                compile_error(token.line, "readln into an enumerated value is not supported");
-            }
-            ASTNode *stmt = create_node(NODE_LOCAL_READLN);
-            stmt->data.var_idx = local_idx;
-            stmt->expression_type = current_locals[local_idx].type;
-            match(TOKEN_IDENTIFIER);
-            match(TOKEN_RPAREN);
-            return stmt;
-        }
-        int readln_var_idx = find_var(token.text);
-        if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE) {
-            compile_error(token.line, "readln into an enumerated value is not supported");
-        }
-        ASTNode *stmt = create_node(NODE_READLN);
-        stmt->data.var_idx = readln_var_idx;
-        match(TOKEN_IDENTIFIER);
-        match(TOKEN_RPAREN);
-        return stmt;
+    if (token.type == TOKEN_READ) {
+        return parse_read_statement(0);
     }
 
     if (token.type == TOKEN_IF) {

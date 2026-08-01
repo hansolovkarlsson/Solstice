@@ -98,7 +98,7 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
         case NODE_READLN:
-            printf("[ReadLn] -> Target Variable: %s\n", sym_table[node->data.var_idx].name);
+            printf("[%s] -> Target Variable: %s\n", node->op == TOKEN_READ ? "Read" : "ReadLn", sym_table[node->data.var_idx].name);
             if (node->next) {
                 print_ast(node->next, indent);
             }
@@ -233,7 +233,7 @@ void print_ast(ASTNode *node, int indent) {
             break;
 
         case NODE_LOCAL_READLN:
-            printf("[Local ReadLn] -> slot %d\n", node->data.var_idx);
+            printf("[Local %s] -> slot %d\n", node->op == TOKEN_READ ? "Read" : "ReadLn", node->data.var_idx);
             if (node->next) {
                 print_ast(node->next, indent);
             }
@@ -413,9 +413,11 @@ void print_ast(ASTNode *node, int indent) {
 
         case NODE_BUILTIN_CALL: {
             printf("[Builtin Call] (op=%d)\n", node->op);
-            print_indent(indent + 1);
-            printf("Arg 1:\n");
-            print_ast(node->left, indent + 2);
+            if (node->left) {
+                print_indent(indent + 1);
+                printf("Arg 1:\n");
+                print_ast(node->left, indent + 2);
+            }
             if (node->right) {
                 print_indent(indent + 1);
                 printf("Arg 2:\n");

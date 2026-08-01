@@ -146,14 +146,34 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 ### Language — I/O & error handling
 
 - [ ] File I/O (text files: open/read/write to a file, not just stdin/stdout)
-- [ ] `read` (as distinct from `readln`) — doesn't consume the trailing
-      newline, letting a caller read several whitespace-separated values
-      that span a line boundary
-- [ ] Multiple targets in one `read`/`readln` call (`readln(a, b, c);`)
-      — currently only a single variable per call is accepted
-- [ ] `eof`/`eoln` — standard predicates for end of input/line; useful
-      against stdin even before real file I/O exists (`while not eof do
-      readln(x);` is a very common idiom this dialect can't express yet)
+- [x] `read` (as distinct from `readln`) and multiple targets in one
+      `read`/`readln` call — `readln(a, b, c)` desugars at parse time into
+      `read(a); read(b); readln(c)` (only the LAST target ever flushes to
+      the next line; `read(a, b, c)` is the same with none of them
+      flushing), reusing `NODE_READLN`/`NODE_LOCAL_READLN`'s existing
+      `->op` field to carry `TOKEN_READ`/`TOKEN_READLN` per target
+      (exactly like `NODE_WRITELN` already reuses `->op` for
+      `TOKEN_WRITE`/`TOKEN_WRITELN`) - a single target is returned bare,
+      unwrapped, so existing single-target programs compile to identical
+      bytecode; two or more are chained via `->next` and wrapped in one
+      `NODE_COMPOUND` (the same trick whole-record assignment already
+      uses). Needed 4 new opcodes (`READ_NOFLUSH` and the int/real/bool
+      `READ_LOCAL_*_NOFLUSH` variants - string/char need no `_NOFLUSH`
+      counterpart, since `fgets` already consumes the whole line either
+      way). Found and fixed a real pre-existing disassembly bug in
+      passing: the original `READ_LOCAL_INT/BOOL/REAL/STR/CHAR` opcodes
+      were never added to `desole`'s `is_immediate()`, so their frame-slot
+      operand was silently dropped from disassembly output.
+- [x] `eof`/`eoln` — two new opcodes (`EOF`/`EOLN`) that peek at stdin via
+      `fgetc`/`ungetc` (nothing consumed) and push a boolean; usable bare,
+      with no parentheses (`while not eof do readln(x);`), matching real
+      Pascal's typical style — see
+      [docs/LANGUAGE.md](LANGUAGE.md#eof-and-eoln). Known gaps: no bare
+      `readln;` (skip to next line, no target) - this compiler never
+      supported that form even before this - and `readln`/`read` still
+      silently accept a bare global array as a target without erroring
+      (a pre-existing gap, confirmed present before this work too, left
+      unfixed as out of scope here).
 - [ ] `program` heading parameters (`program Foo(input, output);`) — pure
       syntax at the moment (`program Name;` only); lowest priority here,
       since in virtually every real implementation this list is a no-op

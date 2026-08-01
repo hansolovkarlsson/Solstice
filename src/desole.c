@@ -122,6 +122,12 @@ static const char *opcode_name(Opcode op) {
         case OP_PUSH_LOCAL_REF: return "push_local_ref";
         case OP_LOAD_REF:  return "load_ref";
         case OP_STORE_REF: return "store_ref";
+        case OP_READ_NOFLUSH: return "read_noflush";
+        case OP_READ_LOCAL_INT_NOFLUSH:  return "read_local_int_noflush";
+        case OP_READ_LOCAL_BOOL_NOFLUSH: return "read_local_bool_noflush";
+        case OP_READ_LOCAL_REAL_NOFLUSH: return "read_local_real_noflush";
+        case OP_EOF:  return "eof";
+        case OP_EOLN: return "eoln";
         default:       return NULL;
     }
 }
@@ -153,7 +159,8 @@ static int is_jump(Opcode op) {
 
 // True for opcodes whose arg is a variable index into sym_table[].
 static int is_var_ref(Opcode op) {
-    return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_LOAD_IDX || op == OP_STORE_IDX
+    return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_READ_NOFLUSH
+        || op == OP_LOAD_IDX || op == OP_STORE_IDX
         || op == OP_LOAD_IDX2D || op == OP_STORE_IDX2D;
 }
 
@@ -162,7 +169,14 @@ static int is_var_ref(Opcode op) {
 // PUSH's literal is; neither refers to anything named.
 static int is_immediate(Opcode op) {
     return op == OP_PUSH || op == OP_ENTER || op == OP_LOAD_LOCAL || op == OP_STORE_LOCAL
-        || op == OP_CHECK_LOWER || op == OP_CHECK_UPPER || op == OP_PUSH_LOCAL_REF;
+        || op == OP_CHECK_LOWER || op == OP_CHECK_UPPER || op == OP_PUSH_LOCAL_REF
+        || op == OP_READ_LOCAL_INT_NOFLUSH || op == OP_READ_LOCAL_REAL_NOFLUSH || op == OP_READ_LOCAL_BOOL_NOFLUSH
+        // Pre-existing gap fixed in passing: these five were never added
+        // here, so disassembly silently dropped their frame-slot operand
+        // entirely (same class of bug as the CHECK_LOWER/CHECK_UPPER one
+        // this file's history already ran into once).
+        || op == OP_READ_LOCAL_INT || op == OP_READ_LOCAL_BOOL || op == OP_READ_LOCAL_REAL
+        || op == OP_READ_LOCAL_STR || op == OP_READ_LOCAL_CHAR;
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index

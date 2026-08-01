@@ -469,19 +469,45 @@ writeln('[', price:10:2, ']');      { [     19.90] - padded to width 10 too }
   mean anything for a 32-bit float anyway. Out of that range is a
   runtime error, not silently clamped or garbled output.
 
-### `readln`
+### `read` and `readln`
 
 ```pascal
 readln(n);      { integer }
 readln(flag);   { boolean: must be exactly 0 or 1, or it's a runtime error }
 readln(name);   { string: reads a full line }
+readln(a, b, c); { multiple targets - reads three whitespace-separated
+                   values, even across several lines if needed }
 ```
 
-Each call prints a `> ` prompt, then reads from standard input. Reading an
-integer or boolean also consumes the rest of that input line (so a
-following `readln` of any type starts cleanly on the next line).
+Each call prints a `> ` prompt, then reads from standard input. Reading
+an `integer`, `real`, or `boolean` value doesn't itself consume a whole
+line (`scanf`-style whitespace-delimited parsing) — it's `readln`,
+specifically, that afterward also consumes the rest of that input line,
+so a following `readln` of any type starts cleanly on the next line.
+`read` is the same in every other respect, but *never* does that: after
+`read(x)`, the rest of the current line — including any further
+whitespace-separated values still on it — is left alone for a
+subsequent `read` or `readln` to pick up.
 
-`readln`'s target can be a global, or a parameter/local variable:
+```pascal
+read(a);
+read(b);
+readln(c);     { reads a, b, c from the SAME line if they're on it -
+                 only c's read flushes to the next line afterward }
+```
+
+**Multiple targets** in one call — `read(a, b, c)` / `readln(a, b,
+c)` — work like calling `read`/`readln` on each target in turn, except
+only the *last* one ever flushes to the next line: `readln(a, b, c)` is
+exactly `read(a); read(b); readln(c);`, and `read(a, b, c)` is `read(a);
+read(b); read(c);` (none of them flush). A single target behaves exactly
+as before.
+
+A `read`/`readln` target can be a global, a parameter/local variable, a
+`static` local, a record field (global or local, or a `with`-target's),
+or the loop variable's own field — anything a plain assignment target
+can be, except an array, a `var` parameter, or an array element (none of
+those are supported yet):
 
 ```pascal
 procedure greet;
@@ -492,8 +518,31 @@ begin
 end;
 ```
 
-`readln` into an array (global or local) isn't supported — only a plain
-scalar variable.
+### `eof` and `eoln`
+
+```pascal
+while not eof do begin
+    readln(x);
+    writeln('got ', x);
+end;
+```
+
+`eof` and `eoln` are boolean functions — usually written bare, with no
+parentheses at all (`eof()`/`eoln()` also work, but take no argument:
+there's no file type to name one of yet, only standard input). Neither
+one consumes any input — they only peek.
+
+- **`eof`** is `true` once there's no more input left to read at all.
+- **`eoln`** is `true` once the next character is the end of the current
+  line (or there's no more input at all — matching every real Pascal
+  implementation's convention that end-of-file also counts as
+  end-of-line).
+
+```pascal
+read(a);
+if eoln then writeln('nothing else on this line')
+else writeln('more values follow on this line');
+```
 
 ### `assert`
 

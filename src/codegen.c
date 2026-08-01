@@ -380,18 +380,24 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        // node->op is TOKEN_READLN (flush the rest of the input line
+        // afterward) or TOKEN_READ (don't) - see parse_read_statement()
+        // in parser.c. A string/char target's opcode reads a whole line
+        // via fgets() either way, so there's nothing to pick between for
+        // those two types.
         case NODE_READLN:
-            emit(OP_READ, node->data.var_idx); // Reads stdin into var_idx
+            emit(node->op == TOKEN_READ ? OP_READ_NOFLUSH : OP_READ, node->data.var_idx);
             generate_code(node->next);
             break;
 
         case NODE_LOCAL_READLN: {
+            int noflush = (node->op == TOKEN_READ);
             Opcode op;
             if (node->expression_type == TYPE_CHAR) op = OP_READ_LOCAL_CHAR;
             else if (is_string_type(node->expression_type)) op = OP_READ_LOCAL_STR;
-            else if (node->expression_type == TYPE_BOOLEAN) op = OP_READ_LOCAL_BOOL;
-            else if (node->expression_type == TYPE_REAL) op = OP_READ_LOCAL_REAL;
-            else op = OP_READ_LOCAL_INT;
+            else if (node->expression_type == TYPE_BOOLEAN) op = noflush ? OP_READ_LOCAL_BOOL_NOFLUSH : OP_READ_LOCAL_BOOL;
+            else if (node->expression_type == TYPE_REAL) op = noflush ? OP_READ_LOCAL_REAL_NOFLUSH : OP_READ_LOCAL_REAL;
+            else op = noflush ? OP_READ_LOCAL_INT_NOFLUSH : OP_READ_LOCAL_INT;
             emit(op, node->data.var_idx);
             generate_code(node->next);
             break;
@@ -591,6 +597,10 @@ void generate_code(ASTNode *node) {
             } else if (node->op == TOKEN_POWER) {
                 generate_code(node->right); // exponent
                 emit(OP_FPOWER, 0);
+            } else if (node->op == TOKEN_EOF_FN) {
+                emit(OP_EOF, 0);
+            } else if (node->op == TOKEN_EOLN) {
+                emit(OP_EOLN, 0);
             }
             break;
 

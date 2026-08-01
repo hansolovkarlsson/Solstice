@@ -64,6 +64,15 @@ typedef enum {
     TOKEN_SQRT, TOKEN_SIN, TOKEN_COS, TOKEN_ARCTAN, TOKEN_EXP, TOKEN_LN,
     TOKEN_PI, TOKEN_POWER,
     TOKEN_POW, // '**'
+    TOKEN_READ,   // 'read' - like 'readln', but never consumes the rest
+                  // of the input line (see NODE_READLN's op field, reused
+                  // to distinguish the two, exactly like NODE_WRITELN
+                  // already reuses op for TOKEN_WRITE vs TOKEN_WRITELN).
+    TOKEN_EOF_FN, // the 'eof' builtin function - NOT the same as TOKEN_EOF
+                  // below (the lexer's own end-of-input sentinel token,
+                  // an unrelated, pre-existing concept this name could
+                  // otherwise be confused with).
+    TOKEN_EOLN,   // the 'eoln' builtin function.
     TOKEN_EOF
 } TokenType;
 
@@ -449,10 +458,31 @@ typedef enum {
                   // index - see NODE_VAR_REF); push the value it refers
                   // to: vm_vars[ref] if ref >= 0, else
                   // vm_frame_stack[-(ref + 1)].
-    OP_STORE_REF  // Pop a value, then a reference (same encoding as
+    OP_STORE_REF, // Pop a value, then a reference (same encoding as
                   // OP_LOAD_REF, and the same push order OP_STORE_IDX_DYN
                   // already uses: reference pushed first/deepest, value
                   // pushed last/on top); store the value through it.
+    OP_READ_NOFLUSH, // Same as OP_READ (arg = a sym_table[] index), but
+                  // for an integer/real/boolean target, does NOT consume
+                  // the rest of the input line afterward - this is what
+                  // 'read' (as opposed to 'readln') actually differs by.
+                  // A string/char target reads a whole line either way
+                  // (via fgets(), which already consumes through the
+                  // newline as part of reading it) - identical to
+                  // OP_READ for those two types, so no behavior to skip.
+    OP_READ_LOCAL_INT_NOFLUSH, OP_READ_LOCAL_REAL_NOFLUSH, OP_READ_LOCAL_BOOL_NOFLUSH,
+                  // Same as OP_READ_LOCAL_INT/REAL/BOOL, minus the
+                  // trailing flush - the local-frame-slot equivalent of
+                  // OP_READ_NOFLUSH above. No _STR/_CHAR variants needed,
+                  // for the same fgets() reasoning.
+    OP_EOF,       // Peek at stdin (via fgetc()+ungetc(), so nothing is
+                  // actually consumed); push 1 if there's no more input,
+                  // else 0.
+    OP_EOLN       // Peek at stdin the same way; push 1 if the very next
+                  // character is a newline OR there's no more input
+                  // (matching every real Pascal implementation's
+                  // convention that end-of-file also counts as
+                  // end-of-line), else 0.
 } Opcode;
 
 typedef struct {
