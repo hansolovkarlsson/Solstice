@@ -234,7 +234,63 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ### Language — I/O & error handling
 
-- [ ] File I/O (text files: open/read/write to a file, not just stdin/stdout)
+- [x] File I/O (`text` files: `assign`/`reset`/`rewrite`/`close`, plus an
+      optional leading file argument on `read`/`readln`/`write`/
+      `writeln`/`eof`/`eoln` - `write(f, x)` instead of `write(x)`,
+      matching real Pascal's overloaded syntax exactly, not a separate
+      set of file-specific builtin names). `append` (opening for
+      appending) is deliberately out of scope - a later, non-ISO-7185
+      Pascal extension. A file variable is GLOBAL ONLY - not a
+      parameter or local - a deliberate scope cut (see
+      [docs/LANGUAGE.md](LANGUAGE.md#file-io)); this is what keeps the
+      feature additive rather than needing a second by-reference
+      mechanism the way array parameters have.
+
+      A file variable's real state (the `FILE*`, and the filename
+      `assign()` bound it to) lives in a new `vm_open_files[]` table,
+      indexed by the SAME `sym_table[]` index the variable itself has -
+      safe only because it's always global, and simpler than the
+      "storage slot holds a second table's index" indirection
+      `TYPE_STRING`/`TYPE_CHAR` use for `string_pool[]`, since the index
+      is already known at compile time. 26 new opcodes: since 1D/2D/N-D
+      arrays and `break`/`continue` etc. all reused the existing
+      "parallel opcode family, zero changes to the existing path"
+      pattern, file I/O does too, rather than unifying stdin/stdout with
+      files onto one generic "always take a handle" calling convention -
+      keeps this feature purely additive, and existing stdin/stdout
+      bytecode is byte-for-byte unchanged. File-writing opcodes
+      (`PRINT_FILE`, its `_PADDED` siblings, `NEWLINE_FILE`, `EOF_FILE`/
+      `EOLN_FILE`) bake the target file's `sym_table[]` index directly
+      into `arg`, exactly like `LOAD_IDX2D` already bakes an array's -
+      no runtime "which file" value needed, since a file variable is
+      always global. File-reading opcodes need TWO indices (the read
+      target's AND the source file's), so the file's index is pushed
+      via a plain `PUSH` right before the read opcode (mirroring how
+      `LOAD_IDX_DYN`'s array-reference argument is pushed via
+      `LOAD_LOCAL` before it) and popped first.
+
+      `NODE_READLN`/`NODE_LOCAL_READLN`/`NODE_WRITELN` all gained an
+      `extra` field (previously unused by any of them) holding an
+      optional file-variable reference - `NULL` means stdin/stdout,
+      exactly as before this feature existed, so a program using no
+      files compiles to identical bytecode. `NODE_BUILTIN_CALL`'s
+      `left` does the same for `eof`/`eoln`. One new `NODE_FILE_OP` node
+      type covers `assign`/`reset`/`rewrite`/`close` together
+      (distinguished by `->op`, mirroring `NODE_WRITELN`'s own
+      `TOKEN_WRITE`/`TOKEN_WRITELN` reuse).
+
+      Found and fixed two real bugs along the way, both about a file
+      variable specifically being usable where it never should be:
+      assigning one file variable directly to another (`f := g;`) would
+      otherwise silently pass the ordinary same-type assignment check
+      and compile to a meaningless `STORE`/`LOAD` pair (a file's real
+      state lives in `vm_open_files[]`, not the plain storage slot that
+      would actually get copied) - now a dedicated Type Error. Likewise
+      no operator (including `=`/`<>`) is defined for file variables in
+      standard Pascal either, so `NODE_BINARY_OP` now rejects any file
+      operand outright. See the read/readln item above for a THIRD,
+      pre-existing bug (unrelated to files) this work's testing
+      surfaced.
 - [x] `read` (as distinct from `readln`) and multiple targets in one
       `read`/`readln` call — `readln(a, b, c)` desugars at parse time into
       `read(a); read(b); readln(c)` (only the LAST target ever flushes to
@@ -262,7 +318,18 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       supported that form even before this - and `readln`/`read` still
       silently accept a bare global array as a target without erroring
       (a pre-existing gap, confirmed present before this work too, left
-      unfixed as out of scope here).
+      unfixed as out of scope here). A third gap surfaced while testing
+      File I/O below (reproduced identically via plain stdin too, so
+      it's pre-existing and unrelated to files): a multi-target
+      `readln(a, b, ...)` where a non-last, non-string/char target (an
+      integer/real/boolean, read via `scanf`/`fscanf` without flushing)
+      is immediately followed by a string/char target loses data - the
+      string target's `fgets` picks up only the leftover newline right
+      after the non-flushed value, not the actual next line, so it
+      reads as empty. Root cause is a real design gap (flushing and
+      "read a whole line via fgets" are two different mechanisms that
+      don't coordinate), not a quick fix, so left for a dedicated pass
+      rather than patched in passing here.
 - [ ] `program` heading parameters (`program Foo(input, output);`) — pure
       syntax at the moment (`program Name;` only); lowest priority here,
       since in virtually every real implementation this list is a no-op

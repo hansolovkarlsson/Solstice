@@ -2,14 +2,14 @@ program ProcMulti;
 var
     total: integer;
 
-procedure reset;
+procedure resetTotal;
 begin
     total := 0;
 end;
 
 procedure addOne;
 begin
-    reset;         { calling an earlier-declared procedure }
+    resetTotal;    { calling an earlier-declared procedure }
     total := total + 1;
 end;
 

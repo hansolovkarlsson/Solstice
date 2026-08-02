@@ -206,6 +206,32 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"STORE_IDXND", OP_STORE_IDXND, OPERAND_VAR},
     {"LOAD_IDXND_DYN",  OP_LOAD_IDXND_DYN,  OPERAND_IMMEDIATE}, // operand = dimension count, not a symbol reference
     {"STORE_IDXND_DYN", OP_STORE_IDXND_DYN, OPERAND_IMMEDIATE},
+    {"FILE_ASSIGN",  OP_FILE_ASSIGN,  OPERAND_VAR},
+    {"FILE_RESET",   OP_FILE_RESET,   OPERAND_VAR},
+    {"FILE_REWRITE", OP_FILE_REWRITE, OPERAND_VAR},
+    {"FILE_CLOSE",   OP_FILE_CLOSE,   OPERAND_VAR},
+    {"PRINT_FILE",      OP_PRINT_FILE,      OPERAND_VAR},
+    {"PRINT_STR_FILE",  OP_PRINT_STR_FILE,  OPERAND_VAR},
+    {"PRINT_BOOL_FILE", OP_PRINT_BOOL_FILE, OPERAND_VAR},
+    {"FPRINT_FILE",     OP_FPRINT_FILE,     OPERAND_VAR},
+    {"PRINT_PADDED_FILE",      OP_PRINT_PADDED_FILE,      OPERAND_VAR},
+    {"PRINT_STR_PADDED_FILE",  OP_PRINT_STR_PADDED_FILE,  OPERAND_VAR},
+    {"PRINT_BOOL_PADDED_FILE", OP_PRINT_BOOL_PADDED_FILE, OPERAND_VAR},
+    {"FPRINT_PADDED_FILE",         OP_FPRINT_PADDED_FILE,         OPERAND_VAR},
+    {"FPRINT_PADDED_PRECISE_FILE", OP_FPRINT_PADDED_PRECISE_FILE, OPERAND_VAR},
+    {"NEWLINE_FILE", OP_NEWLINE_FILE, OPERAND_VAR},
+    {"EOF_FILE",  OP_EOF_FILE,  OPERAND_VAR},
+    {"EOLN_FILE", OP_EOLN_FILE, OPERAND_VAR},
+    {"READ_FILE",         OP_READ_FILE,         OPERAND_VAR}, // operand = READ TARGET's index - the source file's own index is popped from the stack (see common.h)
+    {"READ_FILE_NOFLUSH", OP_READ_FILE_NOFLUSH, OPERAND_VAR},
+    {"READ_FILE_LOCAL_INT",  OP_READ_FILE_LOCAL_INT,  OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_BOOL", OP_READ_FILE_LOCAL_BOOL, OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_REAL", OP_READ_FILE_LOCAL_REAL, OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_STR",  OP_READ_FILE_LOCAL_STR,  OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_CHAR", OP_READ_FILE_LOCAL_CHAR, OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_INT_NOFLUSH",  OP_READ_FILE_LOCAL_INT_NOFLUSH,  OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_BOOL_NOFLUSH", OP_READ_FILE_LOCAL_BOOL_NOFLUSH, OPERAND_IMMEDIATE},
+    {"READ_FILE_LOCAL_REAL_NOFLUSH", OP_READ_FILE_LOCAL_REAL_NOFLUSH, OPERAND_IMMEDIATE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
@@ -497,7 +523,8 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "char") == 0) type = TYPE_CHAR;
                 else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
                 else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
+                else if (strcasecmp(type_str, "text") == 0) type = TYPE_FILE;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', 'set', or 'text')", type_str); return; }
                 add_var(line_no, name, type);
             } else if (strcasecmp(directive, "array") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];

@@ -490,6 +490,9 @@ writeln();             { same thing }
   `write` never appends one.
 - Booleans print as `TRUE`/`FALSE`.
 - Parentheses are optional when there are no arguments.
+- An optional leading [file variable](#file-io) writes to that file
+  instead of standard output: `write(f, x, y)`, `writeln(f)` (just a
+  newline, to `f`).
 
 #### Field width and precision
 
@@ -556,6 +559,19 @@ exactly `read(a); read(b); readln(c);`, and `read(a, b, c)` is `read(a);
 read(b); read(c);` (none of them flush). A single target behaves exactly
 as before.
 
+**Known gap:** a non-last, non-string/char target (an `integer`/`real`/
+`boolean`, which doesn't flush on its own) immediately followed by a
+`string`/`char` target loses data — the string target always reads a
+*whole line* via `fgets`, but since the previous target didn't flush,
+that "whole line" is just the leftover newline sitting right after the
+previous value, not the actual next line, so it reads as empty.
+`readln(intVar, stringVar)` on two separate lines is the shape to avoid;
+put a `string`/`char` target last, or split into separate `readln`
+calls, until this is fixed.
+
+An optional leading [file variable](#file-io) reads from that file
+instead of standard input: `read(f, a, b)`, `readln(f, a)`.
+
 A `read`/`readln` target can be a global, a parameter/local variable, a
 `static` local, a record field (global or local, or a `with`-target's),
 or the loop variable's own field — anything a plain assignment target
@@ -581,9 +597,10 @@ end;
 ```
 
 `eof` and `eoln` are boolean functions — usually written bare, with no
-parentheses at all (`eof()`/`eoln()` also work, but take no argument:
-there's no file type to name one of yet, only standard input). Neither
-one consumes any input — they only peek.
+parentheses at all (`eof()`/`eoln()` also work, taking no argument,
+meaning standard input — or `eof(f)`/`eoln(f)`, naming a [file
+variable](#file-io) instead). Neither one consumes any input — they
+only peek.
 
 - **`eof`** is `true` once there's no more input left to read at all.
 - **`eoln`** is `true` once the next character is the end of the current
@@ -625,6 +642,86 @@ assert(x > 0, 'x must be positive');
 last one's trailing `;` is optional) into a single statement — usable
 anywhere a single statement is expected (loop/if bodies, or the whole
 program body).
+
+## File I/O
+
+```pascal
+var
+    f: text;
+    line: string;
+begin
+    assign(f, 'output.txt');
+    rewrite(f);            { create/truncate for writing }
+    writeln(f, 'Hello, file!');
+    writeln(f, 42);
+    close(f);
+
+    assign(f, 'output.txt');
+    reset(f);               { open for reading }
+    while not eof(f) do begin
+        readln(f, line);
+        writeln('> ', line);
+    end;
+    close(f);
+end.
+```
+
+A `text` file variable, declared with `var f: text;`, works with the
+same `read`/`readln`/`write`/`writeln`/`eof`/`eoln` you already know —
+just add it as the first argument (`write(f, x)` instead of `write(x)`)
+to target that file instead of standard input/output. There's no
+separate set of file-specific builtin names to learn.
+
+- **`assign(f, name)`** binds a filename (a `string`/`char` expression)
+  to `f`. Doesn't open anything yet — it just remembers the name for the
+  next `reset`/`rewrite`.
+- **`reset(f)`** opens the file `f` was last `assign`ed to, for
+  *reading*. A Runtime Error if `f` was never `assign`ed, or if the file
+  can't be opened (doesn't exist, no permission, ...).
+- **`rewrite(f)`** opens it for *writing* — creates the file if it
+  doesn't exist, **truncates it if it does** (matching real Pascal).
+- **`close(f)`** closes it. A Runtime Error if `f` isn't currently open.
+  Calling `reset`/`rewrite` again (on the same or a re-`assign`ed
+  filename) doesn't require closing first — either one reopens `f`
+  automatically, closing whatever was open before.
+- **`read(f, ...)`/`readln(f, ...)`** — same syntax and semantics as
+  plain `read`/`readln` (including multiple targets), just reading from
+  `f` instead of standard input. No `"> "` prompt is printed — that's
+  only for an interactive terminal.
+- **`write(f, ...)`/`writeln(f, ...)`** — same as plain `write`/
+  `writeln` (including field-width/precision, and printing an
+  enumerated value by name), writing to `f` instead of standard output.
+- **`eof(f)`/`eoln(f)`** — same as bare `eof`/`eoln`, checking `f`
+  instead of standard input.
+
+### What's not supported yet
+
+- **A file variable can only be a GLOBAL variable** — not a parameter,
+  local, record field, or array element. This is the one deliberate
+  scope limitation the whole feature is built around (see below) —
+  `procedure Foo(var f: text);` doesn't work; every procedure that
+  touches a given file has to reference the same global variable
+  directly.
+- **`append`** (opening a file for appending rather than overwriting) —
+  a later, non-ISO-7185 Pascal extension, out of scope for now.
+  `rewrite` is the only way to open a file for writing, and it always
+  truncates.
+- **Only text files** — no `file of T` (typed/binary files), no
+  `seek`/`filesize`/random access. Everything reads/writes as text,
+  exactly like `read`/`write` on standard input/output already do.
+- **A file variable can't be assigned, compared, or used with any other
+  operator** (`f := g;`, `f = g`, ...) — standard Pascal doesn't define
+  any of these for files either. A file's real state doesn't live in
+  its own storage slot the way every other type's does (see below), so
+  copying that slot wouldn't do anything meaningful anyway.
+
+### How this is implemented
+
+A file variable's real state (the underlying C `FILE*`, and the
+filename `assign()` bound it to) lives in a fixed-size table indexed by
+the variable's own symbol index — safe only because it's always global,
+so that index never changes. No dynamic allocation, matching everything
+else in this VM.
 
 ## Real
 

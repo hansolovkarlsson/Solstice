@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <limits.h>
+#include <errno.h>
 #include "vm.h"
 #include "error.h"
 
@@ -18,6 +19,17 @@ static void vm_print_padded(const char *text, int width) {
         printf("%-*s", abs_width, text);
     } else {
         printf("%*s", width, text);
+    }
+}
+
+// Same as vm_print_padded(), but to a file instead of stdout - the
+// file-writing sibling every OP_..._PADDED_FILE opcode needs.
+static void vm_fprint_padded(FILE *f, const char *text, int width) {
+    if (width < 0) {
+        int abs_width = (width == INT_MIN) ? INT_MAX : -width;
+        fprintf(f, "%-*s", abs_width, text);
+    } else {
+        fprintf(f, "%*s", width, text);
     }
 }
 
@@ -58,6 +70,19 @@ static int vm_vars[MAX_SYMBOLS];
 static int vm_array_mem[MAX_ARRAY_MEM];
 static int vm_frame_stack[MAX_FRAME_STACK]; // local variable slots for
                                              // every active call, stacked
+
+// A file variable's real runtime state (see TYPE_FILE in common.h) -
+// indexed by the SAME sym_table[] index the variable itself has (safe
+// only because a file variable is always global - one fixed index for
+// its whole lifetime), rather than through a second table-index
+// indirection the way string_pool[] works for TYPE_STRING/TYPE_CHAR.
+// vm_vars[idx] itself is never touched for a TYPE_FILE variable.
+typedef struct {
+    FILE *handle;   // NULL if not currently open
+    char filename[MAX_STRING_LEN]; // set by assign(); read by reset()/rewrite()
+    int assigned;   // 1 once assign() has been called at least once
+} OpenFile;
+static OpenFile vm_open_files[MAX_SYMBOLS];
 
 // Everything RET needs to fully restore the caller's context: not just
 // where to jump back to, but also its frame pointer and where the frame
@@ -241,6 +266,26 @@ static void vm_check_char(int val, const char *what) {
     }
 }
 
+// Resolves a file variable's sym_table[] index to its currently-open
+// FILE* - validates idx actually names a file variable AND that it's
+// currently open, erroring clearly (mentioning `action`, e.g. "write")
+// if either isn't true. Shared by every read/write/eof/eoln/close
+// file opcode - assign/reset/rewrite have their own, different
+// preconditions (they're what MAKE a file open in the first place), so
+// they don't go through this helper.
+static FILE *vm_file_handle(int idx, const char *action) {
+    vm_var_index(idx);
+    if (sym_table[idx].type != TYPE_FILE) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
+        fatal_abort();
+    }
+    if (!vm_open_files[idx].handle) {
+        fprintf(stderr, "VM Runtime Error: File '%s' is not open (%s)\n", sym_table[idx].name, action);
+        fatal_abort();
+    }
+    return vm_open_files[idx].handle;
+}
+
 // Adds a runtime-computed string (concatenation result, or a line read via
 // readln) to the pool, growing string_count if needed. Same dedup as the
 // compile-time interner in parser.c, and the same hard limit (MAX_STRINGS) -
@@ -365,6 +410,100 @@ static void vm_read_local_real(int slot, int flush) {
     vm_frame_stack[slot] = float_to_bits(input_val);
 }
 
+// File-reading equivalents of vm_read_global()/vm_read_local_int/bool/
+// real() above - same per-type parsing/validation, but from an
+// already-open FILE* instead of stdin, and critically, WITHOUT the "> "
+// interactive prompt those print: there's no user to prompt when
+// reading from a file, and printing one would corrupt whatever the
+// running program's own output stream is producing.
+static void vm_read_global_file(int idx, FILE *f, int flush) {
+    if (is_string_type(sym_table[idx].type)) {
+        char line[MAX_STRING_LEN];
+        if (!fgets(line, sizeof(line), f)) {
+            fprintf(stderr, "VM Runtime Error: Invalid string input from file for '%s'\n", sym_table[idx].name);
+            fatal_abort();
+        }
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+        if (sym_table[idx].type == TYPE_CHAR && strlen(line) != 1) {
+            fprintf(stderr, "VM Runtime Error: read expected a single character for '%s', got \"%s\"\n",
+                    sym_table[idx].name, line);
+            fatal_abort();
+        }
+        vm_vars[idx] = vm_intern_string(line);
+    } else if (sym_table[idx].type == TYPE_REAL) {
+        float input_val;
+        if (fscanf(f, "%f", &input_val) != 1) {
+            fprintf(stderr, "VM Runtime Error: Invalid real input from file for '%s'\n", sym_table[idx].name);
+            fatal_abort();
+        }
+        if (flush) {
+            int c;
+            while ((c = fgetc(f)) != '\n' && c != EOF) { }
+        }
+        vm_vars[idx] = float_to_bits(input_val);
+    } else {
+        int input_val;
+        if (fscanf(f, "%d", &input_val) != 1) {
+            fprintf(stderr, "VM Runtime Error: Invalid integer input from file for '%s'\n", sym_table[idx].name);
+            fatal_abort();
+        }
+        if (flush) {
+            int c;
+            while ((c = fgetc(f)) != '\n' && c != EOF) { }
+        }
+        if (sym_table[idx].type == TYPE_BOOLEAN && input_val != 0 && input_val != 1) {
+            fprintf(stderr, "VM Runtime Error: read expected a boolean value (0 or 1) for '%s', got %d\n",
+                    sym_table[idx].name, input_val);
+            fatal_abort();
+        }
+        vm_vars[idx] = input_val;
+    }
+}
+
+static void vm_read_local_int_file(int slot, FILE *f, int flush) {
+    int input_val;
+    if (fscanf(f, "%d", &input_val) != 1) {
+        fprintf(stderr, "VM Runtime Error: Invalid integer input from file\n");
+        fatal_abort();
+    }
+    if (flush) {
+        int c;
+        while ((c = fgetc(f)) != '\n' && c != EOF) { }
+    }
+    vm_frame_stack[slot] = input_val;
+}
+
+static void vm_read_local_bool_file(int slot, FILE *f, int flush) {
+    int input_val;
+    if (fscanf(f, "%d", &input_val) != 1) {
+        fprintf(stderr, "VM Runtime Error: Invalid integer input from file\n");
+        fatal_abort();
+    }
+    if (flush) {
+        int c;
+        while ((c = fgetc(f)) != '\n' && c != EOF) { }
+    }
+    if (input_val != 0 && input_val != 1) {
+        fprintf(stderr, "VM Runtime Error: read expected a boolean value (0 or 1) from file, got %d\n", input_val);
+        fatal_abort();
+    }
+    vm_frame_stack[slot] = input_val;
+}
+
+static void vm_read_local_real_file(int slot, FILE *f, int flush) {
+    float input_val;
+    if (fscanf(f, "%f", &input_val) != 1) {
+        fprintf(stderr, "VM Runtime Error: Invalid real input from file\n");
+        fatal_abort();
+    }
+    if (flush) {
+        int c;
+        while ((c = fgetc(f)) != '\n' && c != EOF) { }
+    }
+    vm_frame_stack[slot] = float_to_bits(input_val);
+}
+
 // Peeks at the next character on stdin without consuming it (via
 // fgetc()/ungetc() - safe for stdin, an ordinary FILE*). Used by
 // OP_EOF/OP_EOLN; no persisted "current line" buffer needed anywhere
@@ -379,6 +518,7 @@ void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
     memset(vm_frame_stack, 0, sizeof(vm_frame_stack));
+    memset(vm_open_files, 0, sizeof(vm_open_files)); // handle=NULL, filename="", assigned=0 for every slot
     int sp = -1;
     int call_sp = -1;
     int fp = -1;         // -1 = no active frame
@@ -544,6 +684,247 @@ void run_vm(void) {
                     vm_check_char(val, sym_table[array_ref].name);
                 }
                 vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_FILE_ASSIGN: {
+                int idx = vm_var_index(instr.arg);
+                if (sym_table[idx].type != TYPE_FILE) {
+                    fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                int name_idx = vm_str_index(vm_pop(&sp));
+                strncpy(vm_open_files[idx].filename, string_pool[name_idx], MAX_STRING_LEN - 1);
+                vm_open_files[idx].filename[MAX_STRING_LEN - 1] = '\0';
+                vm_open_files[idx].assigned = 1;
+                break;
+            }
+
+            case OP_FILE_RESET:
+            case OP_FILE_REWRITE: {
+                int idx = vm_var_index(instr.arg);
+                if (sym_table[idx].type != TYPE_FILE) {
+                    fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                if (!vm_open_files[idx].assigned) {
+                    fprintf(stderr, "VM Runtime Error: File '%s' was never assign()ed a filename\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                if (vm_open_files[idx].handle) fclose(vm_open_files[idx].handle); // reset/rewrite on an already-open file just reopens it, matching real Pascal
+                const char *mode = (instr.op == OP_FILE_RESET) ? "r" : "w";
+                vm_open_files[idx].handle = fopen(vm_open_files[idx].filename, mode);
+                if (!vm_open_files[idx].handle) {
+                    fprintf(stderr, "VM Runtime Error: Cannot open file '%s' for %s (%s)\n",
+                            vm_open_files[idx].filename, (instr.op == OP_FILE_RESET) ? "reading" : "writing", strerror(errno));
+                    fatal_abort();
+                }
+                break;
+            }
+
+            case OP_FILE_CLOSE: {
+                int idx = vm_var_index(instr.arg);
+                if (sym_table[idx].type != TYPE_FILE) {
+                    fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                if (!vm_open_files[idx].handle) {
+                    fprintf(stderr, "VM Runtime Error: File '%s' is not open\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                fclose(vm_open_files[idx].handle);
+                vm_open_files[idx].handle = NULL;
+                break;
+            }
+
+            case OP_PRINT_FILE: {
+                int val = vm_pop(&sp);
+                FILE *f = vm_file_handle(instr.arg, "write");
+                fprintf(f, "%d", val);
+                break;
+            }
+
+            case OP_PRINT_STR_FILE: {
+                int idx = vm_str_index(vm_pop(&sp));
+                FILE *f = vm_file_handle(instr.arg, "write");
+                fprintf(f, "%s", string_pool[idx]);
+                break;
+            }
+
+            case OP_PRINT_BOOL_FILE: {
+                int val = vm_pop(&sp);
+                FILE *f = vm_file_handle(instr.arg, "write");
+                fprintf(f, "%s", val ? "TRUE" : "FALSE");
+                break;
+            }
+
+            case OP_FPRINT_FILE: {
+                float val = bits_to_float(vm_pop(&sp));
+                FILE *f = vm_file_handle(instr.arg, "write");
+                fprintf(f, "%.6g", val);
+                break;
+            }
+
+            case OP_PRINT_PADDED_FILE: {
+                int width = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                FILE *f = vm_file_handle(instr.arg, "write");
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", val);
+                vm_fprint_padded(f, buf, width);
+                break;
+            }
+
+            case OP_PRINT_STR_PADDED_FILE: {
+                int width = vm_pop(&sp);
+                int idx = vm_str_index(vm_pop(&sp));
+                FILE *f = vm_file_handle(instr.arg, "write");
+                vm_fprint_padded(f, string_pool[idx], width);
+                break;
+            }
+
+            case OP_PRINT_BOOL_PADDED_FILE: {
+                int width = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                FILE *f = vm_file_handle(instr.arg, "write");
+                vm_fprint_padded(f, val ? "TRUE" : "FALSE", width);
+                break;
+            }
+
+            case OP_FPRINT_PADDED_FILE: {
+                int width = vm_pop(&sp);
+                float val = bits_to_float(vm_pop(&sp));
+                FILE *f = vm_file_handle(instr.arg, "write");
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.6g", val);
+                vm_fprint_padded(f, buf, width);
+                break;
+            }
+
+            case OP_FPRINT_PADDED_PRECISE_FILE: {
+                int precision = vm_pop(&sp);
+                int width = vm_pop(&sp);
+                float val = bits_to_float(vm_pop(&sp));
+                FILE *f = vm_file_handle(instr.arg, "write");
+                if (precision < 0 || precision > 20) {
+                    fprintf(stderr, "VM Runtime Error: write field precision %d out of range (0..20)\n", precision);
+                    fatal_abort();
+                }
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.*f", precision, val);
+                vm_fprint_padded(f, buf, width);
+                break;
+            }
+
+            case OP_NEWLINE_FILE: {
+                FILE *f = vm_file_handle(instr.arg, "write");
+                fprintf(f, "\n");
+                break;
+            }
+
+            case OP_EOF_FILE: {
+                FILE *f = vm_file_handle(instr.arg, "eof");
+                int c = fgetc(f);
+                if (c != EOF) ungetc(c, f);
+                vm_push(&sp, c == EOF);
+                break;
+            }
+
+            case OP_EOLN_FILE: {
+                FILE *f = vm_file_handle(instr.arg, "eoln");
+                int c = fgetc(f);
+                if (c != EOF) ungetc(c, f);
+                vm_push(&sp, c == EOF || c == '\n');
+                break;
+            }
+
+            case OP_READ_FILE: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_global_file(vm_var_index(instr.arg), f, 1);
+                break;
+            }
+
+            case OP_READ_FILE_NOFLUSH: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_global_file(vm_var_index(instr.arg), f, 0);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_INT: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_local_int_file(vm_local_index(fp, frame_sp, instr.arg), f, 1);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_INT_NOFLUSH: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_local_int_file(vm_local_index(fp, frame_sp, instr.arg), f, 0);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_BOOL: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_local_bool_file(vm_local_index(fp, frame_sp, instr.arg), f, 1);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_BOOL_NOFLUSH: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_local_bool_file(vm_local_index(fp, frame_sp, instr.arg), f, 0);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_REAL: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_local_real_file(vm_local_index(fp, frame_sp, instr.arg), f, 1);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_REAL_NOFLUSH: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                vm_read_local_real_file(vm_local_index(fp, frame_sp, instr.arg), f, 0);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_STR: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                char line[MAX_STRING_LEN];
+                if (!fgets(line, sizeof(line), f)) {
+                    fprintf(stderr, "VM Runtime Error: Invalid string input from file\n");
+                    fatal_abort();
+                }
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+                vm_frame_stack[slot] = vm_intern_string(line);
+                break;
+            }
+
+            case OP_READ_FILE_LOCAL_CHAR: {
+                int file_idx = vm_pop(&sp);
+                FILE *f = vm_file_handle(file_idx, "read");
+                int slot = vm_local_index(fp, frame_sp, instr.arg);
+                char line[MAX_STRING_LEN];
+                if (!fgets(line, sizeof(line), f)) {
+                    fprintf(stderr, "VM Runtime Error: Invalid string input from file\n");
+                    fatal_abort();
+                }
+                size_t len = strlen(line);
+                if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+                if (strlen(line) != 1) {
+                    fprintf(stderr, "VM Runtime Error: read expected a single character from file, got \"%s\"\n", line);
+                    fatal_abort();
+                }
+                vm_frame_stack[slot] = vm_intern_string(line);
                 break;
             }
 

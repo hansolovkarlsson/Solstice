@@ -68,6 +68,18 @@ void type_check(ASTNode *node) {
     switch (node->type) {
         case NODE_ASSIGN: {
             Symbol *sym = &sym_table[node->data.var_idx];
+            if (sym->type == TYPE_FILE) {
+                // Both sides being TYPE_FILE would otherwise pass the
+                // ordinary type-match check below and silently compile
+                // to a meaningless OP_STORE/OP_LOAD pair - a file
+                // variable's real state lives in vm_open_files[],
+                // indexed by its OWN sym_table index (see TYPE_FILE),
+                // not in the plain storage slot this assignment would
+                // actually copy.
+                fprintf(stderr, "%s:%d: Type Error: A file variable can't be assigned directly - use assign/reset/rewrite/close\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
             if (sym->is_array) {
                 if (node->left->expression_type != TYPE_INTEGER) {
                     fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
@@ -155,6 +167,15 @@ void type_check(ASTNode *node) {
         case NODE_BINARY_OP: {
             DataType left_t = node->left->expression_type;
             DataType right_t = node->right->expression_type;
+            if (left_t == TYPE_FILE || right_t == TYPE_FILE) {
+                // Not defined for file variables in standard Pascal
+                // either - no operator, including '='/'<>', applies to
+                // them (see assign/reset/rewrite/close/read/write/eof
+                // instead - the only legal ways to use one).
+                fprintf(stderr, "%s:%d: Type Error: Operators aren't defined for file variables\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
             int mixed_numeric = (left_t == TYPE_INTEGER && right_t == TYPE_REAL)
                               || (left_t == TYPE_REAL && right_t == TYPE_INTEGER);
             // Ordinal arithmetic on an enum ('Red + 1' / 'Red - 1') -
@@ -694,6 +715,19 @@ void type_check(ASTNode *node) {
             }
             if (!is_string_type(node->right->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: 'assert' requires a string or char message\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_FILE_OP:
+            // reset/rewrite/close's file-variable argument was already
+            // validated at parse time (find_file_var_soft() only ever
+            // returns a genuine TYPE_FILE symbol) - only assign's second
+            // argument (the filename, an arbitrary expression) still
+            // needs a real type check here.
+            if (node->op == TOKEN_FILE_ASSIGN && !is_string_type(node->left->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: 'assign' requires a string or char filename\n",
                         get_current_filename(), node->line);
                 fatal_abort();
             }

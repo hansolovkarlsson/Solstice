@@ -131,6 +131,11 @@ void next_token(void) {
         else if (strcasecmp(token.text, "continue") == 0) token.type = TOKEN_CONTINUE;
         else if (strcasecmp(token.text, "label") == 0) token.type = TOKEN_LABEL;
         else if (strcasecmp(token.text, "goto") == 0) token.type = TOKEN_GOTO;
+        else if (strcasecmp(token.text, "text") == 0) token.type = TOKEN_TEXT_TYPE;
+        else if (strcasecmp(token.text, "assign") == 0) token.type = TOKEN_FILE_ASSIGN;
+        else if (strcasecmp(token.text, "reset") == 0) token.type = TOKEN_RESET;
+        else if (strcasecmp(token.text, "rewrite") == 0) token.type = TOKEN_REWRITE;
+        else if (strcasecmp(token.text, "close") == 0) token.type = TOKEN_CLOSE;
         else if (strcasecmp(token.text, "char") == 0) token.type = TOKEN_CHAR_TYPE;
         else if (strcasecmp(token.text, "real") == 0) token.type = TOKEN_REAL_TYPE;
         else if (strcasecmp(token.text, "trunc") == 0) token.type = TOKEN_TRUNC;

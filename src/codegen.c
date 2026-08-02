@@ -49,8 +49,10 @@ static void emit_ordering(ASTNode *node, Opcode int_op) {
 // OP_PRINT would. An ordinal that matches no value (only reachable via
 // unchecked succ()/pred() arithmetic past an enum's first/last value -
 // see NODE_BINARY_OP in type_checker.c) falls back to printing the raw
-// ordinal, rather than nothing at all.
-static void emit_enum_print_chain(DataType t) {
+// ordinal, rather than nothing at all. file_idx = -1 means stdout
+// (OP_PRINT_STR/OP_PRINT); otherwise the target file variable's
+// sym_table index, using the OP_..._FILE siblings instead.
+static void emit_enum_print_chain(DataType t, int file_idx) {
     EnumTypeDef *et = &enum_types[t - TYPE_ENUM_BASE];
     int done_jmp_idx[MAX_ENUM_VALUES];
     for (int i = 0; i < et->value_count; i++) {
@@ -61,15 +63,25 @@ static void emit_enum_print_chain(DataType t) {
         emit(OP_JZ, 0); // patched below: to the next value's check
         emit(OP_POP, 0); // matched - discard the now-unneeded duplicated value
         emit(OP_PUSH_STR, et->value_str_idx[i]);
-        emit(OP_PRINT_STR, 0);
+        emit(file_idx == -1 ? OP_PRINT_STR : OP_PRINT_STR_FILE, file_idx == -1 ? 0 : file_idx);
         done_jmp_idx[i] = code_idx;
         emit(OP_JMP, 0); // patched below: past the whole chain
         code[jz_idx].arg = code_idx; // next value's check starts here
     }
-    emit(OP_PRINT, 0); // fallback: no match, print the raw ordinal
+    emit(file_idx == -1 ? OP_PRINT : OP_PRINT_FILE, file_idx == -1 ? 0 : file_idx); // fallback: no match, print the raw ordinal
     for (int i = 0; i < et->value_count; i++) {
         code[done_jmp_idx[i]].arg = code_idx;
     }
+}
+
+// Emits stdout_op (arg 0) if file_idx == -1, else file_op with arg =
+// file_idx - the small dispatch every write/writeln print opcode choice
+// needs, now that each one has a file-writing sibling (see the "File
+// I/O" section of common.h's Opcode enum). Also reused by 'eof'/'eoln'
+// below, which need the exact same stdin-vs-file dispatch.
+static void emit_stdio_op(Opcode stdout_op, Opcode file_op, int file_idx) {
+    if (file_idx == -1) emit(stdout_op, 0);
+    else emit(file_op, file_idx);
 }
 
 // Allocates a hidden, compiler-generated variable slot (not reachable from
@@ -423,7 +435,8 @@ void generate_code(ASTNode *node) {
             break;
         }
 
-        case NODE_WRITELN:
+        case NODE_WRITELN: {
+            int file_idx = node->extra ? node->extra->data.var_idx : -1; // -1 = stdout
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg->left);
                 DataType t = arg->left->expression_type;
@@ -431,46 +444,64 @@ void generate_code(ASTNode *node) {
                     generate_code(arg->right); // width
                     if (arg->extra) {
                         generate_code(arg->extra); // precision (real only, guaranteed by the type checker)
-                        emit(OP_FPRINT_PADDED_PRECISE, 0);
+                        emit_stdio_op(OP_FPRINT_PADDED_PRECISE, OP_FPRINT_PADDED_PRECISE_FILE, file_idx);
                     } else if (is_string_type(t)) {
-                        emit(OP_PRINT_STR_PADDED, 0);
+                        emit_stdio_op(OP_PRINT_STR_PADDED, OP_PRINT_STR_PADDED_FILE, file_idx);
                     } else if (t == TYPE_BOOLEAN) {
-                        emit(OP_PRINT_BOOL_PADDED, 0);
+                        emit_stdio_op(OP_PRINT_BOOL_PADDED, OP_PRINT_BOOL_PADDED_FILE, file_idx);
                     } else if (t == TYPE_REAL) {
-                        emit(OP_FPRINT_PADDED, 0);
+                        emit_stdio_op(OP_FPRINT_PADDED, OP_FPRINT_PADDED_FILE, file_idx);
                     } else {
-                        emit(OP_PRINT_PADDED, 0);
+                        emit_stdio_op(OP_PRINT_PADDED, OP_PRINT_PADDED_FILE, file_idx);
                     }
                 } else {
-                    if (is_string_type(t)) emit(OP_PRINT_STR, 0);
-                    else if (t == TYPE_BOOLEAN) emit(OP_PRINT_BOOL, 0);
-                    else if (t == TYPE_REAL) emit(OP_FPRINT, 0);
-                    else if (t >= TYPE_ENUM_BASE) emit_enum_print_chain(t);
-                    else emit(OP_PRINT, 0);
+                    if (is_string_type(t)) emit_stdio_op(OP_PRINT_STR, OP_PRINT_STR_FILE, file_idx);
+                    else if (t == TYPE_BOOLEAN) emit_stdio_op(OP_PRINT_BOOL, OP_PRINT_BOOL_FILE, file_idx);
+                    else if (t == TYPE_REAL) emit_stdio_op(OP_FPRINT, OP_FPRINT_FILE, file_idx);
+                    else if (t >= TYPE_ENUM_BASE) emit_enum_print_chain(t, file_idx);
+                    else emit_stdio_op(OP_PRINT, OP_PRINT_FILE, file_idx);
                 }
             }
-            if (node->op == TOKEN_WRITELN) emit(OP_NEWLINE, 0);
+            if (node->op == TOKEN_WRITELN) emit_stdio_op(OP_NEWLINE, OP_NEWLINE_FILE, file_idx);
             generate_code(node->next);
             break;
+        }
 
         // node->op is TOKEN_READLN (flush the rest of the input line
         // afterward) or TOKEN_READ (don't) - see parse_read_statement()
         // in parser.c. A string/char target's opcode reads a whole line
         // via fgets() either way, so there's nothing to pick between for
-        // those two types.
+        // those two types. node->extra (if set) is the source file - see
+        // OP_READ_FILE's comment in common.h for why its sym_table index
+        // is pushed via a plain OP_PUSH first, rather than baked into
+        // arg (arg is already the READ TARGET's own index here).
         case NODE_READLN:
-            emit(node->op == TOKEN_READ ? OP_READ_NOFLUSH : OP_READ, node->data.var_idx);
+            if (node->extra) {
+                emit(OP_PUSH, node->extra->data.var_idx);
+                emit(node->op == TOKEN_READ ? OP_READ_FILE_NOFLUSH : OP_READ_FILE, node->data.var_idx);
+            } else {
+                emit(node->op == TOKEN_READ ? OP_READ_NOFLUSH : OP_READ, node->data.var_idx);
+            }
             generate_code(node->next);
             break;
 
         case NODE_LOCAL_READLN: {
             int noflush = (node->op == TOKEN_READ);
             Opcode op;
-            if (node->expression_type == TYPE_CHAR) op = OP_READ_LOCAL_CHAR;
-            else if (is_string_type(node->expression_type)) op = OP_READ_LOCAL_STR;
-            else if (node->expression_type == TYPE_BOOLEAN) op = noflush ? OP_READ_LOCAL_BOOL_NOFLUSH : OP_READ_LOCAL_BOOL;
-            else if (node->expression_type == TYPE_REAL) op = noflush ? OP_READ_LOCAL_REAL_NOFLUSH : OP_READ_LOCAL_REAL;
-            else op = noflush ? OP_READ_LOCAL_INT_NOFLUSH : OP_READ_LOCAL_INT;
+            if (node->extra) {
+                emit(OP_PUSH, node->extra->data.var_idx);
+                if (node->expression_type == TYPE_CHAR) op = OP_READ_FILE_LOCAL_CHAR;
+                else if (is_string_type(node->expression_type)) op = OP_READ_FILE_LOCAL_STR;
+                else if (node->expression_type == TYPE_BOOLEAN) op = noflush ? OP_READ_FILE_LOCAL_BOOL_NOFLUSH : OP_READ_FILE_LOCAL_BOOL;
+                else if (node->expression_type == TYPE_REAL) op = noflush ? OP_READ_FILE_LOCAL_REAL_NOFLUSH : OP_READ_FILE_LOCAL_REAL;
+                else op = noflush ? OP_READ_FILE_LOCAL_INT_NOFLUSH : OP_READ_FILE_LOCAL_INT;
+            } else {
+                if (node->expression_type == TYPE_CHAR) op = OP_READ_LOCAL_CHAR;
+                else if (is_string_type(node->expression_type)) op = OP_READ_LOCAL_STR;
+                else if (node->expression_type == TYPE_BOOLEAN) op = noflush ? OP_READ_LOCAL_BOOL_NOFLUSH : OP_READ_LOCAL_BOOL;
+                else if (node->expression_type == TYPE_REAL) op = noflush ? OP_READ_LOCAL_REAL_NOFLUSH : OP_READ_LOCAL_REAL;
+                else op = noflush ? OP_READ_LOCAL_INT_NOFLUSH : OP_READ_LOCAL_INT;
+            }
             emit(op, node->data.var_idx);
             generate_code(node->next);
             break;
@@ -674,6 +705,23 @@ void generate_code(ASTNode *node) {
         }
 
         case NODE_BUILTIN_CALL:
+            if (node->op == TOKEN_EOF_FN || node->op == TOKEN_EOLN) {
+                // Unlike every other builtin here, an eof/eoln file
+                // argument (if any) isn't a VALUE to push onto the
+                // stack via the generic generate_code(node->left) below -
+                // it's a compile-time-known file variable index, baked
+                // directly into arg (files are always global - see
+                // TYPE_FILE), exactly like every other file opcode.
+                // Running generate_code() on it would wrongly push
+                // vm_vars[] for that variable (meaningless - a file
+                // variable's real state lives in vm_open_files[]) and
+                // leave it unbalanced on the stack, so this case returns
+                // early instead of falling into the shared code below.
+                int file_idx = node->left ? node->left->data.var_idx : -1;
+                if (node->op == TOKEN_EOF_FN) emit_stdio_op(OP_EOF, OP_EOF_FILE, file_idx);
+                else emit_stdio_op(OP_EOLN, OP_EOLN_FILE, file_idx);
+                break;
+            }
             generate_code(node->left);
             if (node->op == TOKEN_LENGTH) {
                 emit(OP_LENGTH, 0);
@@ -699,10 +747,6 @@ void generate_code(ASTNode *node) {
             } else if (node->op == TOKEN_POWER) {
                 generate_code(node->right); // exponent
                 emit(OP_FPOWER, 0);
-            } else if (node->op == TOKEN_EOF_FN) {
-                emit(OP_EOF, 0);
-            } else if (node->op == TOKEN_EOLN) {
-                emit(OP_EOLN, 0);
             }
             break;
 
@@ -871,6 +915,20 @@ void generate_code(ASTNode *node) {
             generate_code(node->left);  // condition
             generate_code(node->right); // message
             emit(OP_ASSERT, 0);
+            generate_code(node->next);
+            break;
+
+        case NODE_FILE_OP:
+            if (node->op == TOKEN_FILE_ASSIGN) {
+                generate_code(node->left); // filename
+                emit(OP_FILE_ASSIGN, node->data.var_idx);
+            } else if (node->op == TOKEN_RESET) {
+                emit(OP_FILE_RESET, node->data.var_idx);
+            } else if (node->op == TOKEN_REWRITE) {
+                emit(OP_FILE_REWRITE, node->data.var_idx);
+            } else { // TOKEN_CLOSE
+                emit(OP_FILE_CLOSE, node->data.var_idx);
+            }
             generate_code(node->next);
             break;
 

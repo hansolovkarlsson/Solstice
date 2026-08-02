@@ -132,6 +132,32 @@ static const char *opcode_name(Opcode op) {
         case OP_STORE_IDXND: return "store_idxnd";
         case OP_LOAD_IDXND_DYN:  return "load_idxnd_dyn";
         case OP_STORE_IDXND_DYN: return "store_idxnd_dyn";
+        case OP_FILE_ASSIGN:  return "file_assign";
+        case OP_FILE_RESET:   return "file_reset";
+        case OP_FILE_REWRITE: return "file_rewrite";
+        case OP_FILE_CLOSE:   return "file_close";
+        case OP_PRINT_FILE:      return "print_file";
+        case OP_PRINT_STR_FILE:  return "print_str_file";
+        case OP_PRINT_BOOL_FILE: return "print_bool_file";
+        case OP_FPRINT_FILE:     return "fprint_file";
+        case OP_PRINT_PADDED_FILE:      return "print_padded_file";
+        case OP_PRINT_STR_PADDED_FILE:  return "print_str_padded_file";
+        case OP_PRINT_BOOL_PADDED_FILE: return "print_bool_padded_file";
+        case OP_FPRINT_PADDED_FILE:         return "fprint_padded_file";
+        case OP_FPRINT_PADDED_PRECISE_FILE: return "fprint_padded_precise_file";
+        case OP_NEWLINE_FILE: return "newline_file";
+        case OP_EOF_FILE:  return "eof_file";
+        case OP_EOLN_FILE: return "eoln_file";
+        case OP_READ_FILE:         return "read_file";
+        case OP_READ_FILE_NOFLUSH: return "read_file_noflush";
+        case OP_READ_FILE_LOCAL_INT:  return "read_file_local_int";
+        case OP_READ_FILE_LOCAL_BOOL: return "read_file_local_bool";
+        case OP_READ_FILE_LOCAL_REAL: return "read_file_local_real";
+        case OP_READ_FILE_LOCAL_STR:  return "read_file_local_str";
+        case OP_READ_FILE_LOCAL_CHAR: return "read_file_local_char";
+        case OP_READ_FILE_LOCAL_INT_NOFLUSH:  return "read_file_local_int_noflush";
+        case OP_READ_FILE_LOCAL_BOOL_NOFLUSH: return "read_file_local_bool_noflush";
+        case OP_READ_FILE_LOCAL_REAL_NOFLUSH: return "read_file_local_real_noflush";
         default:       return NULL;
     }
 }
@@ -155,6 +181,7 @@ static const char *type_name(DataType type) {
                            // is a plain int bitmask - see TYPE_SET's
                            // comment in common.h - but "set" is more
                            // informative in a variable-dump than "integer"
+        case TYPE_FILE:    return "text";
         default:           return "unknown";
     }
 }
@@ -173,7 +200,15 @@ static int is_var_ref(Opcode op) {
     return op == OP_LOAD || op == OP_STORE || op == OP_READ || op == OP_READ_NOFLUSH
         || op == OP_LOAD_IDX || op == OP_STORE_IDX
         || op == OP_LOAD_IDX2D || op == OP_STORE_IDX2D
-        || op == OP_LOAD_IDXND || op == OP_STORE_IDXND;
+        || op == OP_LOAD_IDXND || op == OP_STORE_IDXND
+        || op == OP_FILE_ASSIGN || op == OP_FILE_RESET || op == OP_FILE_REWRITE || op == OP_FILE_CLOSE
+        || op == OP_PRINT_FILE || op == OP_PRINT_STR_FILE || op == OP_PRINT_BOOL_FILE || op == OP_FPRINT_FILE
+        || op == OP_PRINT_PADDED_FILE || op == OP_PRINT_STR_PADDED_FILE || op == OP_PRINT_BOOL_PADDED_FILE
+        || op == OP_FPRINT_PADDED_FILE || op == OP_FPRINT_PADDED_PRECISE_FILE
+        || op == OP_NEWLINE_FILE || op == OP_EOF_FILE || op == OP_EOLN_FILE
+        || op == OP_READ_FILE || op == OP_READ_FILE_NOFLUSH; // note: OP_READ_FILE's arg is
+                                                              // the READ TARGET's index, still
+                                                              // a sym_table[] reference either way
 }
 
 // True for opcodes whose arg is a plain immediate value with no lookup -
@@ -188,7 +223,10 @@ static int is_immediate(Opcode op) {
         // entirely (same class of bug as the CHECK_LOWER/CHECK_UPPER one
         // this file's history already ran into once).
         || op == OP_READ_LOCAL_INT || op == OP_READ_LOCAL_BOOL || op == OP_READ_LOCAL_REAL
-        || op == OP_READ_LOCAL_STR || op == OP_READ_LOCAL_CHAR;
+        || op == OP_READ_LOCAL_STR || op == OP_READ_LOCAL_CHAR
+        || op == OP_READ_FILE_LOCAL_INT || op == OP_READ_FILE_LOCAL_BOOL || op == OP_READ_FILE_LOCAL_REAL
+        || op == OP_READ_FILE_LOCAL_STR || op == OP_READ_FILE_LOCAL_CHAR
+        || op == OP_READ_FILE_LOCAL_INT_NOFLUSH || op == OP_READ_FILE_LOCAL_BOOL_NOFLUSH || op == OP_READ_FILE_LOCAL_REAL_NOFLUSH;
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index

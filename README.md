@@ -268,6 +268,12 @@ with three or more dimensions (up to 6), with full parity with 1D/2D -
 a global/local variable, or a by-reference parameter with exact-shape
 call-site validation (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#three-or-more-dimensional-arrays)).
+Also working: text file I/O (`assign`/`reset`/`rewrite`/`close`, plus an
+optional leading file argument on `read`/`readln`/`write`/`writeln`/
+`eof`/`eoln` — `write(f, x)` instead of a separate set of file-specific
+builtin names) — a file variable is global only, not a parameter or
+local, the one deliberate scope cut behind the whole feature (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#file-io)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing),
 records as array elements or nested records, and a whole record or an

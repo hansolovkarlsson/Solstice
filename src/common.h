@@ -90,6 +90,16 @@ typedef enum {
     TOKEN_LABEL,  // the 'label' keyword introducing a block's label
                   // declaration section ('label 1, 2, 100;').
     TOKEN_GOTO,   // the 'goto' statement keyword.
+    TOKEN_TEXT_TYPE, // the 'text' file type keyword ('var f: text;').
+    TOKEN_FILE_ASSIGN, // the 'assign' builtin procedure ('assign(f, name)') -
+                  // a distinct token from TOKEN_ASSIGN (':=') despite the
+                  // similar name; unrelated concepts that happen to share
+                  // an English word.
+    TOKEN_RESET, TOKEN_REWRITE, TOKEN_CLOSE, // the 'reset'/'rewrite'/
+                  // 'close' builtin procedures. ('append' - opening a
+                  // file for appending - is a later, non-ISO-7185 Pascal
+                  // extension, deliberately out of scope for now; see
+                  // docs/ROADMAP.md.)
     TOKEN_EOF
 } TokenType;
 
@@ -128,6 +138,27 @@ typedef enum {
                 // branches of NODE_BINARY_OP in codegen.c build everything
                 // from PUSH/DUP/SHL/BOR/BAND/BNOT/EQ/NEQ, all of which
                 // already existed.
+    TYPE_FILE,  // 'text' - a text file variable. GLOBAL ONLY (can't be a
+                // parameter or local - a deliberate scope limitation, see
+                // docs/LANGUAGE.md). Its OWN storage slot (vm_vars[idx])
+                // is unused at runtime - unlike every other type, all of
+                // a file variable's actual state (the FILE*, and the
+                // filename assign() bound it to) lives in vm_open_files[]
+                // (see vm.c), indexed by the SAME sym_table[] index a
+                // file variable already has, rather than through a
+                // second table-index indirection the way TYPE_STRING/
+                // TYPE_CHAR values (string_pool[] indices) work - safe to
+                // do only because a file variable is always global (one
+                // fixed sym_table[] index for its whole lifetime), which
+                // is exactly why parameter/local support was cut from
+                // this feature's scope. assign() records a filename;
+                // reset()/rewrite() actually fopen()s it (for reading/
+                // writing respectively); close() fclose()s it. Every
+                // read/write/eof/eoln builtin gained an optional leading
+                // file-variable argument (defaulting to stdin/stdout when
+                // omitted, exactly as before this feature existed) - see
+                // NODE_READLN/NODE_LOCAL_READLN/NODE_WRITELN below, and
+                // NODE_FILE_OP for assign/reset/rewrite/close themselves.
     TYPE_ENUM_BASE // Not a real type by itself - a specific enumerated
                 // type ('type TColor = (Red, Green, Blue);') is encoded
                 // as TYPE_ENUM_BASE + its enum_types[] index, so DataType
@@ -572,6 +603,78 @@ typedef enum {
     OP_STORE_IDXND_DYN, // Same as OP_LOAD_IDXND_DYN, but pops a value
                   // (pushed last by codegen, on top of everything) before
                   // the N indices and the array reference.
+
+    // File I/O (text files - see TYPE_FILE). Since a file variable is
+    // always GLOBAL (a deliberate scope limitation - see TYPE_FILE),
+    // WHICH file is always a compile-time-known sym_table[] index, baked
+    // directly into arg exactly like OP_LOAD_IDX2D already bakes an
+    // array's sym_table[] index into arg - never pushed/popped on the
+    // stack as a runtime value, unlike an array-reference PARAMETER
+    // (which needs that because different calls can pass different
+    // arrays; a file variable can't, since it can't be a parameter).
+    OP_FILE_ASSIGN,  // arg = file variable's sym_table index. Pop a
+                  // string_pool[] index (the filename, from the
+                  // expression 'assign(f, name)' evaluates); record it
+                  // for the file - doesn't open anything yet, matching
+                  // real Pascal (assign() only binds a name; reset()/
+                  // rewrite() do the actual fopen()).
+    OP_FILE_RESET,   // arg = file variable's sym_table index. fopen()s
+                  // its assigned filename for reading ("r") - a Runtime
+                  // Error if assign() was never called, or if the file
+                  // can't be opened (doesn't exist, permissions, ...).
+    OP_FILE_REWRITE, // Same as OP_FILE_RESET, but opens for writing ("w") -
+                  // creates the file if it doesn't exist, truncates it
+                  // if it does, matching real Pascal's rewrite().
+    OP_FILE_CLOSE,   // arg = file variable's sym_table index. fclose()s
+                  // it - a Runtime Error if it isn't currently open.
+    OP_PRINT_FILE, OP_PRINT_STR_FILE, OP_PRINT_BOOL_FILE, OP_FPRINT_FILE,
+                  // Same as OP_PRINT/OP_PRINT_STR/OP_PRINT_BOOL/
+                  // OP_FPRINT, but arg = the target file variable's
+                  // sym_table index and the value is fprintf()'d to that
+                  // file instead of stdout - a Runtime Error if the file
+                  // isn't currently open for writing.
+    OP_PRINT_PADDED_FILE, OP_PRINT_STR_PADDED_FILE, OP_PRINT_BOOL_PADDED_FILE,
+    OP_FPRINT_PADDED_FILE, OP_FPRINT_PADDED_PRECISE_FILE,
+                  // File-writing siblings of OP_PRINT_PADDED/
+                  // OP_PRINT_STR_PADDED/OP_PRINT_BOOL_PADDED/
+                  // OP_FPRINT_PADDED/OP_FPRINT_PADDED_PRECISE - same
+                  // arg/pop-order conventions as those (see their own
+                  // comments above), just fprintf()'d to arg's file.
+    OP_NEWLINE_FILE, // arg = file variable's sym_table index. Writes a
+                  // newline to it - the file-writing sibling of
+                  // OP_NEWLINE.
+    OP_EOF_FILE, OP_EOLN_FILE, // arg = file variable's sym_table index.
+                  // Same as OP_EOF/OP_EOLN, but peeking at that file
+                  // instead of stdin (no stack interaction beyond
+                  // pushing the boolean result) - a Runtime Error if the
+                  // file isn't currently open for reading.
+    OP_READ_FILE, OP_READ_FILE_NOFLUSH, // arg = the READ TARGET's
+                  // sym_table index (a global, exactly like OP_READ/
+                  // OP_READ_NOFLUSH) - runtime-dispatches on
+                  // sym_table[arg].type exactly like those do too. Pops
+                  // ONE extra value first, though, that OP_READ/
+                  // OP_READ_NOFLUSH don't: the SOURCE file variable's
+                  // own sym_table index, pushed via a plain OP_PUSH
+                  // right before this opcode (the same "push an
+                  // auxiliary reference, the main opcode pops it"
+                  // pattern OP_LOAD_IDX_DYN's array-reference argument
+                  // already uses, just with OP_PUSH instead of
+                  // OP_LOAD_LOCAL since a file's index is always a
+                  // compile-time constant, never a runtime local value).
+                  // Never prints the interactive "> " prompt OP_READ
+                  // does - there's no user to prompt when reading from
+                  // a file.
+    OP_READ_FILE_LOCAL_INT, OP_READ_FILE_LOCAL_BOOL, OP_READ_FILE_LOCAL_REAL,
+    OP_READ_FILE_LOCAL_STR, OP_READ_FILE_LOCAL_CHAR,
+    OP_READ_FILE_LOCAL_INT_NOFLUSH, OP_READ_FILE_LOCAL_BOOL_NOFLUSH, OP_READ_FILE_LOCAL_REAL_NOFLUSH,
+                  // File-reading siblings of OP_READ_LOCAL_INT/BOOL/REAL/
+                  // STR/CHAR (+ the three _NOFLUSH variants - STR/CHAR
+                  // don't need one, for the same fgets()-already-
+                  // consumes-the-newline reasoning those don't). arg =
+                  // local frame slot (exactly like the non-file
+                  // versions); pops the source file variable's
+                  // sym_table index first, same convention as
+                  // OP_READ_FILE above.
 } Opcode;
 
 typedef struct {
@@ -594,7 +697,16 @@ typedef enum {
                    // node->left is the head of the argument list, chained
                    // via each argument's own ->next (same technique as a
                    // statement list) - NULL means zero arguments.
-    NODE_READLN,
+                   // node->extra = an optional file variable reference
+                   // (a NODE_VARIABLE, expression_type TYPE_FILE) -
+                   // NULL means stdout, exactly as before this field
+                   // existed (see 'write(f, ...)' in docs/LANGUAGE.md).
+    NODE_READLN,   // data.var_idx = target's sym_table index, op =
+                   // TOKEN_READ/TOKEN_READLN (only the latter consumes
+                   // the rest of the input line). extra = an optional
+                   // file variable reference (a NODE_VARIABLE,
+                   // expression_type TYPE_FILE) - NULL means stdin,
+                   // exactly as before this field existed.
     NODE_IF,
     NODE_WHILE,
     NODE_REPEAT,
@@ -685,7 +797,11 @@ typedef enum {
                        // many that builtin takes) - NOT chained via
                        // ->next like NODE_CALL's user-function arguments,
                        // since every builtin here has a small, fixed
-                       // arity, unlike a general call.
+                       // arity, unlike a general call. For op ==
+                       // TOKEN_EOF_FN/TOKEN_EOLN specifically: left = an
+                       // optional file variable reference (a
+                       // NODE_VARIABLE, expression_type TYPE_FILE) - NULL
+                       // means stdin, exactly as before this field existed.
     NODE_STRING_INDEX,       // 's[i]' where s is a GLOBAL string/char
                        // variable. data.var_idx = s's sym_table index,
                        // left = index expression, expression_type =
@@ -776,6 +892,9 @@ typedef enum {
                        // unlike OP_READ's runtime type dispatch via
                        // sym_table[], a local frame slot carries no
                        // runtime type information to dispatch on at all).
+                       // extra = an optional file variable reference (a
+                       // NODE_VARIABLE, expression_type TYPE_FILE) - NULL
+                       // means stdin, exactly as before this field existed.
     NODE_RANGE_CHECK,  // Wraps a value about to be stored into a subrange-
                        // typed target ('type TAge = 0..150;'). left = the
                        // value expression; right/extra = NODE_NUMBER
@@ -794,6 +913,18 @@ typedef enum {
                        // a NODE_STRING literal ("Assertion failed") when
                        // none is given, so codegen/the VM never need to
                        // handle a "no message" case separately.
+    NODE_FILE_OP,      // 'assign(f, name)' / 'reset(f)' / 'rewrite(f)' /
+                       // 'close(f)' - one node type for all four,
+                       // distinguished by node->op (TOKEN_FILE_ASSIGN/
+                       // TOKEN_RESET/TOKEN_REWRITE/TOKEN_CLOSE), mirroring
+                       // how NODE_WRITELN reuses op for TOKEN_WRITE vs
+                       // TOKEN_WRITELN. data.var_idx = the file
+                       // variable's sym_table index (always global - see
+                       // TYPE_FILE). left = the filename expression
+                       // (string/char-typed) - only meaningful, and only
+                       // ever present, when op == TOKEN_FILE_ASSIGN;
+                       // NULL for reset/rewrite/close, which take no
+                       // second argument.
     NODE_CASE,         // 'case selector of label1: stmt1; ... [else
                        // stmtN] end'. left = selector expression, right =
                        // head of a NODE_CASE_ARM chain (each arm linked

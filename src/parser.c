@@ -497,6 +497,18 @@ static int find_var(const char *name) {
     return idx;
 }
 
+// Soft lookup for a GLOBAL file variable specifically (files are always
+// global - see TYPE_FILE) - returns its sym_table[] index, or -1 if
+// `name` isn't a declared file variable at all (not an error - this is
+// used everywhere a leading 'read(f, ...)'/'write(f, ...)'/'eof(f)'/
+// 'assign(f, ...)' file argument needs to be *detected*, not required,
+// falling back to the ordinary stdin/stdout path when it's absent).
+static int find_file_var_soft(const char *name) {
+    int idx = find_var_soft(name);
+    if (idx == -1 || sym_table[idx].type != TYPE_FILE) return -1;
+    return idx;
+}
+
 static void add_var(const char *name, DataType type) {
     for (int i = 0; i < sym_count; i++) {
         if (strcmp(sym_table[i].name, name) == 0) {
@@ -1264,6 +1276,20 @@ static DataType parse_scalar_type(void) {
         parse_set_base_type();
         return TYPE_SET;
     }
+    if (token.type == TOKEN_TEXT_TYPE) {
+        // Deliberately NOT '{ match(TOKEN_TEXT_TYPE); return TYPE_FILE; }'
+        // like every other branch here - a file variable can only be a
+        // GLOBAL, declared directly in the main program's own 'var'
+        // section (see its own dedicated parsing there), never a
+        // parameter/local/record-field/array-element type, precisely
+        // because this is the one centralized function every one of
+        // those OTHER contexts goes through. Recognizing the keyword
+        // here (rather than just letting it fall through to the generic
+        // "Unknown type" error below) exists purely for a clearer,
+        // specific error message.
+        compile_error(token.line, "'text' can only declare a global file variable in the main program's own 'var' section - not as a parameter, local, record field, or array element type (see docs/LANGUAGE.md)");
+        return TYPE_UNKNOWN; // unreachable
+    }
     if (token.type == TOKEN_IDENTIFIER) {
         int alias_idx = find_type_alias(token.text);
         if (alias_idx != -1) {
@@ -1994,21 +2020,33 @@ static ASTNode *factor(void) {
     } else if (token.type == TOKEN_EOF_FN || token.type == TOKEN_EOLN) {
         // 'eof' / 'eoln' - real Pascal usage is almost always bare (no
         // parens at all, e.g. 'while not eof do ...'), but '()' is
-        // accepted too (with no argument - there's no file type to name
-        // one of yet, only stdin). Unlike every other builtin here,
-        // these need a genuine runtime check (peeking at stdin), so -
-        // unlike 'pi' above - this does need a real opcode: NODE_BUILTIN_CALL
-        // with no children at all (generate_code(NULL) safely no-ops for
-        // node->left/right/extra), dispatched on node->op in codegen.
+        // accepted too, now optionally naming a file variable inside it
+        // ('eof(f)') to check that file instead of stdin. Unlike every
+        // other builtin here, these need a genuine runtime check
+        // (peeking at stdin or a file), so - unlike 'pi' above - this
+        // does need a real opcode: NODE_BUILTIN_CALL, dispatched on
+        // node->op in codegen. left = an optional file variable
+        // reference (a NODE_VARIABLE, expression_type TYPE_FILE) - NULL
+        // means stdin, exactly as before this field existed.
         TokenType kind = token.type;
         match(kind);
-        if (token.type == TOKEN_LPAREN) {
-            match(TOKEN_LPAREN);
-            match(TOKEN_RPAREN);
-        }
         ASTNode *node = create_node(NODE_BUILTIN_CALL);
         node->op = kind;
         node->expression_type = TYPE_BOOLEAN;
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            if (token.type == TOKEN_IDENTIFIER) {
+                int fidx = find_file_var_soft(token.text);
+                if (fidx != -1) {
+                    match(TOKEN_IDENTIFIER);
+                    ASTNode *file_ref = create_node(NODE_VARIABLE);
+                    file_ref->data.var_idx = fidx;
+                    file_ref->expression_type = TYPE_FILE;
+                    node->left = file_ref;
+                }
+            }
+            match(TOKEN_RPAREN);
+        }
         return node;
     } else if (token.type == TOKEN_ODD) {
         // odd(x) desugars to '(x mod 2) <> 0' - reuses the existing
@@ -2892,6 +2930,19 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                     sym_table[sym_count - 1].subrange_lower = subrange_lower;
                     sym_table[sym_count - 1].subrange_upper = subrange_upper;
                 }
+            } else if (token.type == TOKEN_TEXT_TYPE) {
+                // A file variable - see TYPE_FILE in common.h for why
+                // this is its own branch here (the ONLY place 'text' is
+                // legal) rather than going through parse_scalar_type()
+                // like every other type does. add_var() needs nothing
+                // file-specific - TYPE_FILE is a plain scalar as far as
+                // sym_table[] itself is concerned; all the real file
+                // STATE lives in vm.c's vm_open_files[], indexed by this
+                // same symbol index.
+                match(TOKEN_TEXT_TYPE);
+                for (int i = 0; i < count; i++) {
+                    add_var(temporary_names[i], TYPE_FILE);
+                }
             } else {
                 DataType target_type = parse_scalar_type();
                 int is_subrange = scalar_type_is_subrange;
@@ -3654,11 +3705,39 @@ static ASTNode *parse_read_statement(int is_readln) {
     match(is_readln ? TOKEN_READLN : TOKEN_READ);
     match(TOKEN_LPAREN);
 
+    // An optional leading file variable - 'read(f, a, b)' reads from f
+    // instead of stdin. Detected via a soft lookup (not every
+    // identifier here is one - the overwhelmingly common case is a
+    // bare read target, so this must never mistake an ordinary first
+    // target for a file), consumed together with the comma that must
+    // follow it, before the ordinary target-parsing loop below even
+    // starts - every target built by that loop gets the same file
+    // reference attached (see the loop body).
+    int file_sym_idx = -1;
+    if (token.type == TOKEN_IDENTIFIER) {
+        int fidx = find_file_var_soft(token.text);
+        if (fidx != -1) {
+            file_sym_idx = fidx;
+            match(TOKEN_IDENTIFIER);
+            if (token.type != TOKEN_COMMA) {
+                compile_error(token.line, "'%s(%s, ...)' expects at least one target after the file variable",
+                               is_readln ? "readln" : "read", sym_table[fidx].name);
+            }
+            match(TOKEN_COMMA);
+        }
+    }
+
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
     while (1) {
         ASTNode *target = parse_read_target();
         target->op = TOKEN_READ; // provisional - the last one is fixed up below if this is a 'readln'
+        if (file_sym_idx != -1) {
+            ASTNode *file_ref = create_node(NODE_VARIABLE);
+            file_ref->data.var_idx = file_sym_idx;
+            file_ref->expression_type = TYPE_FILE;
+            target->extra = file_ref;
+        }
         if (!head) head = target; else tail->next = target;
         tail = target;
         if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
@@ -3686,6 +3765,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
+           t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -4430,6 +4510,53 @@ static ASTNode *statement(void) {
         return parse_inc_dec(token.type);
     }
 
+    if (token.type == TOKEN_FILE_ASSIGN) {
+        // 'assign(f, name)' - binds a filename to f. Doesn't open
+        // anything yet (matching real Pascal - reset()/rewrite() do
+        // that); see NODE_FILE_OP/OP_FILE_ASSIGN.
+        match(TOKEN_FILE_ASSIGN);
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "'assign' expects a file variable");
+        }
+        int fidx = find_file_var_soft(token.text);
+        if (fidx == -1) {
+            compile_error(token.line, "'%s' is not a declared file variable", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_COMMA);
+        ASTNode *stmt = create_node(NODE_FILE_OP);
+        stmt->op = TOKEN_FILE_ASSIGN;
+        stmt->data.var_idx = fidx;
+        stmt->left = expression(); // filename - must be string/char, checked in type_checker.c
+        match(TOKEN_RPAREN);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_RESET || token.type == TOKEN_REWRITE || token.type == TOKEN_CLOSE) {
+        // 'reset(f)' (open for reading) / 'rewrite(f)' (open for
+        // writing) / 'close(f)' - each takes exactly one, required,
+        // file-variable argument. See NODE_FILE_OP/OP_FILE_RESET/
+        // OP_FILE_REWRITE/OP_FILE_CLOSE.
+        TokenType kind = token.type;
+        const char *name = kind == TOKEN_RESET ? "reset" : kind == TOKEN_REWRITE ? "rewrite" : "close";
+        match(kind);
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "'%s' expects a file variable", name);
+        }
+        int fidx = find_file_var_soft(token.text);
+        if (fidx == -1) {
+            compile_error(token.line, "'%s' is not a declared file variable", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_RPAREN);
+        ASTNode *stmt = create_node(NODE_FILE_OP);
+        stmt->op = kind;
+        stmt->data.var_idx = fidx;
+        return stmt;
+    }
+
     if (token.type == TOKEN_ASSERT) {
         match(TOKEN_ASSERT);
         match(TOKEN_LPAREN);
@@ -4460,15 +4587,36 @@ static ASTNode *statement(void) {
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
             if (token.type != TOKEN_RPAREN) {
-                ASTNode *arg_head = parse_write_arg();
-                ASTNode *arg_tail = arg_head;
-                while (token.type == TOKEN_COMMA) {
-                    match(TOKEN_COMMA);
-                    ASTNode *next_arg = parse_write_arg();
-                    arg_tail->next = next_arg;
-                    arg_tail = next_arg;
+                // An optional leading file variable - 'write(f, a, b)'
+                // writes to f instead of stdout. Detected via a soft
+                // lookup (not every identifier here is one). 'write(f)'
+                // (a file with nothing else) is valid too - the comma is
+                // only required when more arguments follow, matching
+                // real Pascal's 'writeln(f);' (just a newline to f).
+                if (token.type == TOKEN_IDENTIFIER) {
+                    int fidx = find_file_var_soft(token.text);
+                    if (fidx != -1) {
+                        match(TOKEN_IDENTIFIER);
+                        ASTNode *file_ref = create_node(NODE_VARIABLE);
+                        file_ref->data.var_idx = fidx;
+                        file_ref->expression_type = TYPE_FILE;
+                        stmt->extra = file_ref;
+                        if (token.type == TOKEN_COMMA) {
+                            match(TOKEN_COMMA);
+                        }
+                    }
                 }
-                stmt->left = arg_head;
+                if (token.type != TOKEN_RPAREN) {
+                    ASTNode *arg_head = parse_write_arg();
+                    ASTNode *arg_tail = arg_head;
+                    while (token.type == TOKEN_COMMA) {
+                        match(TOKEN_COMMA);
+                        ASTNode *next_arg = parse_write_arg();
+                        arg_tail->next = next_arg;
+                        arg_tail = next_arg;
+                    }
+                    stmt->left = arg_head;
+                }
             }
             match(TOKEN_RPAREN);
         }

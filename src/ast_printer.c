@@ -72,6 +72,10 @@ void print_ast(ASTNode *node, int indent) {
 
         case NODE_WRITELN: {
             printf("[%s]\n", node->op == TOKEN_WRITE ? "Write" : "WriteLn");
+            if (node->extra) {
+                print_indent(indent + 1);
+                printf("File: %s\n", sym_table[node->extra->data.var_idx].name);
+            }
             int arg_num = 1;
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 print_indent(indent + 1);
@@ -99,6 +103,10 @@ void print_ast(ASTNode *node, int indent) {
             break;
         case NODE_READLN:
             printf("[%s] -> Target Variable: %s\n", node->op == TOKEN_READ ? "Read" : "ReadLn", sym_table[node->data.var_idx].name);
+            if (node->extra) {
+                print_indent(indent + 1);
+                printf("File: %s\n", sym_table[node->extra->data.var_idx].name);
+            }
             if (node->next) {
                 print_ast(node->next, indent);
             }
@@ -234,6 +242,10 @@ void print_ast(ASTNode *node, int indent) {
 
         case NODE_LOCAL_READLN:
             printf("[Local %s] -> slot %d\n", node->op == TOKEN_READ ? "Read" : "ReadLn", node->data.var_idx);
+            if (node->extra) {
+                print_indent(indent + 1);
+                printf("File: %s\n", sym_table[node->extra->data.var_idx].name);
+            }
             if (node->next) {
                 print_ast(node->next, indent);
             }
@@ -263,6 +275,22 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->next, indent);
             }
             break;
+
+        case NODE_FILE_OP: {
+            const char *op_name = node->op == TOKEN_FILE_ASSIGN ? "Assign"
+                                 : node->op == TOKEN_RESET ? "Reset"
+                                 : node->op == TOKEN_REWRITE ? "Rewrite" : "Close";
+            printf("[%s] -> File: %s\n", op_name, sym_table[node->data.var_idx].name);
+            if (node->left) {
+                print_indent(indent + 1);
+                printf("Filename:\n");
+                print_ast(node->left, indent + 2);
+            }
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
 
         case NODE_CASE:
             printf("[Case]\n");
