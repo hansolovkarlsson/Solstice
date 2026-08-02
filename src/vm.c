@@ -928,6 +928,19 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_SKIP_PENDING_NEWLINE: {
+                int c = vm_peek_stdin();
+                if (c == '\n') getchar();
+                break;
+            }
+
+            case OP_SKIP_PENDING_NEWLINE_FILE: {
+                FILE *f = vm_file_handle(instr.arg, "read");
+                int c = fgetc(f);
+                if (c != '\n' && c != EOF) ungetc(c, f);
+                break;
+            }
+
             case OP_ADD: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a + b); break; }
             case OP_SUB: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a - b); break; }
             case OP_MUL: { int b = vm_pop(&sp); int a = vm_pop(&sp); vm_push(&sp, a * b); break; }

@@ -559,15 +559,20 @@ exactly `read(a); read(b); readln(c);`, and `read(a, b, c)` is `read(a);
 read(b); read(c);` (none of them flush). A single target behaves exactly
 as before.
 
-**Known gap:** a non-last, non-string/char target (an `integer`/`real`/
-`boolean`, which doesn't flush on its own) immediately followed by a
-`string`/`char` target loses data — the string target always reads a
-*whole line* via `fgets`, but since the previous target didn't flush,
-that "whole line" is just the leftover newline sitting right after the
-previous value, not the actual next line, so it reads as empty.
-`readln(intVar, stringVar)` on two separate lines is the shape to avoid;
-put a `string`/`char` target last, or split into separate `readln`
-calls, until this is fixed.
+A non-last, non-string/char target (an `integer`/`real`/`boolean`,
+which doesn't flush on its own) immediately followed by a `string`/
+`char` target correctly continues on the next line, even though the
+first target's own read left the line position sitting right before its
+trailing newline rather than at the start of the next line — the
+compiler detects this exact situation at compile time and skips that
+one leftover newline first, so `readln(intVar, stringVar)` on two
+separate lines works as expected. This is the only target-type
+transition that needs it: every other pairing already lines up
+correctly on its own (a numeric/boolean read's underlying `scanf` skips
+leading whitespace on its own before parsing the next value; a
+string/char read's `fgets` always consumes through its own line's
+newline, so whatever follows it starts a fresh line naturally either
+way).
 
 An optional leading [file variable](#file-io) reads from that file
 instead of standard input: `read(f, a, b)`, `readln(f, a)`.

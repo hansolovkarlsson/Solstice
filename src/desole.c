@@ -158,6 +158,8 @@ static const char *opcode_name(Opcode op) {
         case OP_READ_FILE_LOCAL_INT_NOFLUSH:  return "read_file_local_int_noflush";
         case OP_READ_FILE_LOCAL_BOOL_NOFLUSH: return "read_file_local_bool_noflush";
         case OP_READ_FILE_LOCAL_REAL_NOFLUSH: return "read_file_local_real_noflush";
+        case OP_SKIP_PENDING_NEWLINE:      return "skip_pending_newline";
+        case OP_SKIP_PENDING_NEWLINE_FILE: return "skip_pending_newline_file";
         default:       return NULL;
     }
 }
@@ -206,9 +208,10 @@ static int is_var_ref(Opcode op) {
         || op == OP_PRINT_PADDED_FILE || op == OP_PRINT_STR_PADDED_FILE || op == OP_PRINT_BOOL_PADDED_FILE
         || op == OP_FPRINT_PADDED_FILE || op == OP_FPRINT_PADDED_PRECISE_FILE
         || op == OP_NEWLINE_FILE || op == OP_EOF_FILE || op == OP_EOLN_FILE
-        || op == OP_READ_FILE || op == OP_READ_FILE_NOFLUSH; // note: OP_READ_FILE's arg is
+        || op == OP_READ_FILE || op == OP_READ_FILE_NOFLUSH // note: OP_READ_FILE's arg is
                                                               // the READ TARGET's index, still
                                                               // a sym_table[] reference either way
+        || op == OP_SKIP_PENDING_NEWLINE_FILE;
 }
 
 // True for opcodes whose arg is a plain immediate value with no lookup -

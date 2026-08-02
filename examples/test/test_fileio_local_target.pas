@@ -7,8 +7,7 @@ var
     x: integer;
     s: string;
 begin
-    readln(f, x);
-    readln(f, s);
+    readln(f, x, s); { multi-target: int then string, on separate lines }
     writeln('x=', x, ' s=', s);
 end;
 

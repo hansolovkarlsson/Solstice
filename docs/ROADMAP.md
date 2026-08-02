@@ -318,18 +318,27 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       supported that form even before this - and `readln`/`read` still
       silently accept a bare global array as a target without erroring
       (a pre-existing gap, confirmed present before this work too, left
-      unfixed as out of scope here). A third gap surfaced while testing
-      File I/O below (reproduced identically via plain stdin too, so
-      it's pre-existing and unrelated to files): a multi-target
-      `readln(a, b, ...)` where a non-last, non-string/char target (an
-      integer/real/boolean, read via `scanf`/`fscanf` without flushing)
-      is immediately followed by a string/char target loses data - the
-      string target's `fgets` picks up only the leftover newline right
-      after the non-flushed value, not the actual next line, so it
-      reads as empty. Root cause is a real design gap (flushing and
-      "read a whole line via fgets" are two different mechanisms that
-      don't coordinate), not a quick fix, so left for a dedicated pass
-      rather than patched in passing here.
+      unfixed as out of scope here). A third bug, surfaced while testing
+      File I/O (reproduced identically via plain stdin too, confirming
+      it was pre-existing and unrelated to files) and fixed in a
+      dedicated follow-up pass: a multi-target `readln(a, b, ...)` where
+      a non-last, non-string/char target (an integer/real/boolean, read
+      via `scanf`/`fscanf` without flushing) was immediately followed by
+      a string/char target lost data - the string target's `fgets`
+      picked up only the leftover newline right after the non-flushed
+      value, not the actual next line, reading as empty. Root cause:
+      flushing and "read a whole line via `fgets`" are two different
+      mechanisms that didn't coordinate. Fixed with 2 new opcodes
+      (`SKIP_PENDING_NEWLINE`/`SKIP_PENDING_NEWLINE_FILE`) that peek-
+      and-conditionally-consume exactly one leftover `'\n'` - emitted
+      only for this ONE specific target-type transition (detected at
+      parse time in `parse_read_statement()`, since it already builds
+      the whole target chain with full type information), never
+      unconditionally before every string/char read, since that would
+      risk skipping a genuinely blank line a program legitimately meant
+      to read. Confirmed the fix doesn't affect that case (a standalone
+      `readln(s)` reading an intentional blank line still reads it as
+      empty, not skipped).
 - [ ] `program` heading parameters (`program Foo(input, output);`) — pure
       syntax at the moment (`program Name;` only); lowest priority here,
       since in virtually every real implementation this list is a no-op

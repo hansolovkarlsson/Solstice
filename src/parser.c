@@ -3681,6 +3681,18 @@ static ASTNode *parse_read_target(void) {
     return stmt;
 }
 
+// A read target's declared type - NODE_LOCAL_READLN always carries it
+// directly (expression_type), but NODE_READLN (a global-backed target)
+// doesn't: codegen looks it up via sym_table[] at codegen time instead,
+// since that case dispatches on the symbol's RUNTIME type tag rather
+// than anything baked in at parse time. Needed here (parse time) too,
+// to detect the read-target-ordering bug parse_read_statement() works
+// around below.
+static DataType read_target_type(ASTNode *target) {
+    if (target->type == NODE_LOCAL_READLN) return target->expression_type;
+    return sym_table[target->data.var_idx].type;
+}
+
 // 'read(a[, b, c...])' / 'readln(a[, b, c...])' - a comma-separated list
 // of read targets (see parse_read_target() above). 'read' and 'readln'
 // differ only in whether the LAST target consumes the rest of the input
@@ -3737,6 +3749,34 @@ static ASTNode *parse_read_statement(int is_readln) {
             file_ref->data.var_idx = file_sym_idx;
             file_ref->expression_type = TYPE_FILE;
             target->extra = file_ref;
+        }
+        // Bug workaround: a non-flushing numeric/boolean read (scanf/
+        // fscanf-based, which only skips LEADING whitespace, not
+        // trailing) leaves the read position sitting right before that
+        // value's own trailing newline - not at the start of the next
+        // line. A string/char target immediately after one (in this
+        // same target list - 'tail' here is always non-last by
+        // construction, since we're about to chain another target onto
+        // it) reads via fgets() instead, which does NOT skip leading
+        // whitespace/newlines the way scanf does, so it would
+        // immediately hit that leftover newline and read an empty
+        // "line" rather than the intended next one. Mark the target
+        // (via ->left, otherwise unused on NODE_READLN/NODE_LOCAL_READLN -
+        // see codegen.c) to skip exactly that one leftover newline
+        // first. Every OTHER target-type transition is unaffected:
+        // scanf/fscanf already skips leading whitespace/newlines on its
+        // own for the next numeric/boolean read, and a string/char
+        // target's own fgets() always consumes through its line's
+        // newline, so the target right after IT never has this problem
+        // either way.
+        if (tail) {
+            DataType prev_t = read_target_type(tail);
+            DataType cur_t = read_target_type(target);
+            int prev_numeric = (prev_t == TYPE_INTEGER || prev_t == TYPE_REAL || prev_t == TYPE_BOOLEAN);
+            int cur_stringy = (cur_t == TYPE_STRING || cur_t == TYPE_CHAR);
+            if (prev_numeric && cur_stringy) {
+                target->left = create_node(NODE_NUMBER); // dummy marker - see comment above
+            }
         }
         if (!head) head = target; else tail->next = target;
         tail = target;

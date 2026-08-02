@@ -476,6 +476,9 @@ void generate_code(ASTNode *node) {
         // is pushed via a plain OP_PUSH first, rather than baked into
         // arg (arg is already the READ TARGET's own index here).
         case NODE_READLN:
+            if (node->left) { // see parse_read_statement()'s comment in parser.c
+                emit_stdio_op(OP_SKIP_PENDING_NEWLINE, OP_SKIP_PENDING_NEWLINE_FILE, node->extra ? node->extra->data.var_idx : -1);
+            }
             if (node->extra) {
                 emit(OP_PUSH, node->extra->data.var_idx);
                 emit(node->op == TOKEN_READ ? OP_READ_FILE_NOFLUSH : OP_READ_FILE, node->data.var_idx);
@@ -487,6 +490,9 @@ void generate_code(ASTNode *node) {
 
         case NODE_LOCAL_READLN: {
             int noflush = (node->op == TOKEN_READ);
+            if (node->left) { // see parse_read_statement()'s comment in parser.c
+                emit_stdio_op(OP_SKIP_PENDING_NEWLINE, OP_SKIP_PENDING_NEWLINE_FILE, node->extra ? node->extra->data.var_idx : -1);
+            }
             Opcode op;
             if (node->extra) {
                 emit(OP_PUSH, node->extra->data.var_idx);

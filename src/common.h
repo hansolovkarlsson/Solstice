@@ -675,6 +675,23 @@ typedef enum {
                   // versions); pops the source file variable's
                   // sym_table index first, same convention as
                   // OP_READ_FILE above.
+    OP_SKIP_PENDING_NEWLINE, // Peeks at stdin (fgetc()+ungetc(), like
+                  // OP_EOF/OP_EOLN); if the next character is exactly
+                  // '\n', consumes it. No stack interaction, no arg.
+                  // Emitted right before a string/char read target that
+                  // immediately follows a non-flushing numeric/boolean
+                  // one in the same read()/readln() call - see
+                  // parse_read_statement()'s comment in parser.c for the
+                  // bug this works around (a leftover newline from the
+                  // PRECEDING scanf-based read, which fgets() would
+                  // otherwise mistake for an empty line). A no-op in
+                  // every other situation (there's nothing pending to
+                  // skip), so safe to emit only in that one specific
+                  // case rather than unconditionally before every
+                  // string/char read.
+    OP_SKIP_PENDING_NEWLINE_FILE, // Same as OP_SKIP_PENDING_NEWLINE, but
+                  // arg = the file variable's sym_table index - peeks at
+                  // that file instead of stdin.
 } Opcode;
 
 typedef struct {

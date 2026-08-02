@@ -107,6 +107,10 @@ void print_ast(ASTNode *node, int indent) {
                 print_indent(indent + 1);
                 printf("File: %s\n", sym_table[node->extra->data.var_idx].name);
             }
+            if (node->left) {
+                print_indent(indent + 1);
+                printf("(skips a leftover newline first)\n");
+            }
             if (node->next) {
                 print_ast(node->next, indent);
             }
@@ -245,6 +249,10 @@ void print_ast(ASTNode *node, int indent) {
             if (node->extra) {
                 print_indent(indent + 1);
                 printf("File: %s\n", sym_table[node->extra->data.var_idx].name);
+            }
+            if (node->left) {
+                print_indent(indent + 1);
+                printf("(skips a leftover newline first)\n");
             }
             if (node->next) {
                 print_ast(node->next, indent);
