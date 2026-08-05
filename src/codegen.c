@@ -458,7 +458,7 @@ void generate_code(ASTNode *node) {
                     if (is_string_type(t)) emit_stdio_op(OP_PRINT_STR, OP_PRINT_STR_FILE, file_idx);
                     else if (t == TYPE_BOOLEAN) emit_stdio_op(OP_PRINT_BOOL, OP_PRINT_BOOL_FILE, file_idx);
                     else if (t == TYPE_REAL) emit_stdio_op(OP_FPRINT, OP_FPRINT_FILE, file_idx);
-                    else if (t >= TYPE_ENUM_BASE) emit_enum_print_chain(t, file_idx);
+                    else if (t >= TYPE_ENUM_BASE && t < TYPE_POINTER_BASE) emit_enum_print_chain(t, file_idx);
                     else emit_stdio_op(OP_PRINT, OP_PRINT_FILE, file_idx);
                 }
             }
@@ -831,6 +831,32 @@ void generate_code(ASTNode *node) {
             } else {
                 emit(OP_STORE_ARRAY_RECORD_FIELD, node->data.var_idx);
             }
+            generate_code(node->next);
+            break;
+
+        case NODE_HEAP_FIELD_ACCESS:
+            generate_code(node->left);                  // the pointer value
+            emit(OP_LOAD_HEAP_FIELD, node->right->data.num_value); // field offset (compile-time constant)
+            break;
+
+        case NODE_HEAP_FIELD_ASSIGN:
+            generate_code(node->left);                  // the pointer value
+            generate_code(node->right);                 // value
+            if (node->expression_type == TYPE_CHAR) {
+                emit(OP_STORE_HEAP_FIELD_CHAR, node->extra->data.num_value);
+            } else {
+                emit(OP_STORE_HEAP_FIELD, node->extra->data.num_value);
+            }
+            generate_code(node->next);
+            break;
+
+        case NODE_HEAP_ALLOC:
+            emit(OP_NEW, node->data.num_value);
+            break;
+
+        case NODE_HEAP_DISPOSE:
+            generate_code(node->left);
+            emit(OP_DISPOSE, node->data.num_value);
             generate_code(node->next);
             break;
 

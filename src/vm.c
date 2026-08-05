@@ -71,6 +71,22 @@ static int vm_array_mem[MAX_ARRAY_MEM];
 static int vm_frame_stack[MAX_FRAME_STACK]; // local variable slots for
                                              // every active call, stacked
 
+// The heap ('new'/'dispose'/'p^') - this VM's only source of genuinely
+// dynamic allocation (see MAX_HEAP_MEM's comment in common.h). Unlike
+// vm_array_mem (whose layout is 100% fixed at compile time), how much of
+// vm_heap_mem is actually in use is a RUNTIME quantity: vm_heap_count is
+// a bump-allocation cursor mutated by OP_NEW, and vm_heap_freelist[]
+// tracks blocks OP_DISPOSE has freed, bucketed by element size (1..
+// MAX_RECORD_FIELDS - the only sizes OP_NEW/OP_DISPOSE ever request),
+// so a later OP_NEW of the SAME size reuses one instead of growing
+// vm_heap_count further. Each freelist is a classic intrusive linked
+// list: a free block's own first int slot stores the NEXT free block's
+// offset (or -1), needing no separate bookkeeping array.
+static int vm_heap_mem[MAX_HEAP_MEM];
+static int vm_heap_count;
+static int vm_heap_freelist[MAX_RECORD_FIELDS + 1]; // index 0 unused (no
+                                             // allocation is ever 0 ints)
+
 // A file variable's real runtime state (see TYPE_FILE in common.h) -
 // indexed by the SAME sym_table[] index the variable itself has (safe
 // only because a file variable is always global - one fixed index for
@@ -546,6 +562,9 @@ void run_vm(void) {
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
     memset(vm_frame_stack, 0, sizeof(vm_frame_stack));
     memset(vm_open_files, 0, sizeof(vm_open_files)); // handle=NULL, filename="", assigned=0 for every slot
+    memset(vm_heap_mem, 0, sizeof(vm_heap_mem));
+    vm_heap_count = 0;
+    for (int i = 0; i < MAX_RECORD_FIELDS + 1; i++) vm_heap_freelist[i] = -1;
     int sp = -1;
     int call_sp = -1;
     int fp = -1;         // -1 = no active frame
@@ -738,6 +757,88 @@ void run_vm(void) {
                 int offset = vm_record_array_offset(instr.arg, runtime_index, field_offset);
                 vm_check_char(val, sym_table[instr.arg].name);
                 vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_NEW: {
+                int elem_size = instr.arg;
+                int offset;
+                if (vm_heap_freelist[elem_size] != -1) {
+                    offset = vm_heap_freelist[elem_size];
+                    vm_heap_freelist[elem_size] = vm_heap_mem[offset]; // the freed block's own first slot stored the next-free link
+                } else {
+                    if (vm_heap_count + elem_size > MAX_HEAP_MEM) {
+                        fprintf(stderr, "VM Runtime Error: Heap storage exhausted (limit is %d total elements)\n", MAX_HEAP_MEM);
+                        fatal_abort();
+                    }
+                    offset = vm_heap_count;
+                    vm_heap_count += elem_size;
+                }
+                vm_push(&sp, offset);
+                break;
+            }
+
+            case OP_DISPOSE: {
+                int elem_size = instr.arg;
+                int ptr_val = vm_pop(&sp);
+                if (ptr_val < 0) {
+                    fprintf(stderr, "VM Runtime Error: Cannot dispose a nil pointer\n");
+                    fatal_abort();
+                }
+                if (ptr_val >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d in dispose\n", ptr_val);
+                    fatal_abort();
+                }
+                vm_heap_mem[ptr_val] = vm_heap_freelist[elem_size]; // link this block onto the front of the freelist
+                vm_heap_freelist[elem_size] = ptr_val;
+                break;
+            }
+
+            case OP_LOAD_HEAP_FIELD: {
+                int base = vm_pop(&sp);
+                if (base < 0) {
+                    fprintf(stderr, "VM Runtime Error: Nil pointer dereference\n");
+                    fatal_abort();
+                }
+                int offset = base + instr.arg;
+                if (offset < 0 || offset >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_heap_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_HEAP_FIELD: {
+                int val = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base < 0) {
+                    fprintf(stderr, "VM Runtime Error: Nil pointer dereference\n");
+                    fatal_abort();
+                }
+                int offset = base + instr.arg;
+                if (offset < 0 || offset >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_heap_mem[offset] = val;
+                break;
+            }
+
+            case OP_STORE_HEAP_FIELD_CHAR: {
+                int val = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base < 0) {
+                    fprintf(stderr, "VM Runtime Error: Nil pointer dereference\n");
+                    fatal_abort();
+                }
+                int offset = base + instr.arg;
+                if (offset < 0 || offset >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_check_char(val, "pointer dereference");
+                vm_heap_mem[offset] = val;
                 break;
             }
 

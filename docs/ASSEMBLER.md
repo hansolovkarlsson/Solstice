@@ -55,6 +55,8 @@ MNEMONIC [operand]                            ; one instruction per line
 | Variable name | `LOAD`, `STORE`, `READ` | `LOAD x` — must have a matching `.var` |
 | Array name | `LOAD_IDX`, `STORE_IDX`, `LOAD_IDX2D`, `STORE_IDX2D` | `LOAD_IDX nums` — must have a matching `.array`/`.array2d`; the runtime index (indices, for the 2D ops) come off the stack, not the operand |
 | Array-of-records name | `LOAD_ARRAY_RECORD_FIELD`, `STORE_ARRAY_RECORD_FIELD`, `STORE_ARRAY_RECORD_FIELD_CHAR` | `LOAD_ARRAY_RECORD_FIELD pts` — must have a matching `.arrayrec`; the runtime index and the field's offset within one element both come off the stack (index pushed first, then field offset) |
+| Integer literal (heap) | `NEW`, `DISPOSE` | `NEW 2` — element size (ints per instance), not a symbol reference |
+| Integer literal (field offset) | `LOAD_HEAP_FIELD`, `STORE_HEAP_FIELD`, `STORE_HEAP_FIELD_CHAR` | `LOAD_HEAP_FIELD 1` — the pointer VALUE being dereferenced always comes off the stack (every pointer shares one heap, so there's no "which array"-style name operand here) |
 | Label name | `JMP`, `JZ`, `CALL` | `JZ done`, `CALL sum` — may be a forward reference |
 | Quoted string | `PUSH_STR` | `PUSH_STR "hello"` — interned into the string pool; content is everything between the first and last `"` on the line, so an embedded `"` works without escaping |
 | *(none)* | everything else (including `RET`) | |

@@ -29,6 +29,33 @@
                            // and the VM's own fixed-size per-opcode index
                            // buffer (see vm.c's OP_LOAD_IDXND etc.) - a
                            // generous, arbitrary cap, not a language rule.
+#define MAX_ENUM_TYPES 20  // moved above DataType (rather than staying
+                           // next to EnumTypeDef, where it used to live)
+                           // because TYPE_POINTER_BASE's own definition
+                           // below needs it, to reserve exactly the enum
+                           // range's width and start immediately after it
+                           // with zero gap or overlap.
+#define MAX_ENUM_VALUES 32
+#define MAX_POINTER_TYPES 20 // how many DISTINCT 'type PFoo = ^Target;'
+                           // declarations a program can have - see
+                           // TYPE_POINTER_BASE below.
+#define MAX_RECORD_FIELDS 16 // moved here from parser.c (where
+                           // RecordTypeDef/RecordField still live) because
+                           // vm.c's heap allocator (see vm_heap_freelist[]
+                           // in vm.c) needs the same bound: a pointer's
+                           // target, if a record, needs one allocation
+                           // "size class" per possible field count.
+#define MAX_HEAP_MEM 4096  // total ints reserved across every live
+                           // new()'d block combined - the fixed-size pool
+                           // vm_heap_mem[] (vm.c) allocates from, sized
+                           // the same as MAX_ARRAY_MEM. Unlike every
+                           // other SolVM memory region, how much of this
+                           // is actually in use is a RUNTIME quantity
+                           // (vm_heap_count, a bump cursor mutated by
+                           // OP_NEW) rather than something fully known at
+                           // compile time - new()/dispose() are this
+                           // VM's first and only source of genuinely
+                           // dynamic allocation.
 
 typedef enum {
     TOKEN_PROGRAM, TOKEN_VAR, TOKEN_BEGIN, TOKEN_END,
@@ -100,6 +127,11 @@ typedef enum {
                   // file for appending - is a later, non-ISO-7185 Pascal
                   // extension, deliberately out of scope for now; see
                   // docs/ROADMAP.md.)
+    TOKEN_CARET,  // '^' - a pointer type ('type PFoo = ^Target;') or a
+                  // dereference ('p^', 'p^.field').
+    TOKEN_NEW,    // the 'new' builtin procedure ('new(p)').
+    TOKEN_DISPOSE, // the 'dispose' builtin procedure ('dispose(p)').
+    TOKEN_NIL,    // the 'nil' literal.
     TOKEN_EOF
 } TokenType;
 
@@ -159,7 +191,18 @@ typedef enum {
                 // omitted, exactly as before this feature existed) - see
                 // NODE_READLN/NODE_LOCAL_READLN/NODE_WRITELN below, and
                 // NODE_FILE_OP for assign/reset/rewrite/close themselves.
-    TYPE_ENUM_BASE // Not a real type by itself - a specific enumerated
+    TYPE_NIL,   // The type of the literal 'nil' - never a variable's own
+                // declared type (there's no 'var x: nil;'), only ever an
+                // EXPRESSION's type: assignment/comparison-compatible
+                // with any pointer type (see TYPE_POINTER_BASE below),
+                // checked specially wherever pointer compatibility is
+                // checked (NODE_ASSIGN, NODE_BINARY_OP's '='/'<>') rather
+                // than through the ordinary exact-DataType-match rule
+                // every other type uses. Runtime representation: the
+                // literal integer -1 (see TYPE_POINTER_BASE for why -1
+                // specifically), pushed exactly like any other NODE_NUMBER
+                // literal - no new opcode needed for 'nil' itself.
+    TYPE_ENUM_BASE, // Not a real type by itself - a specific enumerated
                 // type ('type TColor = (Red, Green, Blue);') is encoded
                 // as TYPE_ENUM_BASE + its enum_types[] index, so DataType
                 // stays a single plain int field everywhere (ASTNode.
@@ -170,12 +213,52 @@ typedef enum {
                 // ordinal (0, 1, 2, ...) - a plain int, identical to
                 // TYPE_INTEGER as far as vm_vars[]/vm.c/the .bin format
                 // are concerned; only the compiler frontend (parser.c/
-                // type_checker.c/codegen.c) ever looks at values >=
-                // TYPE_ENUM_BASE. See EnumTypeDef below.
+                // type_checker.c/codegen.c) ever looks at values in this
+                // range. Occupies TYPE_ENUM_BASE..TYPE_ENUM_BASE+
+                // MAX_ENUM_TYPES-1 - every "is this an enum type" check
+                // elsewhere in this codebase MUST be a bounded range
+                // check (see is_enum_type()-style helpers in parser.c/
+                // type_checker.c/etc.), never a bare '>= TYPE_ENUM_BASE',
+                // now that TYPE_POINTER_BASE's own range immediately
+                // follows this one - a bare '>=' would wrongly also
+                // match every pointer type. (The one exception: desole.c
+                // never distinguishes enum from pointer in the first
+                // place - both degrade to printing as plain "integer",
+                // their actual shared runtime representation - so its
+                // own '>= TYPE_ENUM_BASE' check is deliberately still
+                // unbounded.)
+    TYPE_POINTER_BASE = TYPE_ENUM_BASE + MAX_ENUM_TYPES, // Also not a
+                // real type by itself - a specific pointer type ('type
+                // PNode = ^TNode;') is encoded as TYPE_POINTER_BASE + its
+                // pointer_types[] index (parser.c-local - see
+                // PointerTypeDef there), mirroring TYPE_ENUM_BASE's own
+                // encoding exactly, and for the same reason: DataType
+                // stays one plain int field everywhere. Explicitly placed
+                // MAX_ENUM_TYPES past TYPE_ENUM_BASE (rather than letting
+                // the enum auto-increment to TYPE_ENUM_BASE+1) so the two
+                // ranges never overlap, however many enum types a program
+                // actually declares. A pointer value's runtime
+                // representation is a plain int: -1 means nil (see
+                // TYPE_NIL above), and any value >= 0 is a byte-ish
+                // OFFSET into vm.c's vm_heap_mem[] (an index, not a
+                // pointer in the C sense - this VM has no notion of
+                // machine addresses) - identical in spirit to how an enum
+                // value's representation is just its raw ordinal. Only
+                // the compiler frontend (parser.c/type_checker.c/
+                // codegen.c) ever looks at a value in this range;
+                // vm.c/solas/desole just see "some int", same as an enum.
+                // pointer_types[] stays parser.c-local (unlike
+                // enum_types[], which common.h/codegen.c DO need, to
+                // print an enum value's name) because nothing outside
+                // parser.c ever needs to look a pointer type up by this
+                // index - codegen only ever needs a pointer TYPE's target
+                // element size and, for a record target, its field
+                // offsets, and parser.c already resolves and bakes both
+                // directly into the AST as compile-time literals (see
+                // NODE_HEAP_FIELD_ACCESS/ASSIGN/ALLOC below) before
+                // codegen ever runs, exactly like NODE_ARRAY_RECORD_
+                // FIELD_ACCESS/ASSIGN already do for array-of-records.
 } DataType;
-
-#define MAX_ENUM_TYPES 20
-#define MAX_ENUM_VALUES 32
 
 // One declared enumerated type ('type TColor = (Red, Green, Blue);') -
 // see the TYPE_ENUM_BASE comment above for how a specific enum type is
@@ -748,6 +831,53 @@ typedef enum {
                   // which reads sym_table[instr.arg].type directly, one
                   // array-of-records Symbol has no single element type
                   // to dispatch on at runtime).
+
+    // Pointers ('type PFoo = ^Target;', 'new'/'dispose', 'p^'/'p^.field') -
+    // this VM's first and only source of genuinely dynamic allocation
+    // (vm_heap_mem[]/vm_heap_count/vm_heap_freelist[] in vm.c). Unlike
+    // OP_LOAD_ARRAY_RECORD_FIELD's family, there's no "which array" -
+    // every pointer, regardless of declared type, allocates from the
+    // SAME one shared heap, so a dereference's runtime base (which block)
+    // always comes off the stack, never `arg` - freeing `arg` up to carry
+    // the field offset directly (a compile-time constant) instead of
+    // needing its own stack push the way the array-of-records family
+    // does.
+    OP_NEW,       // arg = element size (ints per instance: 1 for a scalar
+                  // target, or the target record type's field_count).
+                  // First tries vm_heap_freelist[arg] (a size-bucketed
+                  // freelist - see OP_DISPOSE); if non-empty, pops and
+                  // reuses that block. Otherwise bump-allocates `arg`
+                  // fresh ints from vm_heap_mem (aborting - a Runtime
+                  // Error, not UB - if that would exceed MAX_HEAP_MEM).
+                  // Either way, pushes the resulting block's offset.
+    OP_DISPOSE,   // arg = element size (same meaning as OP_NEW's). Pops a
+                  // pointer value (a Runtime Error, not silently ignored,
+                  // if it's nil or otherwise not a currently-valid heap
+                  // offset); links it onto the front of
+                  // vm_heap_freelist[arg] for a later same-size OP_NEW to
+                  // reuse (the block's own first int slot stores the
+                  // previous freelist head - a classic intrusive
+                  // freelist, needing no separate bookkeeping array).
+                  // Does NOT push anything back, and does NOT touch
+                  // whatever variable held this pointer value - matching
+                  // standard Pascal, where a disposed pointer's value is
+                  // left undefined, not implicitly niled (see
+                  // NODE_HEAP_DISPOSE).
+    OP_LOAD_HEAP_FIELD, // arg = field offset (0 for a scalar pointer
+                  // target's whole '^'). Pops a pointer value (a Runtime
+                  // Error - "Nil pointer dereference" - if it's nil);
+                  // pushes vm_heap_mem[value + arg].
+    OP_STORE_HEAP_FIELD, // Same addressing as OP_LOAD_HEAP_FIELD. Pops a
+                  // value, then a pointer value (nil-checked the same
+                  // way); stores into vm_heap_mem[pointer value + arg].
+    OP_STORE_HEAP_FIELD_CHAR, // Same as OP_STORE_HEAP_FIELD, but
+                  // additionally vm_check_char()s the value first -
+                  // chosen by codegen instead of the plain variant
+                  // whenever the field being written is char-typed (same
+                  // reasoning as OP_STORE_ARRAY_RECORD_FIELD_CHAR - one
+                  // shared heap has no single element type to dispatch a
+                  // char-check on at runtime the way OP_STORE does via
+                  // sym_table[]).
 } Opcode;
 
 typedef struct {
@@ -1122,7 +1252,7 @@ typedef enum {
                        // NODE_GOTO placeholders recorded against this id
                        // beforehand (a forward goto - one appearing
                        // earlier in the source than the label it targets).
-    NODE_GOTO          // 'goto <N>;' - data.num_value = the target
+    NODE_GOTO,         // 'goto <N>;' - data.num_value = the target
                        // label's id, already validated at parse time
                        // against the enclosing block's 'label' section
                        // (parser.c's declared_labels[]). Compiles to a
@@ -1138,6 +1268,71 @@ typedef enum {
                        // the start of every block's own codegen (see
                        // generate_block()), so a goto can never - even
                        // accidentally - jump across a procedure boundary.
+    NODE_HEAP_FIELD_ACCESS, // 'p^' or 'p^.field' as an expression - p
+                       // (or a longer chain, e.g. 'p^.next^.data') is
+                       // left, an already-built expression evaluating to
+                       // a heap offset (or nil - see TYPE_NIL). right =
+                       // a NODE_NUMBER literal holding the field's
+                       // compile-time-constant offset within the pointed-
+                       // to block (0 for a scalar target's whole '^',
+                       // otherwise the target record type's field index -
+                       // resolved at parse time via parser.c's
+                       // pointer_types[]/record_types[], exactly like
+                       // NODE_ARRAY_RECORD_FIELD_ACCESS's own ->right).
+                       // expression_type = the field's (or scalar
+                       // target's) declared type. A multi-level chain
+                       // ('p^.next^.data') is built as nested
+                       // NODE_HEAP_FIELD_ACCESS nodes, each one's ->left
+                       // being the previous step's whole node.
+    NODE_HEAP_FIELD_ASSIGN, // 'p^ := val' or 'p^.field := val' - the
+                       // write counterpart. left = the base pointer
+                       // expression (as above - the LAST '^' step of a
+                       // longer chain; any EARLIER steps are already
+                       // baked into left as nested NODE_HEAP_FIELD_ACCESS
+                       // reads, same principle as NODE_ARRAY_RECORD_
+                       // FIELD_ASSIGN's index expression). right = the
+                       // value expression. extra = a NODE_NUMBER literal
+                       // holding the field offset (same convention as the
+                       // access node's ->right). expression_type = the
+                       // field's/target's declared type - used by the
+                       // type checker AND by codegen, to choose
+                       // OP_STORE_HEAP_FIELD_CHAR over the plain variant
+                       // when the field being written is char-typed
+                       // (same reasoning as NODE_ARRAY_RECORD_FIELD_
+                       // ASSIGN - one shared heap has no single element
+                       // type for the VM to dispatch a char-check on at
+                       // runtime the way OP_STORE does via sym_table[]).
+    NODE_HEAP_ALLOC,   // 'new(p)''s VALUE side only - p itself is
+                       // whatever ordinary assignment target p already
+                       // resolves to (a plain global/local, a with-field,
+                       // a record field, or a static local - NOT a heap-
+                       // dereferenced target like 'p^.next', a deliberate
+                       // scope cut; see docs/LANGUAGE.md). 'new(p);'
+                       // desugars at parse time into 'p := <this node>;'
+                       // straight through whichever existing assignment
+                       // node (NODE_ASSIGN/NODE_LOCAL_ASSIGN/etc.) p's own
+                       // resolution already builds - this node carries no
+                       // children at all, just data.num_value = the
+                       // target pointer type's element size (a compile-
+                       // time constant: 1 for a scalar target, or the
+                       // target record type's field_count), which codegen
+                       // passes straight through as OP_NEW's arg.
+    NODE_HEAP_DISPOSE  // 'dispose(p);' - unlike 'new', this only ever
+                       // READS p (an ordinary expression - p can be
+                       // anything pointer-typed, including a heap-
+                       // dereferenced chain like 'p^.next', since no
+                       // write-back into p happens - see docs/LANGUAGE.md
+                       // for why this compiler deliberately does NOT nil
+                       // p afterward, matching standard Pascal's own
+                       // "the pointer's value is undefined after dispose"
+                       // semantics rather than inventing a safer
+                       // non-standard behavior). left = the pointer
+                       // expression being freed. data.num_value = the
+                       // pointer type's element size (same meaning as
+                       // NODE_HEAP_ALLOC's), passed straight through as
+                       // OP_DISPOSE's arg - the freelist is bucketed by
+                       // this size, so a later new() of the SAME element
+                       // size can reuse this exact block.
 } NodeType;
 
 typedef struct ASTNode {

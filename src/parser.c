@@ -177,7 +177,9 @@ static int find_const(const char *name) {
 // would need a real rethink (an addressing model, like arrays use) if
 // ever added.
 #define MAX_RECORD_TYPES 20
-#define MAX_RECORD_FIELDS 16
+// MAX_RECORD_FIELDS now lives in common.h - vm.c's heap allocator (see
+// vm_heap_freelist[]) needs the same bound, since a pointer's target, if
+// a record, needs one allocation "size class" per possible field count.
 #define MAX_RECORD_VARS 50
 
 typedef struct {
@@ -256,6 +258,60 @@ static int record_array_count = 0;
 static int find_record_array_type(int sym_idx) {
     for (int i = 0; i < record_array_count; i++) {
         if (record_arrays[i].sym_idx == sym_idx) return record_arrays[i].record_type_idx;
+    }
+    return -1;
+}
+
+// A specific pointer type is encoded as TYPE_POINTER_BASE + its
+// pointer_types[] index (see the comment in common.h) - a BOUNDED range
+// check, exactly like type_checker.c's own copy of this same helper
+// (duplicated per this project's established "small helpers live in
+// each file that needs them" convention rather than sharing one via a
+// header - see e.g. bits_to_float in vm.c/optimizer.c).
+static int is_pointer_type(DataType t) {
+    return t >= TYPE_POINTER_BASE && t < TYPE_POINTER_BASE + MAX_POINTER_TYPES;
+}
+
+// One declared pointer type ('type PFoo = ^Target;'). target_type is any
+// DataType parse_scalar_type() can already resolve (a scalar, an alias,
+// an enum, a subrange) - OR the pointer targets a RECORD type instead,
+// which parse_scalar_type() has no notion of at all, so that case is
+// tracked separately (target_is_record/target_record_type_idx) rather
+// than trying to force a record type into a DataType slot.
+//
+// A record target specifically may be a FORWARD reference - 'PNode =
+// ^TNode;' declared before 'TNode' itself, the classic self-referential
+// linked-list/tree pattern standard Pascal requires - so is_pending
+// stays 1 (with pending_target_name/pending_line recording what to
+// resolve and where to blame an error) until resolve_pending_pointer_
+// types() runs at the end of the ENCLOSING 'type' section (see
+// parse_type_section()) - by which point every type name declared in
+// that section, in any order, is known. A pointer targeting a scalar/
+// alias/enum/subrange is never deferred this way: parse_scalar_type()
+// already requires those to be declared before use, exactly like every
+// other reference to one, so there's nothing to defer.
+#define MAX_POINTER_DECLS MAX_POINTER_TYPES
+typedef struct {
+    char name[MAX_NAME];        // the pointer TYPE's own name, e.g. "PNode"
+    int target_is_record;
+    int target_record_type_idx; // only meaningful if target_is_record
+    DataType target_type;       // only meaningful if !target_is_record
+    int target_elem_size;       // ints per allocated instance: 1 for a
+                                 // scalar target, else the target record
+                                 // type's field_count - resolved together
+                                 // with target_is_record/target_type
+                                 // (immediately, or once is_pending
+                                 // clears)
+    int is_pending;
+    char pending_target_name[MAX_NAME];
+    int pending_line;
+} PointerTypeDef;
+static PointerTypeDef pointer_types[MAX_POINTER_DECLS];
+static int pointer_type_count = 0;
+
+static int find_pointer_type(const char *name) {
+    for (int i = 0; i < pointer_type_count; i++) {
+        if (strcmp(pointer_types[i].name, name) == 0) return i;
     }
     return -1;
 }
@@ -1447,8 +1503,13 @@ static DataType parse_scalar_type(void) {
             match(TOKEN_IDENTIFIER);
             return TYPE_INTEGER;
         }
+        int pointer_type_idx = find_pointer_type(token.text);
+        if (pointer_type_idx != -1) {
+            match(TOKEN_IDENTIFIER);
+            return (DataType)(TYPE_POINTER_BASE + pointer_type_idx);
+        }
     }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', 'set of ...', a declared type alias, an enumerated type, or a subrange type)");
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', 'set of ...', a declared type alias, an enumerated type, a subrange type, or a pointer type)");
     return TYPE_UNKNOWN;
 }
 
@@ -1979,6 +2040,114 @@ static ASTNode *parse_call_arguments(int proc_idx) {
     return arg_head;
 }
 
+// One resolved '^' step's outcome - a record field's offset/type/subrange
+// info (0/scalar-target-type/not-subrange for a scalar pointer target's
+// bare '^', which behaves exactly like a 1-field, unnamed record for
+// this purpose).
+typedef struct {
+    int field_offset;
+    DataType result_type;
+    int is_subrange;
+    int subrange_lower;
+    int subrange_upper;
+} HeapDerefStep;
+
+// Resolves ONE '^' step already matched (the caller has confirmed
+// is_pointer_type(base_type)) - '.field' if the target is a record,
+// nothing more if it's a scalar. Shared by parse_heap_deref_read()/
+// parse_heap_deref_write() below - both walk an arbitrary-depth '^'
+// chain ('p^.next^.next^.data'), differing only in whether the FINAL
+// step becomes a read (NODE_HEAP_FIELD_ACCESS) or is left for the caller
+// to build into a write (NODE_HEAP_FIELD_ASSIGN).
+static HeapDerefStep resolve_heap_deref_step(DataType base_type) {
+    HeapDerefStep step;
+    PointerTypeDef *pt = &pointer_types[base_type - TYPE_POINTER_BASE];
+    if (pt->target_is_record) {
+        if (token.type != TOKEN_PERIOD) {
+            compile_error(token.line, "'...^' is a pointer to a record - access a field, e.g. '...^.field'");
+        }
+        match(TOKEN_PERIOD);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a field name after '^.'");
+        }
+        int field_idx = find_record_field(pt->target_record_type_idx, token.text);
+        if (field_idx == -1) {
+            compile_error(token.line, "'%s' is not a field of '%s'", token.text, record_types[pt->target_record_type_idx].name);
+        }
+        match(TOKEN_IDENTIFIER);
+        RecordField *f = &record_types[pt->target_record_type_idx].fields[field_idx];
+        step.field_offset = field_idx;
+        step.result_type = f->type;
+        step.is_subrange = f->is_subrange;
+        step.subrange_lower = f->subrange_lower;
+        step.subrange_upper = f->subrange_upper;
+    } else {
+        step.field_offset = 0;
+        step.result_type = pt->target_type;
+        step.is_subrange = 0;
+        step.subrange_lower = 0;
+        step.subrange_upper = 0;
+    }
+    return step;
+}
+
+static ASTNode *make_heap_field_access(ASTNode *base, HeapDerefStep step, int line) {
+    ASTNode *node = create_node(NODE_HEAP_FIELD_ACCESS);
+    node->line = line;
+    node->left = base;
+    ASTNode *offset_lit = create_node(NODE_NUMBER);
+    offset_lit->data.num_value = step.field_offset;
+    offset_lit->expression_type = TYPE_INTEGER;
+    node->right = offset_lit;
+    node->expression_type = step.result_type;
+    return node;
+}
+
+// Parses a '^' dereference chain following an already-built pointer-
+// typed expression 'base' ('p^', 'p^.field', or a longer chain like
+// 'p^.next^.data') for use as an r-value - the caller has already
+// confirmed token.type == TOKEN_CARET. Loops so an arbitrary-depth chain
+// is handled uniformly: each '^' step wraps the previous one in a
+// NODE_HEAP_FIELD_ACCESS, which becomes 'base' for the next '^' if the
+// field just read is itself pointer-typed and another '^' follows -
+// re-validated via is_pointer_type() on every iteration (not just the
+// first), so 'x^^' where x^ isn't itself a pointer is a clean Compile
+// Error, not an out-of-bounds pointer_types[] read.
+static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
+    while (token.type == TOKEN_CARET) {
+        if (!is_pointer_type(base->expression_type)) {
+            compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
+        }
+        match(TOKEN_CARET);
+        HeapDerefStep step = resolve_heap_deref_step(base->expression_type);
+        base = make_heap_field_access(base, step, line);
+    }
+    return base;
+}
+
+// Same chain-walking as parse_heap_deref_read() above, but stops right
+// before consuming the FINAL '^' - a write needs to build a
+// NODE_HEAP_FIELD_ASSIGN for that last step (base + field_offset + value
+// expression), not another NODE_HEAP_FIELD_ACCESS. Assumes the caller has
+// already confirmed token.type == TOKEN_CARET. Returns the base
+// expression the LAST step reads through, and that step's own
+// HeapDerefStep (field offset/type/subrange info) via *out_step.
+static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *out_step) {
+    for (;;) {
+        if (!is_pointer_type(base->expression_type)) {
+            compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
+        }
+        match(TOKEN_CARET);
+        HeapDerefStep step = resolve_heap_deref_step(base->expression_type);
+        if (token.type == TOKEN_CARET) {
+            base = make_heap_field_access(base, step, line);
+            continue;
+        }
+        *out_step = step;
+        return base;
+    }
+}
+
 // Given an already-resolved GLOBAL symbol index, parses whatever follows
 // (array indexing, 2D array indexing, string indexing) and builds the
 // appropriate expression node. Shared between plain global-variable
@@ -2075,6 +2244,9 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
     node->line = line;
     node->data.var_idx = idx;
     node->expression_type = sym_table[idx].type;
+    if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
+        return parse_heap_deref_read(node, line);
+    }
     return node;
 }
 
@@ -2165,7 +2337,7 @@ static ASTNode *factor(void) {
         match(TOKEN_LPAREN);
         ASTNode *arg = expression();
         match(TOKEN_RPAREN);
-        if (arg->expression_type >= TYPE_ENUM_BASE) {
+        if (arg->expression_type >= TYPE_ENUM_BASE && arg->expression_type < TYPE_POINTER_BASE) {
             // An enum value's ordinal IS its runtime representation
             // already - ord() on an enum is a compile-time no-op,
             // unlike ord() on a char/string (which needs the OP_ORD
@@ -2448,6 +2620,20 @@ static ASTNode *factor(void) {
         node->expression_type = TYPE_BOOLEAN;
         next_token();
         return node;
+    } else if (token.type == TOKEN_NIL) {
+        // 'nil' - a plain NODE_NUMBER literal, exactly like an enum value
+        // name already is (see TOKEN_IDENTIFIER's enum-value branch
+        // below) - its runtime representation (the int -1) IS its value,
+        // no dedicated opcode needed. expression_type = TYPE_NIL, not any
+        // specific pointer type - see TYPE_NIL in common.h for how
+        // assignment/comparison compatibility with a REAL pointer type is
+        // checked specially in type_checker.c, rather than through the
+        // ordinary exact-DataType-match rule every other type uses.
+        ASTNode *node = create_node(NODE_NUMBER);
+        node->data.num_value = -1;
+        node->expression_type = TYPE_NIL;
+        match(TOKEN_NIL);
+        return node;
     } else if (token.type == TOKEN_STRING) {
         ASTNode *node = create_node(NODE_STRING);
         node->data.var_idx = intern_string(token.string_value); // pool index
@@ -2561,6 +2747,9 @@ static ASTNode *factor(void) {
                 node->line = line;
                 node->data.var_idx = local_idx;
                 node->expression_type = current_locals[local_idx].type;
+                if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
+                    return parse_heap_deref_read(node, line);
+                }
                 return node;
             }
             if (current_locals[local_idx].is_static) {
@@ -2653,6 +2842,9 @@ static ASTNode *factor(void) {
             node->line = line;
             node->data.var_idx = local_idx;
             node->expression_type = current_locals[local_idx].type;
+            if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
+                return parse_heap_deref_read(node, line);
+            }
             return node;
         }
 
@@ -2857,11 +3049,65 @@ static void parse_type_section(void) {
         char type_name[MAX_NAME];
         strcpy(type_name, token.text);
         if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1
-            || find_enum_type(type_name) != -1 || find_subrange_type(type_name) != -1) {
+            || find_enum_type(type_name) != -1 || find_subrange_type(type_name) != -1
+            || find_pointer_type(type_name) != -1) {
             compile_error(line, "Duplicate type declaration '%s'", type_name);
         }
         match(TOKEN_IDENTIFIER);
         match(TOKEN_EQ);
+
+        if (token.type == TOKEN_CARET) {
+            // A pointer type ('type PFoo = ^Target;'). Target can be:
+            //  - a record type name, possibly not declared YET (a
+            //    forward reference - the classic self-referential
+            //    linked-list/tree pattern, 'PNode = ^TNode; TNode =
+            //    record ... next: PNode; end;') - deferred to
+            //    resolve_pending_pointer_types() below, once every type
+            //    name in this section is known;
+            //  - a record type name that's ALREADY declared - resolved
+            //    immediately;
+            //  - anything else parse_scalar_type() already knows how to
+            //    resolve (a built-in keyword, an alias, an enum, a
+            //    subrange, or even an earlier pointer type) - also
+            //    resolved immediately, since none of those can be
+            //    forward-referenced anyway (parse_scalar_type() already
+            //    requires them declared first, exactly like every other
+            //    reference to one).
+            match(TOKEN_CARET);
+            if (pointer_type_count >= MAX_POINTER_TYPES) {
+                compile_error(line, "Too many pointer type declarations (limit is %d)", MAX_POINTER_TYPES);
+            }
+            PointerTypeDef *pt = &pointer_types[pointer_type_count];
+            strcpy(pt->name, type_name);
+            if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+                int record_idx = find_record_type(token.text);
+                match(TOKEN_IDENTIFIER);
+                pt->target_is_record = 1;
+                pt->target_record_type_idx = record_idx;
+                pt->target_elem_size = record_types[record_idx].field_count;
+                pt->is_pending = 0;
+            } else if (token.type == TOKEN_IDENTIFIER
+                       && find_type_alias(token.text) == -1 && find_enum_type(token.text) == -1
+                       && find_subrange_type(token.text) == -1 && find_pointer_type(token.text) == -1) {
+                // Not found ANYWHERE yet - a forward reference to a
+                // record type this SAME 'type' section will declare
+                // later (or a genuine typo/unknown name, which won't be
+                // distinguishable from a legitimate forward reference
+                // until the whole section finishes parsing).
+                strcpy(pt->pending_target_name, token.text);
+                pt->pending_line = token.line;
+                pt->is_pending = 1;
+                match(TOKEN_IDENTIFIER);
+            } else {
+                pt->target_is_record = 0;
+                pt->target_type = parse_scalar_type();
+                pt->target_elem_size = 1;
+                pt->is_pending = 0;
+            }
+            match(TOKEN_SEMI);
+            pointer_type_count++;
+            continue;
+        }
 
         if (token.type == TOKEN_LPAREN) {
             // An enumerated type: 'type TColor = (Red, Green, Blue);'.
@@ -3038,6 +3284,22 @@ static void parse_type_section(void) {
         match(TOKEN_SEMI);
         record_type_count++;
     }
+
+    // Resolve every pointer type left pending (forward-referencing a
+    // record type by name - see the TOKEN_CARET branch above) now that
+    // every type this section declares, in any order, is known.
+    for (int i = 0; i < pointer_type_count; i++) {
+        PointerTypeDef *pt = &pointer_types[i];
+        if (!pt->is_pending) continue;
+        int record_idx = find_record_type(pt->pending_target_name);
+        if (record_idx == -1) {
+            compile_error(pt->pending_line, "Pointer type '%s' targets undeclared type '%s'", pt->name, pt->pending_target_name);
+        }
+        pt->target_is_record = 1;
+        pt->target_record_type_idx = record_idx;
+        pt->target_elem_size = record_types[record_idx].field_count;
+        pt->is_pending = 0;
+    }
 }
 
 ASTNode *parse_ast(const char *source, const char *filename) {
@@ -3055,6 +3317,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     record_var_count = 0;
     local_record_var_count = 0;
     record_array_count = 0;
+    pointer_type_count = 0;
     const_def_count = 0;
     type_alias_count = 0;
     enum_type_count = 0;
@@ -3790,8 +4053,11 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[with_field_idx].is_array) {
                 compile_error(token.line, "readln into an array is not supported");
             }
-            if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE) {
+            if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE && sym_table[with_field_idx].type < TYPE_POINTER_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            if (is_pointer_type(sym_table[with_field_idx].type)) {
+                compile_error(token.line, "readln into a pointer is not supported");
             }
             if (sym_table[with_field_idx].type == TYPE_SET) {
                 compile_error(token.line, "readln into a set is not supported");
@@ -3825,8 +4091,11 @@ static ASTNode *parse_read_target(void) {
             if (rv_is_local) {
                 // Never an array (add_local_record() rejects an array
                 // field) - only the enum check applies.
-                if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE) {
+                if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE && current_locals[resolved_idx].type < TYPE_POINTER_BASE) {
                     compile_error(token.line, "readln into an enumerated value is not supported");
+                }
+                if (is_pointer_type(current_locals[resolved_idx].type)) {
+                    compile_error(token.line, "readln into a pointer is not supported");
                 }
                 if (current_locals[resolved_idx].type == TYPE_SET) {
                     compile_error(token.line, "readln into a set is not supported");
@@ -3839,8 +4108,11 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[resolved_idx].is_array) {
                 compile_error(token.line, "readln into an array is not supported");
             }
-            if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE) {
+            if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE && sym_table[resolved_idx].type < TYPE_POINTER_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            if (is_pointer_type(sym_table[resolved_idx].type)) {
+                compile_error(token.line, "readln into a pointer is not supported");
             }
             if (sym_table[resolved_idx].type == TYPE_SET) {
                 compile_error(token.line, "readln into a set is not supported");
@@ -3859,8 +4131,11 @@ static ASTNode *parse_read_target(void) {
         if (current_locals[local_idx].is_static) {
             match(TOKEN_IDENTIFIER);
             int static_idx = current_locals[local_idx].static_sym_idx;
-            if (sym_table[static_idx].type >= TYPE_ENUM_BASE) {
+            if (sym_table[static_idx].type >= TYPE_ENUM_BASE && sym_table[static_idx].type < TYPE_POINTER_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
+            }
+            if (is_pointer_type(sym_table[static_idx].type)) {
+                compile_error(token.line, "readln into a pointer is not supported");
             }
             if (sym_table[static_idx].type == TYPE_SET) {
                 compile_error(token.line, "readln into a set is not supported");
@@ -3872,8 +4147,11 @@ static ASTNode *parse_read_target(void) {
         if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
             compile_error(token.line, "readln into an array is not supported");
         }
-        if (current_locals[local_idx].type >= TYPE_ENUM_BASE) {
+        if (current_locals[local_idx].type >= TYPE_ENUM_BASE && current_locals[local_idx].type < TYPE_POINTER_BASE) {
             compile_error(token.line, "readln into an enumerated value is not supported");
+        }
+        if (is_pointer_type(current_locals[local_idx].type)) {
+            compile_error(token.line, "readln into a pointer is not supported");
         }
         if (current_locals[local_idx].type == TYPE_SET) {
             compile_error(token.line, "readln into a set is not supported");
@@ -3886,8 +4164,11 @@ static ASTNode *parse_read_target(void) {
     }
 
     int readln_var_idx = find_var(token.text);
-    if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE) {
+    if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE && sym_table[readln_var_idx].type < TYPE_POINTER_BASE) {
         compile_error(token.line, "readln into an enumerated value is not supported");
+    }
+    if (is_pointer_type(sym_table[readln_var_idx].type)) {
+        compile_error(token.line, "readln into a pointer is not supported");
     }
     if (sym_table[readln_var_idx].type == TYPE_SET) {
         compile_error(token.line, "readln into a set is not supported");
@@ -4023,6 +4304,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE ||
+           t == TOKEN_NEW || t == TOKEN_DISPOSE ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -4194,6 +4476,176 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     }
     write_node->left = wrap_range_check(value_node, target_is_subrange, target_subrange_lower, target_subrange_upper);
     return write_node;
+}
+
+// 'new(X)' - X resolves exactly the same variety parse_inc_dec() above
+// already resolves for a plain integer target (a with-field, a record
+// field - global or local, a static local, or a plain local/parameter/
+// global), OPTIONALLY followed by a '^' dereference chain ('new(head^.
+// next);' - the pointer field of whatever record that chain reaches).
+// Desugars at parse time into 'X := <fresh heap allocation>;' either
+// way - straight through whichever assignment node kind X's own
+// resolution already builds (NODE_ASSIGN/NODE_LOCAL_ASSIGN/NODE_VAR_
+// PARAM_ASSIGN for the plain case, NODE_HEAP_FIELD_ASSIGN for the '^'
+// case, via parse_heap_deref_write() - the same helper ordinary 'p^.
+// field := value;' assignment statements already use) - reusing 100% of
+// existing assignment infrastructure, the same way inc/dec above reuses
+// it for '+'/'-'.
+static ASTNode *parse_new_statement(void) {
+    match(TOKEN_NEW);
+    match(TOKEN_LPAREN);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'new' expects a pointer variable");
+    }
+    char name[MAX_NAME];
+    int line = token.line;
+    strcpy(name, token.text);
+    match(TOKEN_IDENTIFIER);
+
+    int local_idx = -1;
+    int is_local = 0;
+    int is_var_param = 0;
+    int global_idx = -1;
+    DataType target_type;
+
+    int with_field_idx = find_with_field(name);
+    int rv_is_local = 0, rv_record_type_idx = 0;
+    const int *rv_field_idx_arr = NULL;
+    int rv_found = (with_field_idx == -1) && find_any_record_var(name, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
+    int static_local_idx = (with_field_idx == -1 && !rv_found) ? find_local(name) : -1;
+    if (static_local_idx != -1 && !current_locals[static_local_idx].is_static) static_local_idx = -1;
+    if (with_field_idx != -1) {
+        global_idx = with_field_idx;
+        target_type = sym_table[global_idx].type;
+    } else if (rv_found) {
+        if (token.type != TOKEN_PERIOD) {
+            compile_error(token.line, "'%s' is a record - 'new' expects a field, e.g. '%s.field'", name, name);
+        }
+        match(TOKEN_PERIOD);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a field name after '%s.'", name);
+        }
+        int field_idx = find_record_field(rv_record_type_idx, token.text);
+        if (field_idx == -1) {
+            compile_error(token.line, "'%s' is not a field of '%s'", token.text, name);
+        }
+        int resolved_idx = rv_field_idx_arr[field_idx];
+        match(TOKEN_IDENTIFIER);
+        if (rv_is_local) {
+            is_local = 1;
+            local_idx = resolved_idx;
+            target_type = current_locals[local_idx].type;
+        } else {
+            global_idx = resolved_idx;
+            target_type = sym_table[global_idx].type;
+        }
+    } else if (static_local_idx != -1) {
+        global_idx = current_locals[static_local_idx].static_sym_idx;
+        target_type = sym_table[global_idx].type;
+    } else {
+        local_idx = find_local(name);
+        is_local = (local_idx != -1 && !current_locals[local_idx].is_array && !current_locals[local_idx].is_array_ref);
+        if (local_idx != -1 && !is_local) {
+            compile_error(line, "'new' expects a plain pointer variable, not an array");
+        }
+        if (is_local) {
+            target_type = current_locals[local_idx].type;
+        } else {
+            global_idx = find_var(name);
+            target_type = sym_table[global_idx].type;
+        }
+    }
+    if (!is_pointer_type(target_type)) {
+        compile_error(line, "'new' expects a pointer variable");
+    }
+    if (is_local && current_locals[local_idx].is_var_param) {
+        is_var_param = 1;
+    }
+
+    if (token.type == TOKEN_CARET) {
+        // 'new(head^.next);' - X itself is a plain pointer variable, but
+        // a '^' chain follows: allocate into whatever field that chain
+        // finally reaches, not into X itself. Build a READ node for X
+        // (parse_heap_deref_write() walks the chain by reading its way
+        // down to the last step - see its own comment), then let it
+        // resolve the rest exactly like an ordinary 'X^...^.field :=
+        // value;' assignment statement would.
+        ASTNode *base;
+        if (is_var_param) {
+            base = create_node(NODE_VAR_PARAM_READ);
+            base->data.var_idx = local_idx;
+            base->expression_type = target_type;
+        } else if (is_local) {
+            base = create_node(NODE_LOCAL_VAR);
+            base->data.var_idx = local_idx;
+            base->expression_type = target_type;
+        } else {
+            base = create_node(NODE_VARIABLE);
+            base->data.var_idx = global_idx;
+            base->expression_type = target_type;
+        }
+        HeapDerefStep step;
+        base = parse_heap_deref_write(base, line, &step);
+        if (!is_pointer_type(step.result_type)) {
+            compile_error(line, "'new' expects a pointer target");
+        }
+        match(TOKEN_RPAREN);
+        ASTNode *value_node = create_node(NODE_HEAP_ALLOC);
+        value_node->expression_type = step.result_type;
+        value_node->data.num_value = pointer_types[step.result_type - TYPE_POINTER_BASE].target_elem_size;
+        ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+        stmt->left = base;
+        stmt->right = value_node;
+        ASTNode *offset_lit = create_node(NODE_NUMBER);
+        offset_lit->data.num_value = step.field_offset;
+        offset_lit->expression_type = TYPE_INTEGER;
+        stmt->extra = offset_lit;
+        stmt->expression_type = step.result_type;
+        return stmt;
+    }
+    match(TOKEN_RPAREN);
+
+    ASTNode *value_node = create_node(NODE_HEAP_ALLOC);
+    value_node->expression_type = target_type;
+    value_node->data.num_value = pointer_types[target_type - TYPE_POINTER_BASE].target_elem_size;
+
+    ASTNode *write_node;
+    if (is_var_param) {
+        write_node = create_node(NODE_VAR_PARAM_ASSIGN);
+        write_node->data.var_idx = local_idx;
+        write_node->expression_type = target_type;
+    } else if (is_local) {
+        write_node = create_node(NODE_LOCAL_ASSIGN);
+        write_node->data.var_idx = local_idx;
+        write_node->expression_type = target_type;
+    } else {
+        write_node = create_node(NODE_ASSIGN);
+        write_node->data.var_idx = global_idx;
+    }
+    write_node->left = value_node;
+    return write_node;
+}
+
+// 'dispose(X);' - unlike 'new', this only ever READS X (an ordinary
+// expression - X can be anything pointer-typed, including a heap-
+// dereferenced chain like 'p^.next', since dispose never writes back
+// into X - see NODE_HEAP_DISPOSE in common.h for why this deliberately
+// matches standard Pascal's own "the pointer's value is undefined after
+// dispose" semantics rather than auto-nilling it).
+static ASTNode *parse_dispose_statement(void) {
+    match(TOKEN_DISPOSE);
+    match(TOKEN_LPAREN);
+    int line = token.line;
+    ASTNode *p_expr = expression();
+    if (!is_pointer_type(p_expr->expression_type)) {
+        compile_error(line, "'dispose' expects a pointer variable");
+    }
+    match(TOKEN_RPAREN);
+    ASTNode *stmt = create_node(NODE_HEAP_DISPOSE);
+    stmt->line = line;
+    stmt->left = p_expr;
+    stmt->data.num_value = pointer_types[p_expr->expression_type - TYPE_POINTER_BASE].target_elem_size;
+    return stmt;
 }
 
 // Caches 'expr' (an already-parsed expression, evaluated exactly once)
@@ -4446,6 +4898,25 @@ static ASTNode *parse_global_assignment(int idx) {
         match(TOKEN_RBRACKET);
         match(TOKEN_ASSIGN);
         stmt->right = expression(); // new character
+        return stmt;
+    }
+    if (is_pointer_type(sym_table[idx].type) && token.type == TOKEN_CARET) {
+        int line = token.line;
+        ASTNode *base = create_node(NODE_VARIABLE);
+        base->line = line;
+        base->data.var_idx = idx;
+        base->expression_type = sym_table[idx].type;
+        HeapDerefStep step;
+        base = parse_heap_deref_write(base, line, &step);
+        match(TOKEN_ASSIGN);
+        ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+        stmt->left = base;
+        stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+        ASTNode *offset_lit = create_node(NODE_NUMBER);
+        offset_lit->data.num_value = step.field_offset;
+        offset_lit->expression_type = TYPE_INTEGER;
+        stmt->extra = offset_lit;
+        stmt->expression_type = step.result_type;
         return stmt;
     }
     ASTNode *stmt = create_node(NODE_ASSIGN);
@@ -4883,6 +5354,25 @@ static ASTNode *statement(void) {
         if (local_idx != -1) {
             if (current_locals[local_idx].is_var_param) {
                 match(TOKEN_IDENTIFIER);
+                if (is_pointer_type(current_locals[local_idx].type) && token.type == TOKEN_CARET) {
+                    int line = token.line;
+                    ASTNode *base = create_node(NODE_VAR_PARAM_READ);
+                    base->line = line;
+                    base->data.var_idx = local_idx;
+                    base->expression_type = current_locals[local_idx].type;
+                    HeapDerefStep step;
+                    base = parse_heap_deref_write(base, line, &step);
+                    match(TOKEN_ASSIGN);
+                    ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+                    stmt->left = base;
+                    stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+                    ASTNode *offset_lit = create_node(NODE_NUMBER);
+                    offset_lit->data.num_value = step.field_offset;
+                    offset_lit->expression_type = TYPE_INTEGER;
+                    stmt->extra = offset_lit;
+                    stmt->expression_type = step.result_type;
+                    return stmt;
+                }
                 match(TOKEN_ASSIGN);
                 ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);
                 stmt->data.var_idx = local_idx;
@@ -4990,6 +5480,25 @@ static ASTNode *statement(void) {
                 stmt->right = expression(); // new character
                 return stmt;
             }
+            if (is_pointer_type(current_locals[local_idx].type) && token.type == TOKEN_CARET) {
+                int line = token.line;
+                ASTNode *base = create_node(NODE_LOCAL_VAR);
+                base->line = line;
+                base->data.var_idx = local_idx;
+                base->expression_type = current_locals[local_idx].type;
+                HeapDerefStep step;
+                base = parse_heap_deref_write(base, line, &step);
+                match(TOKEN_ASSIGN);
+                ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+                stmt->left = base;
+                stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+                ASTNode *offset_lit = create_node(NODE_NUMBER);
+                offset_lit->data.num_value = step.field_offset;
+                offset_lit->expression_type = TYPE_INTEGER;
+                stmt->extra = offset_lit;
+                stmt->expression_type = step.result_type;
+                return stmt;
+            }
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
             stmt->data.var_idx = local_idx;
             stmt->expression_type = current_locals[local_idx].type; // target type, for the type checker
@@ -5063,6 +5572,14 @@ static ASTNode *statement(void) {
         stmt->op = kind;
         stmt->data.var_idx = fidx;
         return stmt;
+    }
+
+    if (token.type == TOKEN_NEW) {
+        return parse_new_statement();
+    }
+
+    if (token.type == TOKEN_DISPOSE) {
+        return parse_dispose_statement();
     }
 
     if (token.type == TOKEN_ASSERT) {

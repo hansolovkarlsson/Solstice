@@ -134,7 +134,7 @@ void print_ast(ASTNode *node, int indent) {
             break;
 
         case NODE_NUMBER:
-            if (node->expression_type >= TYPE_ENUM_BASE) {
+            if (node->expression_type >= TYPE_ENUM_BASE && node->expression_type < TYPE_POINTER_BASE) {
                 EnumTypeDef *et = &enum_types[node->expression_type - TYPE_ENUM_BASE];
                 printf("[Enum] %s (%s)\n",
                        node->data.num_value >= 0 && node->data.num_value < et->value_count
@@ -642,6 +642,40 @@ void print_ast(ASTNode *node, int indent) {
             print_indent(indent + 1);
             printf("Value:\n");
             print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_HEAP_FIELD_ACCESS:
+            printf("[Heap Field Access] -> Field offset: %d\n", node->right->data.num_value);
+            print_indent(indent + 1);
+            printf("Pointer:\n");
+            print_ast(node->left, indent + 2);
+            break;
+
+        case NODE_HEAP_FIELD_ASSIGN:
+            printf("[Heap Field Assignment] -> Field offset: %d\n", node->extra->data.num_value);
+            print_indent(indent + 1);
+            printf("Pointer:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_HEAP_ALLOC:
+            printf("[Heap Alloc] -> Element size: %d\n", node->data.num_value);
+            break;
+
+        case NODE_HEAP_DISPOSE:
+            printf("[Heap Dispose] -> Element size: %d\n", node->data.num_value);
+            print_indent(indent + 1);
+            printf("Pointer:\n");
+            print_ast(node->left, indent + 2);
             if (node->next) {
                 print_ast(node->next, indent);
             }

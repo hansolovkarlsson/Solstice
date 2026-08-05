@@ -14,13 +14,26 @@ static int is_string_type(DataType t) {
 }
 
 // A specific enumerated type is encoded as TYPE_ENUM_BASE + its
-// enum_types[] index (see the comment in common.h) - any DataType value
-// at or above that threshold is some enum type. Two DataType values
-// being equal (left_t == right_t, used throughout this file) already
-// means "the exact same enum type", so no further lookup is needed to
-// tell two different enum types apart.
+// enum_types[] index (see the comment in common.h) - a BOUNDED range
+// check, not a bare '>=', since a pointer type's own encoding
+// (TYPE_POINTER_BASE + its own index) immediately follows the enum
+// range and would otherwise also match. Two DataType values being equal
+// (left_t == right_t, used throughout this file) already means "the
+// exact same enum type", so no further lookup is needed to tell two
+// different enum types apart.
 static int is_enum_type(DataType t) {
-    return t >= TYPE_ENUM_BASE;
+    return t >= TYPE_ENUM_BASE && t < TYPE_ENUM_BASE + MAX_ENUM_TYPES;
+}
+
+// Same bounded-range idea as is_enum_type() above, for a specific
+// pointer type ('type PFoo = ^Target;', encoded as TYPE_POINTER_BASE +
+// its pointer_types[] index in parser.c). Two DataType values being
+// equal already means "the exact same pointer type" (see is_enum_type()'s
+// comment) - this compiler never allows assigning/comparing two
+// DIFFERENT pointer types directly, even if they happen to target the
+// same thing.
+static int is_pointer_type(DataType t) {
+    return t >= TYPE_POINTER_BASE && t < TYPE_POINTER_BASE + MAX_POINTER_TYPES;
 }
 
 // Wraps *child in an implicit int->real widening conversion (Pascal's
@@ -87,6 +100,7 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 if (!(is_string_type(node->right->expression_type) && is_string_type(sym->type))
+                    && !(is_pointer_type(sym->type) && node->right->expression_type == TYPE_NIL)
                     && node->right->expression_type != sym->type
                     && !try_widen_for_assignment(&node->right, sym->type)) {
                     fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
@@ -94,6 +108,7 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
             } else if (!(is_string_type(node->left->expression_type) && is_string_type(sym->type))
+                       && !(is_pointer_type(sym->type) && node->left->expression_type == TYPE_NIL)
                        && node->left->expression_type != sym->type
                        && !try_widen_for_assignment(&node->left, sym->type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to variable '%s'\n",
@@ -175,6 +190,32 @@ void type_check(ASTNode *node) {
                 fprintf(stderr, "%s:%d: Type Error: Operators aren't defined for file variables\n",
                         get_current_filename(), node->line);
                 fatal_abort();
+            }
+            if (is_pointer_type(left_t) || is_pointer_type(right_t) || left_t == TYPE_NIL || right_t == TYPE_NIL) {
+                // Standard Pascal defines only '=' and '<>' for pointers
+                // (no arithmetic, no ordering) - handled entirely here,
+                // bypassing every other branch below, since none of them
+                // know what to do with a pointer/TYPE_NIL operand either.
+                // TYPE_NIL (the literal 'nil') is compatible with ANY
+                // pointer type (or with itself, 'nil = nil') - unlike
+                // every other type pair in this compiler, which requires
+                // an EXACT DataType match (see is_enum_type()'s comment:
+                // equal DataTypes already mean "the same declared type").
+                int compatible = (left_t == right_t)
+                               || (is_pointer_type(left_t) && right_t == TYPE_NIL)
+                               || (left_t == TYPE_NIL && is_pointer_type(right_t));
+                if (!compatible) {
+                    fprintf(stderr, "%s:%d: Type Error: Cannot compare pointers of different types\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                if (node->op != TOKEN_EQ && node->op != TOKEN_NEQ) {
+                    fprintf(stderr, "%s:%d: Type Error: Only '=' and '<>' are defined for pointers\n",
+                            get_current_filename(), node->line);
+                    fatal_abort();
+                }
+                node->expression_type = TYPE_BOOLEAN;
+                break;
             }
             int mixed_numeric = (left_t == TYPE_INTEGER && right_t == TYPE_REAL)
                               || (left_t == TYPE_REAL && right_t == TYPE_INTEGER);
@@ -469,6 +510,7 @@ void type_check(ASTNode *node) {
 
         case NODE_LOCAL_ASSIGN:
             if (!(is_string_type(node->left->expression_type) && is_string_type(node->expression_type))
+                && !(is_pointer_type(node->expression_type) && node->left->expression_type == TYPE_NIL)
                 && node->left->expression_type != node->expression_type
                 && !try_widen_for_assignment(&node->left, node->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to local variable\n",
@@ -657,12 +699,38 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_HEAP_FIELD_ACCESS:
+            // Valid by construction - parser.c's parse_heap_deref_read()
+            // only ever builds this from an already-resolved pointer-
+            // typed base and an already-resolved field, exactly like
+            // NODE_FILE_OP's own comment explains for its own no-op case.
+            break;
+
+        case NODE_HEAP_FIELD_ASSIGN:
+            if (!(is_string_type(node->right->expression_type) && is_string_type(node->expression_type))
+                && !(is_pointer_type(node->expression_type) && node->right->expression_type == TYPE_NIL)
+                && node->right->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->right, node->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to pointer dereference\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_WRITE_ARG:
             if (node->left->expression_type == TYPE_SET) {
                 // Standard Pascal defines no textual representation for a
                 // set at all - rejected here rather than silently
                 // printing the raw bitmask as a meaningless integer.
                 fprintf(stderr, "%s:%d: Type Error: write/writeln can't print a set - there's no standard textual representation for one\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (is_pointer_type(node->left->expression_type)) {
+                // Same reasoning as TYPE_SET above - a pointer's runtime
+                // value (a vm_heap_mem[] offset) has no meaningful
+                // textual representation in standard Pascal either.
+                fprintf(stderr, "%s:%d: Type Error: write/writeln can't print a pointer\n",
                         get_current_filename(), node->line);
                 fatal_abort();
             }

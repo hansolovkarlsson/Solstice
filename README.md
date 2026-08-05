@@ -280,7 +280,15 @@ whole-element copy to/from another array element or a plain record
 variable (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#records-as-array-elements)); 2D/N-D
 arrays of records and array-of-record parameters aren't supported yet.
+Also working: pointers (`type PNode = ^TNode;`, `new`/`dispose`, `p^`/
+`p^.field`, `nil`) — including the self-referential linked-list/tree
+pattern (a pointer type forward-referencing a record type declared later
+in the same `type` section), backed by this VM's first and only
+dynamically-sized memory region, a single shared heap with a size-
+bucketed freelist so `dispose` actually makes space reusable rather than
+just leaking it (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#pointers)); pointer to an array or to
+another pointer isn't supported yet.
 
-Not yet implemented: pointers, dynamic arrays (so no array
-`copy`/slicing), nested records, and a whole record or an array element
-as a `var` argument.
+Not yet implemented: dynamic arrays (so no array `copy`/slicing), nested
+records, and a whole record or an array element as a `var` argument.

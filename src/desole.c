@@ -163,6 +163,11 @@ static const char *opcode_name(Opcode op) {
         case OP_LOAD_ARRAY_RECORD_FIELD:       return "load_array_record_field";
         case OP_STORE_ARRAY_RECORD_FIELD:      return "store_array_record_field";
         case OP_STORE_ARRAY_RECORD_FIELD_CHAR: return "store_array_record_field_char";
+        case OP_NEW:                   return "new";
+        case OP_DISPOSE:               return "dispose";
+        case OP_LOAD_HEAP_FIELD:       return "load_heap_field";
+        case OP_STORE_HEAP_FIELD:      return "store_heap_field";
+        case OP_STORE_HEAP_FIELD_CHAR: return "store_heap_field_char";
         default:       return NULL;
     }
 }
@@ -174,7 +179,13 @@ static const char *type_name(DataType type) {
     // (or even that it WAS an enum, as opposed to a plain integer) a
     // given Symbol originally was - it prints as "integer", which is
     // its actual runtime representation, exactly as accurate as this
-    // tool can be without a .bin format change.
+    // tool can be without a .bin format change. Deliberately unbounded
+    // (not 'type < TYPE_ENUM_BASE + MAX_ENUM_TYPES'): a specific POINTER
+    // type's own range (TYPE_POINTER_BASE, immediately after the enum
+    // range - see common.h) is pascalc-frontend-only too, and degrades
+    // to "integer" here for exactly the same reason - a pointer
+    // variable's runtime representation genuinely IS a plain int (a
+    // vm_heap_mem[] offset, or -1 for nil).
     if (type >= TYPE_ENUM_BASE) return "integer";
     switch (type) {
         case TYPE_INTEGER: return "integer";
@@ -233,7 +244,9 @@ static int is_immediate(Opcode op) {
         || op == OP_READ_LOCAL_STR || op == OP_READ_LOCAL_CHAR
         || op == OP_READ_FILE_LOCAL_INT || op == OP_READ_FILE_LOCAL_BOOL || op == OP_READ_FILE_LOCAL_REAL
         || op == OP_READ_FILE_LOCAL_STR || op == OP_READ_FILE_LOCAL_CHAR
-        || op == OP_READ_FILE_LOCAL_INT_NOFLUSH || op == OP_READ_FILE_LOCAL_BOOL_NOFLUSH || op == OP_READ_FILE_LOCAL_REAL_NOFLUSH;
+        || op == OP_READ_FILE_LOCAL_INT_NOFLUSH || op == OP_READ_FILE_LOCAL_BOOL_NOFLUSH || op == OP_READ_FILE_LOCAL_REAL_NOFLUSH
+        || op == OP_NEW || op == OP_DISPOSE // operand = element size, not a symbol reference
+        || op == OP_LOAD_HEAP_FIELD || op == OP_STORE_HEAP_FIELD || op == OP_STORE_HEAP_FIELD_CHAR; // operand = field offset
 }
 
 static char *jump_targets = NULL; // one flag byte per instruction index

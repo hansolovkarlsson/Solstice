@@ -99,7 +99,87 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       (its `.var`/`.array`/`.array2d` directive parsers didn't recognize
       `"set"` as a type string) — see
       [docs/LANGUAGE.md](LANGUAGE.md#sets).
-- [ ] Pointers (`^Type`, `new`, `dispose`)
+- [x] Pointers (`^Type`, `new`, `dispose`) — the VM's first and only
+      source of genuinely dynamic allocation (every other memory region
+      is sized entirely at compile time). One shared, fixed-size heap
+      (`vm_heap_mem[]`/`MAX_HEAP_MEM`, sized like `MAX_ARRAY_MEM`) rather
+      than a per-pointer-type arena: `OP_NEW`'s `arg` is the target's
+      element size (1 for a scalar target, or a record target's field
+      count) - a compile-time constant - so a bump cursor
+      (`vm_heap_count`, this VM's first RUNTIME-variable-size state) plus
+      one freelist PER SIZE (`vm_heap_freelist[1..MAX_RECORD_FIELDS]`, a
+      classic intrusive linked list - a freed block's own first int
+      slot stores the next-free offset) is all `OP_DISPOSE` needs to make
+      a later same-size `OP_NEW` reuse freed space, with zero new
+      compile-time metadata tables. A pointer's own DataType is encoded
+      as `TYPE_POINTER_BASE` + its `pointer_types[]` index (parser.c-
+      local - the same "codegen only ever needs facts already baked into
+      the AST" reasoning `record_types[]` relies on), mirroring
+      `TYPE_ENUM_BASE`'s own encoding exactly - explicitly positioned
+      immediately after the enum range (`TYPE_ENUM_BASE + MAX_ENUM_TYPES`)
+      so the two never overlap. This surfaced a real, previously-latent
+      hazard: every existing "is this an enum" check elsewhere in the
+      codebase was a bare `>= TYPE_ENUM_BASE`, which would have silently
+      also matched every pointer type once one existed (miscompiling
+      `ord`/`succ`/`pred`/case-selectors/etc., or reading `enum_types[]`
+      out of bounds when printing) - fixed by bounding all of them (`t >=
+      TYPE_ENUM_BASE && t < TYPE_ENUM_BASE + MAX_ENUM_TYPES`) before
+      adding the pointer range at all.
+
+      Two new opcodes for the heap itself (`NEW`/`DISPOSE`, `arg` =
+      element size) plus three for dereferencing (`LOAD_HEAP_FIELD`/
+      `STORE_HEAP_FIELD`/`_CHAR`, `arg` = field offset - 0 for a scalar
+      target's whole `^`): unlike the array-of-records opcode family,
+      there's no "which array" to bake into `arg` at all (every pointer
+      shares the one heap), so the runtime base address always comes off
+      the stack instead, freeing `arg` to carry the field offset
+      directly rather than needing its own stack push. Two new
+      `NodeType`s (`NODE_HEAP_FIELD_ACCESS`/`_ASSIGN`) support an
+      arbitrary-depth `^` chain (`p^.next^.data`) via a small loop in
+      parser.c, each step's field offset resolved at parse time exactly
+      like `NODE_ARRAY_RECORD_FIELD_ACCESS`'s own. `new(p)`/`dispose(p)`
+      are pure parse-time sugar needing no dedicated runtime machinery at
+      all: `new(p)` desugars into `p := <fresh heap allocation>;`
+      (`NODE_HEAP_ALLOC`) straight through whichever assignment node `p`'s
+      own resolution already builds (reusing `inc`/`dec`'s exact target-
+      resolution shape - with-field/record-field/static local/`var`
+      parameter/plain local or global - PLUS a `^`-chain target,
+      e.g. `new(head^.next);`); `dispose(p)` only ever READS `p` (an
+      ordinary expression, so it accepts a `^`-chain target for free) and
+      deliberately does NOT nil it afterward, matching standard Pascal's
+      own "a disposed pointer's value is undefined" semantics rather than
+      inventing a safer non-standard behavior.
+
+      The self-referential linked-list/tree pattern (`type PNode =
+      ^TNode; TNode = record ... next: PNode; end;`) needs `PNode` to
+      forward-reference `TNode`, not yet declared - resolved in a second
+      pass at the end of the enclosing `type` section (mirroring the
+      "forward" procedure declaration/goto-label backpatching precedent
+      already in this codebase), the only kind of forward reference this
+      feature supports (a pointer to a scalar/alias/enum/subrange must
+      already be declared, exactly like every other reference to one).
+      `nil` is a new literal (`TYPE_NIL`, runtime value `-1`) compatible
+      with any pointer type at assignment/`=`/`<>`, checked specially
+      rather than through the exact-DataType-match rule every other type
+      uses; pointers otherwise support only `=`/`<>` (no arithmetic, no
+      ordering) and are rejected from `write`/`writeln`/`readln`, matching
+      standard Pascal.
+
+      Found and fixed a second real bug during testing, the same DCE
+      class as the array-of-records/subrange/set fixes above but a new
+      instance of it: `x := p^;` with `x` a global never read elsewhere
+      silently dropped the read's own nil-pointer-dereference check once
+      dead-code elimination swept the assignment away - fixed by
+      extending the existing heap-allocation DCE guard to also cover a
+      `NODE_HEAP_FIELD_ACCESS` anywhere in an assignment's value
+      expression, not just a top-level `NODE_HEAP_ALLOC`.
+
+      Known gaps: pointer to an array or to another pointer; a pointer-
+      typed field of a local/parameter record or an array-of-records
+      element, immediately dereferenced (assign to a plain pointer
+      variable first); whole-record assignment/comparison through a
+      dereference (`q^ := p^;`) - see
+      [docs/LANGUAGE.md](LANGUAGE.md#pointers).
 
 ### Language — control flow
 

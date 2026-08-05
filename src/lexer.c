@@ -136,6 +136,9 @@ void next_token(void) {
         else if (strcasecmp(token.text, "reset") == 0) token.type = TOKEN_RESET;
         else if (strcasecmp(token.text, "rewrite") == 0) token.type = TOKEN_REWRITE;
         else if (strcasecmp(token.text, "close") == 0) token.type = TOKEN_CLOSE;
+        else if (strcasecmp(token.text, "new") == 0) token.type = TOKEN_NEW;
+        else if (strcasecmp(token.text, "dispose") == 0) token.type = TOKEN_DISPOSE;
+        else if (strcasecmp(token.text, "nil") == 0) token.type = TOKEN_NIL;
         else if (strcasecmp(token.text, "char") == 0) token.type = TOKEN_CHAR_TYPE;
         else if (strcasecmp(token.text, "real") == 0) token.type = TOKEN_REAL_TYPE;
         else if (strcasecmp(token.text, "trunc") == 0) token.type = TOKEN_TRUNC;
@@ -290,6 +293,7 @@ void next_token(void) {
         case ')': token.type = TOKEN_RPAREN; break; // <--- Add ')'
         case '[': token.type = TOKEN_LBRACKET; break;
         case ']': token.type = TOKEN_RBRACKET; break;
+        case '^': token.type = TOKEN_CARET; break;
         default:  token.type = TOKEN_EOF; break;
     }
 

@@ -66,8 +66,8 @@ y := 2; // this too, to end of line
 | Record | `type TName = record ... end;` | — | User-defined; see [Records](#records) |
 | Enumerated | `type TName = (Val1, Val2, ...);` | — | User-defined; see [Enumerated types](#enumerated-types) |
 | Subrange | `type TName = lower..upper;` | — | Bounds-checked `integer`; see [Subrange types](#subrange-types) |
-
-There are no sets.
+| Set | `set of T` | `[1, 2, 3]`, `[]` | `T` is `integer`/`char`/`boolean`/an enumerated type, capped at 32 values; see [Sets](#sets) |
+| Pointer | `type TName = ^Target;` | `nil` | `Target` is a scalar or record type; see [Pointers](#pointers) |
 
 ## Variable declarations
 
@@ -239,6 +239,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
+| `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type — see [Pointers](#pointers) |
 
 - `abs`/`sqr` accept `integer` or `real` (preserving whichever was
   given); `odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
@@ -1708,6 +1709,93 @@ touch until the program actually runs.
   `recordVar.field` directly.
 - **Nested records** — a field can't itself be a record type.
 
+## Pointers
+
+```pascal
+type
+    PNode = ^TNode;
+    TNode = record
+        data: integer;
+        next: PNode;
+    end;
+var
+    head, p: PNode;
+begin
+    head := nil;
+    new(head);
+    head^.data := 1;
+    new(head^.next);
+    head^.next^.data := 2;
+    head^.next^.next := nil;
+
+    p := head;
+    while p <> nil do begin
+        writeln(p^.data);
+        p := p^.next;
+    end;
+
+    dispose(head^.next);
+    dispose(head);
+end.
+```
+
+A pointer type is declared with `^Target`, where `Target` is any scalar
+type (`integer`, `boolean`, `char`, `real`, `string`, an enumerated
+type, a subrange, or a type alias) or a record type. `Target` may be a
+record type declared *later* in the same `type` section — the classic
+self-referential pattern above (`PNode` targets `TNode`, which itself
+has a field of type `PNode`) needs exactly this forward reference, and
+it's resolved once the whole `type` section finishes parsing.
+
+`new(p)` allocates one instance of `p`'s target type and points `p` at
+it; `dispose(p)` releases it, making that storage available for a later
+`new()` of the same target type to reuse. Both accept the same variety
+of target `new`/`dispose` on a pointer field also work on
+(`with`-target, record field, `var` parameter, plain local/global), and
+`new` additionally accepts a pointer field reached through one or more
+`^` dereferences (`new(head^.next);`), matching the worked example
+above.
+
+`p^` dereferences a pointer — `p^` alone if it targets a scalar type
+(readable and writable directly, like `p^ := 5;`), or `p^.field` if it
+targets a record. A chain of any length works: `p^.next^.next^.data`.
+Dereferencing a nil pointer, or disposing one, is a runtime error, not
+undefined behavior. Standard Pascal leaves a pointer's value undefined
+immediately after `dispose` (not reliably nil) — this compiler matches
+that: `dispose` never modifies the pointer variable itself.
+
+`nil` is a literal usable anywhere a pointer value is expected: assigned
+to a pointer variable, or compared with `=`/`<>` against a pointer of
+any type. Two pointer variables (or a pointer and `nil`) can only be
+compared with `=`/`<>` — no other operator is defined for pointers, and
+comparing two *different* declared pointer types (even if they happen to
+target the same thing) is a compile-time error, matching Pascal's usual
+name-equivalence rule for pointer types. A pointer's value has no
+textual representation — `write`/`writeln` and `readln` both reject it.
+
+Under the hood, a pointer's runtime value is a plain int: `-1` for
+`nil`, or an offset into a single fixed-size heap shared by every
+pointer in the program (`vm_heap_mem[]` in `vm.c`) — this VM's only
+source of genuinely dynamic allocation; every other memory region is
+sized entirely at compile time. `dispose` doesn't just leak a freed
+block — it links it onto a freelist bucketed by allocation size, so a
+later `new()` targeting the same size reuses it instead of growing the
+heap further.
+
+### What's not supported yet
+
+- **Pointer to an array** — `^array[1..10] of integer` is a compile
+  error; a pointer may target a scalar or record type only.
+- **Pointer to a pointer** (`^^integer`) — one level of indirection only.
+- **A pointer-typed field of a *local or parameter* record, immediately
+  dereferenced** (`myLocalRec.next^`) — works fine for a *global*
+  record's field, or for a plain pointer variable (`p^`, `p^.next^`);
+  assign the field to a plain pointer variable first as a workaround.
+- **A pointer-typed field of an array-of-records element, immediately
+  dereferenced** (`arr[i].next^`) — same workaround as above.
+- **Whole-record assignment/comparison through a dereference**
+  (`q^ := p^;`, `p^ = q^`) — assign/compare field by field instead.
+
 ## Procedures
 
 ```pascal
@@ -2098,7 +2186,10 @@ file.pas:1: Warning: function 'Average' never assigns a value to its own name - 
 
 ## What's not implemented
 
-- Pointers (`^Type`, `new`, `dispose`)
+- Pointer to an array or to another pointer, and a few narrower pointer-
+  dereference gaps — see [Pointers](#pointers) above (pointer to a
+  scalar or record, including the self-referential linked-list/tree
+  pattern, `new`/`dispose`/`nil`, all work)
 - 2D/N-D arrays of records, array-of-record parameters, nested records,
   and an array-typed field in a record parameter/local record — see
   [Records as array elements](#records-as-array-elements) and
