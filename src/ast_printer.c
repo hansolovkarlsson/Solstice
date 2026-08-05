@@ -624,6 +624,28 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
         }
+
+        case NODE_ARRAY_RECORD_FIELD_ACCESS:
+            printf("[Array-of-Record Field Access] -> Array: %s, Field offset: %d\n",
+                   sym_table[node->data.var_idx].name, node->right->data.num_value);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            break;
+
+        case NODE_ARRAY_RECORD_FIELD_ASSIGN:
+            printf("[Array-of-Record Field Assignment] -> Array: %s, Field offset: %d\n",
+                   sym_table[node->data.var_idx].name, node->extra->data.num_value);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
     }
 }
 

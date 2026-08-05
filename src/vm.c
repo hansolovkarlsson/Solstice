@@ -227,6 +227,33 @@ static int vm_array_offset_nd(int var_idx, int dims, const int *indices) {
     return sym->array_base + offset;
 }
 
+// Same as vm_array_offset(), but for a 1D array of RECORDS: each element
+// occupies record_elem_field_count contiguous ints (rather than 1), so
+// the runtime index is scaled by that stride before the (also bounds-
+// checked) field_offset is added - both index and field_offset are
+// validated, since an out-of-range value of either would otherwise
+// silently read/write a completely different array's memory (the same
+// reasoning vm_array_offset()'s own comment gives for plain arrays).
+static int vm_record_array_offset(int var_idx, int runtime_index, int field_offset) {
+    vm_var_index(var_idx);
+    Symbol *sym = &sym_table[var_idx];
+    if (!sym->is_array || !sym->is_record_array) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not an array of records\n", sym->name);
+        fatal_abort();
+    }
+    if (runtime_index < sym->array_lower || runtime_index > sym->array_upper) {
+        fprintf(stderr, "VM Runtime Error: Array index %d out of range (%d..%d) for '%s'\n",
+                runtime_index, sym->array_lower, sym->array_upper, sym->name);
+        fatal_abort();
+    }
+    if (field_offset < 0 || field_offset >= sym->record_elem_field_count) {
+        fprintf(stderr, "VM Runtime Error: Record field offset %d out of range (0..%d) for '%s'\n",
+                field_offset, sym->record_elem_field_count - 1, sym->name);
+        fatal_abort();
+    }
+    return sym->array_base + (runtime_index - sym->array_lower) * sym->record_elem_field_count + field_offset;
+}
+
 // Resolves a frame-relative local slot (k) to an absolute vm_frame_stack[]
 // index, validating both that a frame is currently active (fp >= 0 - an
 // OP_ENTER must have run) and that k falls within that frame's actual
@@ -683,6 +710,33 @@ void run_vm(void) {
                 if (sym_table[array_ref].type == TYPE_CHAR) {
                     vm_check_char(val, sym_table[array_ref].name);
                 }
+                vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_LOAD_ARRAY_RECORD_FIELD: {
+                int field_offset = vm_pop(&sp); // pushed second by codegen - on top
+                int runtime_index = vm_pop(&sp); // pushed first
+                int offset = vm_record_array_offset(instr.arg, runtime_index, field_offset);
+                vm_push(&sp, vm_array_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_ARRAY_RECORD_FIELD: {
+                int val = vm_pop(&sp);
+                int field_offset = vm_pop(&sp);
+                int runtime_index = vm_pop(&sp);
+                int offset = vm_record_array_offset(instr.arg, runtime_index, field_offset);
+                vm_array_mem[offset] = val;
+                break;
+            }
+
+            case OP_STORE_ARRAY_RECORD_FIELD_CHAR: {
+                int val = vm_pop(&sp);
+                int field_offset = vm_pop(&sp);
+                int runtime_index = vm_pop(&sp);
+                int offset = vm_record_array_offset(instr.arg, runtime_index, field_offset);
+                vm_check_char(val, sym_table[instr.arg].name);
                 vm_array_mem[offset] = val;
                 break;
             }
@@ -1458,6 +1512,19 @@ void run_vm(void) {
                             } else if (sym_table[i].is_2d) {
                                 total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
                                         (sym_table[i].array_upper2 - sym_table[i].array_lower2 + 1);
+                            } else if (sym_table[i].is_record_array) {
+                                // Every field of every element, flattened -
+                                // this dump has no per-field type/name
+                                // info to show (that only ever lives in
+                                // parser.c's record_types[]), so it just
+                                // prints the raw ints (sym_table[i].type
+                                // is a meaningless dummy for a record
+                                // array - see is_record_array in
+                                // common.h - so every element prints as a
+                                // plain integer via the final 'else'
+                                // branch below).
+                                total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
+                                        sym_table[i].record_elem_field_count;
                             } else {
                                 total = sym_table[i].array_upper - sym_table[i].array_lower + 1;
                             }

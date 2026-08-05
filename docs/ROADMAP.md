@@ -166,7 +166,63 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       `high`/`length`). Nests; a `with`-field shadows same-named locals/
       globals (classic Pascal behavior). Single record only (no `with a,
       b do`) — see [docs/LANGUAGE.md](LANGUAGE.md#the-with-statement).
-- [ ] Records as array elements (runtime-indexed record storage)
+- [x] Records as array elements (runtime-indexed record storage) — 1D
+      arrays only, both global and procedure-local (a local array of
+      records reuses the existing "hidden global" trick a local scalar
+      array already relies on). Unlike a plain (non-array) record - pure
+      parse-time sugar over one hidden global per field, since there's no
+      runtime "which record" to select - `people[i].age`'s `i` IS a
+      runtime value, so this needed a genuinely new, runtime-addressable
+      storage model: two new `Symbol` fields (`is_record_array`,
+      `record_elem_field_count` - the record type's field count, i.e. the
+      per-element stride) so every size/offset computation in the shared
+      `vm_array_mem[]` pool scales by that stride instead of the implicit
+      1 every other array element type uses. A new `vm_record_array_
+      offset()` (vm.c) generalizes `vm_array_offset()` accordingly.
+
+      Three new opcodes, following the established "runtime index is a
+      compile-time-constant-adjacent value pushed onto the stack, then
+      one opcode with the array's sym_table index baked into `arg`"
+      pattern `LOAD_IDX2D` etc. already use: `LOAD_ARRAY_RECORD_FIELD`/
+      `STORE_ARRAY_RECORD_FIELD` (+ a `_CHAR` store variant, chosen by
+      codegen from the field's own declared type - since one array-of-
+      records `Symbol` covers many differently-typed fields, unlike
+      `STORE_IDX`, there's no single `sym_table[].type` for the VM to
+      dispatch a char-check on at runtime the way it does for a plain
+      array). The runtime index and the field's compile-time-constant
+      offset within one element both travel via the stack (only one
+      `arg` slot per instruction, already used for the array's own
+      sym_table index).
+
+      Two new `NodeType`s (`NODE_ARRAY_RECORD_FIELD_ACCESS`/`_ASSIGN`)
+      carry (array symbol, index expression, field offset as a
+      `NODE_NUMBER` literal child - the same "reuse an existing pointer
+      field for a literal" trick `NODE_RANGE_CHECK`'s bounds already use).
+      A whole-element copy (`arr[i] := arr2[j];`, or to/from a plain
+      record variable) desugars at PARSE TIME into N per-field
+      `NODE_ARRAY_RECORD_FIELD_ASSIGN` nodes chained via `->next` - the
+      same "a record isn't one runtime value" philosophy whole-record
+      assignment already uses - with the index expression(s) cached into
+      a hidden temp (local frame slot inside a procedure, global
+      otherwise, mirroring the existing `for`-loop-end-bound/`for x in s`
+      caching split) since a multi-field copy reads the SAME index once
+      per field, not just once - re-evaluating a non-trivial index
+      expression that many times would both re-run side effects and be
+      wasteful.
+
+      A record type used as an array's element type must have no
+      array-typed field (a fixed per-element stride can't accommodate a
+      variable-size field) - checked at declaration. Known gaps: 2D/N-D
+      arrays of records, array-of-record parameters (no by-reference
+      mechanism built for this yet - copy into/out of a local array of
+      records instead), and passing a single array-of-records element
+      directly as a by-value record argument to a procedure (copy it into
+      a plain record variable first). Also fixed, in passing: the `-v`
+      final-state variable dump only ever computed a record array's
+      element count without multiplying by its field count (a smaller
+      instance of the same pre-existing 2D-array dump bug fixed during
+      the three-or-more-dimensions work) - see
+      [docs/LANGUAGE.md](LANGUAGE.md#records-as-array-elements).
 - [x] Record parameters and local records — unlike a global record's
       fields (hidden mangled globals), a local/parameter record's fields
       each get their own ordinary FRAME SLOT (via the existing `add_local`

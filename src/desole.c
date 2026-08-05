@@ -160,6 +160,9 @@ static const char *opcode_name(Opcode op) {
         case OP_READ_FILE_LOCAL_REAL_NOFLUSH: return "read_file_local_real_noflush";
         case OP_SKIP_PENDING_NEWLINE:      return "skip_pending_newline";
         case OP_SKIP_PENDING_NEWLINE_FILE: return "skip_pending_newline_file";
+        case OP_LOAD_ARRAY_RECORD_FIELD:       return "load_array_record_field";
+        case OP_STORE_ARRAY_RECORD_FIELD:      return "store_array_record_field";
+        case OP_STORE_ARRAY_RECORD_FIELD_CHAR: return "store_array_record_field_char";
         default:       return NULL;
     }
 }
@@ -211,7 +214,8 @@ static int is_var_ref(Opcode op) {
         || op == OP_READ_FILE || op == OP_READ_FILE_NOFLUSH // note: OP_READ_FILE's arg is
                                                               // the READ TARGET's index, still
                                                               // a sym_table[] reference either way
-        || op == OP_SKIP_PENDING_NEWLINE_FILE;
+        || op == OP_SKIP_PENDING_NEWLINE_FILE
+        || op == OP_LOAD_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD_CHAR;
 }
 
 // True for opcodes whose arg is a plain immediate value with no lookup -
@@ -250,7 +254,10 @@ static void mark_jump_targets(void) {
 static void disassemble(FILE *out) {
     if (sym_count > 0) {
         for (int i = 0; i < sym_count; i++) {
-            if (sym_table[i].is_array && sym_table[i].is_nd) {
+            if (sym_table[i].is_array && sym_table[i].is_record_array) {
+                fprintf(out, ".arrayrec %s %d %d %d\n", sym_table[i].name,
+                        sym_table[i].array_lower, sym_table[i].array_upper, sym_table[i].record_elem_field_count);
+            } else if (sym_table[i].is_array && sym_table[i].is_nd) {
                 fprintf(out, ".arrayNd %s %d", sym_table[i].name, sym_table[i].nd_dims);
                 for (int d = 0; d < sym_table[i].nd_dims; d++) {
                     fprintf(out, " %d %d", sym_table[i].nd_lower[d], sym_table[i].nd_upper[d]);

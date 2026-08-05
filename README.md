@@ -273,8 +273,14 @@ optional leading file argument on `read`/`readln`/`write`/`writeln`/
 `eof`/`eoln` — `write(f, x)` instead of a separate set of file-specific
 builtin names) — a file variable is global only, not a parameter or
 local, the one deliberate scope cut behind the whole feature (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#file-io)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#file-io)). Also working: records as
+array elements (`array[1..10] of TPoint`), for both a global and a
+procedure-local array — field read/write via a runtime index, plus
+whole-element copy to/from another array element or a plain record
+variable (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#records-as-array-elements)); 2D/N-D
+arrays of records and array-of-record parameters aren't supported yet.
 
-Not yet implemented: dynamic arrays (so no array `copy`/slicing),
-records as array elements or nested records, and a whole record or an
-array element as a `var` argument.
+Not yet implemented: pointers, dynamic arrays (so no array
+`copy`/slicing), nested records, and a whole record or an array element
+as a `var` argument.

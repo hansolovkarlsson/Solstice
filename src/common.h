@@ -240,6 +240,34 @@ typedef struct {
                           // element array has both set.
     int subrange_lower;   // only meaningful if is_subrange
     int subrange_upper;
+    int is_record_array;      // 1 if this array's elements are records
+                              // (an "array of TSomeRecord" - see parser.c's
+                              // record_arrays[]/find_record_array_type()
+                              // for the record TYPE this is an array of;
+                              // that mapping is parser-only, since
+                              // record_types[] itself never leaves
+                              // parser.c - see RecordTypeDef there).
+                              // Mutually exclusive with is_2d/is_nd (only
+                              // 1D arrays of records are supported so
+                              // far). 'type' above is unused/meaningless
+                              // for a record-array Symbol (defensively set
+                              // to TYPE_INTEGER) - unlike a plain array,
+                              // there's no single element type; each
+                              // field's own type is only ever consulted
+                              // at PARSE time (via record_types[]) or
+                              // carried directly on the AST node itself
+                              // (NODE_ARRAY_RECORD_FIELD_ACCESS/ASSIGN's
+                              // own expression_type) - never through this
+                              // Symbol, which is all codegen/vm.c/solas/
+                              // desole ever see.
+    int record_elem_field_count; // only meaningful if is_record_array:
+                              // how many ints each element occupies (the
+                              // record type's own field_count) - the
+                              // stride vm_record_array_offset() (vm.c)
+                              // multiplies the runtime index by, since
+                              // every array (1D/2D/ND/record) shares one
+                              // flat vm_array_mem[] pool with an implicit
+                              // stride of 1 everywhere else.
 } Symbol;
 
 typedef enum {
@@ -692,6 +720,34 @@ typedef enum {
     OP_SKIP_PENDING_NEWLINE_FILE, // Same as OP_SKIP_PENDING_NEWLINE, but
                   // arg = the file variable's sym_table index - peeks at
                   // that file instead of stdin.
+
+    // Records as array elements ('array[lo..hi] of TSomeRecord') - see
+    // is_record_array/record_elem_field_count on Symbol above. arg is
+    // always the ARRAY's own sym_table index (compile-time-known, exactly
+    // like OP_LOAD_IDX/OP_STORE_IDX - a record array is always global, or
+    // a local's hidden global, never a by-reference parameter yet). The
+    // runtime index and the field's offset within one element both go on
+    // the stack (the field offset is a compile-time constant too, but
+    // there's only one arg slot per instruction, already used for the
+    // array's own index - see codegen.c's NODE_ARRAY_RECORD_FIELD_ACCESS/
+    // ASSIGN cases) - index pushed first, then field offset on top,
+    // mirroring how NODE_ARRAY_ACCESS_2D pushes its first index before
+    // its second.
+    OP_LOAD_ARRAY_RECORD_FIELD, // Pops field offset, then runtime index;
+                  // pushes vm_array_mem[array_base + (index-lower)*
+                  // record_elem_field_count + field_offset].
+    OP_STORE_ARRAY_RECORD_FIELD, // Pops value, then field offset, then
+                  // runtime index; stores into the same address
+                  // OP_LOAD_ARRAY_RECORD_FIELD computes.
+    OP_STORE_ARRAY_RECORD_FIELD_CHAR, // Same as OP_STORE_ARRAY_RECORD_
+                  // FIELD, but additionally vm_check_char()s the value
+                  // first - chosen by codegen instead of the plain
+                  // variant whenever the field being written is char-
+                  // typed (baked in at compile time, via the assignment
+                  // node's own expression_type - unlike OP_STORE_IDX,
+                  // which reads sym_table[instr.arg].type directly, one
+                  // array-of-records Symbol has no single element type
+                  // to dispatch on at runtime).
 } Opcode;
 
 typedef struct {
@@ -849,6 +905,37 @@ typedef enum {
                        // index-expression chain, right = value
                        // expression, next = next statement (extra
                        // unused).
+    NODE_ARRAY_RECORD_FIELD_ACCESS, // 'arr[i].field' as an expression, for
+                       // a GLOBAL (or local, hidden-global - see
+                       // add_local_array_rec()) 1D array of records.
+                       // data.var_idx = the array's symbol index. left =
+                       // index expression. right = a NODE_NUMBER literal
+                       // holding the field's offset within one element
+                       // (0..record_elem_field_count-1) - a compile-time
+                       // constant, read directly via ->data.num_value,
+                       // never code-generated as its own push (mirrors
+                       // NODE_RANGE_CHECK's bound literals above).
+                       // expression_type = the field's own declared type,
+                       // set at parse time (record_types[] - the table
+                       // that field type comes from - never leaves
+                       // parser.c, so nothing downstream could look it up
+                       // itself).
+    NODE_ARRAY_RECORD_FIELD_ASSIGN, // 'arr[i].field := val' - the write
+                       // counterpart. data.var_idx = the array's symbol
+                       // index. left = index expression, right = value
+                       // expression, extra = a NODE_NUMBER literal
+                       // holding the field's offset (same convention as
+                       // the access node's ->right). expression_type =
+                       // the field's declared type - used by the type
+                       // checker for the usual assignment-compatibility
+                       // check, AND by codegen to choose the char-
+                       // checking opcode variant (OP_STORE_ARRAY_RECORD_
+                       // FIELD_CHAR) when the field being written is
+                       // char-typed - the VM has no per-field type table
+                       // to dispatch on at runtime the way OP_STORE_IDX
+                       // does via sym_table[].type, since one array-of-
+                       // records Symbol covers many differently-typed
+                       // fields at once.
     NODE_WRITE_ARG,    // One argument to write/writeln, wrapping its
                        // optional ':width[:precision]' field-width
                        // syntax. left = the value expression, right =

@@ -816,6 +816,24 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_ARRAY_RECORD_FIELD_ACCESS:
+            generate_code(node->left);                     // index
+            emit(OP_PUSH, node->right->data.num_value);    // field offset (compile-time constant)
+            emit(OP_LOAD_ARRAY_RECORD_FIELD, node->data.var_idx);
+            break;
+
+        case NODE_ARRAY_RECORD_FIELD_ASSIGN:
+            generate_code(node->left);                     // index
+            emit(OP_PUSH, node->extra->data.num_value);    // field offset (compile-time constant)
+            generate_code(node->right);                    // value
+            if (node->expression_type == TYPE_CHAR) {
+                emit(OP_STORE_ARRAY_RECORD_FIELD_CHAR, node->data.var_idx);
+            } else {
+                emit(OP_STORE_ARRAY_RECORD_FIELD, node->data.var_idx);
+            }
+            generate_code(node->next);
+            break;
+
         case NODE_WRITE_ARG:
             // Structurally unreachable: NODE_WRITELN's own case unwraps
             // a NODE_WRITE_ARG's left/right/extra directly and never

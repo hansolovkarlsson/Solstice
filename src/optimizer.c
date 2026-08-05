@@ -306,6 +306,7 @@ static void mark_used_variables(ASTNode *node) {
 
     if (node->type == NODE_VARIABLE || node->type == NODE_ARRAY_ACCESS || node->type == NODE_ARRAY_REF
         || node->type == NODE_STRING_INDEX || node->type == NODE_ARRAY_ACCESS_2D || node->type == NODE_ARRAY_ACCESS_ND
+        || node->type == NODE_ARRAY_RECORD_FIELD_ACCESS
         || node->type == NODE_VAR_REF) {
         var_used_tracker[node->data.var_idx] = 1;
     }

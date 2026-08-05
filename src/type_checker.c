@@ -634,6 +634,29 @@ void type_check(ASTNode *node) {
             break;
         }
 
+        case NODE_ARRAY_RECORD_FIELD_ACCESS:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_ARRAY_RECORD_FIELD_ASSIGN:
+            if (node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (!(is_string_type(node->right->expression_type) && is_string_type(node->expression_type))
+                && node->right->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->right, node->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to record array field\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_WRITE_ARG:
             if (node->left->expression_type == TYPE_SET) {
                 // Standard Pascal defines no textual representation for a

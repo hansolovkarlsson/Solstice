@@ -231,6 +231,35 @@ typedef struct {
 static LocalRecordVarDef local_record_vars[MAX_LOCAL_RECORD_VARS];
 static int local_record_var_count = 0;
 
+// Maps an array-of-records Symbol (by its OWN sym_table[] index - whether
+// a true global or a local's hidden mangled global, see
+// add_local_array_rec()) to which record_types[] entry it's an array OF.
+// A separate side table, rather than a field on Symbol itself, because
+// record_type_idx is only ever meaningful as an index into record_types[]
+// - a table that (like every other record-related table in this file)
+// never leaves parser.c, unlike is_record_array/record_elem_field_count
+// on Symbol, which ARE meaningful (a stride, a boolean) without it.
+#define MAX_RECORD_ARRAYS 30
+typedef struct {
+    int sym_idx;
+    int record_type_idx;
+} RecordArrayDef;
+static RecordArrayDef record_arrays[MAX_RECORD_ARRAYS];
+static int record_array_count = 0;
+
+// register_record_array() is defined further down (right before its
+// first use, add_array_var_rec()) - it needs compile_error(), declared
+// later in this file.
+
+// -1 if sym_idx doesn't name an array-of-records (shouldn't happen at any
+// call site that already checked sym_table[sym_idx].is_record_array).
+static int find_record_array_type(int sym_idx) {
+    for (int i = 0; i < record_array_count; i++) {
+        if (record_arrays[i].sym_idx == sym_idx) return record_arrays[i].record_type_idx;
+    }
+    return -1;
+}
+
 static int find_record_type(const char *name) {
     for (int i = 0; i < record_type_count; i++) {
         if (strcmp(record_types[i].name, name) == 0) return i;
@@ -574,6 +603,8 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     sym_table[sym_count].is_subrange = 0;
     sym_table[sym_count].subrange_lower = 0;
     sym_table[sym_count].subrange_upper = 0;
+    sym_table[sym_count].is_record_array = 0; // defensive reset
+    sym_table[sym_count].record_elem_field_count = 0;
     array_mem_count += size;
     sym_count++;
 }
@@ -620,6 +651,8 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
     sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
     sym_table[sym_count].subrange_lower = 0;
     sym_table[sym_count].subrange_upper = 0;
+    sym_table[sym_count].is_record_array = 0; // defensive reset
+    sym_table[sym_count].record_elem_field_count = 0;
     array_mem_count += size;
     sym_count++;
 }
@@ -679,6 +712,74 @@ static void add_array_var_nd(const char *name, DataType elem_type, int dims, con
     sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
     sym_table[sym_count].subrange_lower = 0;
     sym_table[sym_count].subrange_upper = 0;
+    sym_table[sym_count].is_record_array = 0; // defensive reset
+    sym_table[sym_count].record_elem_field_count = 0;
+    array_mem_count += size;
+    sym_count++;
+}
+
+// A 1D array of records ('array[lo..hi] of TSomeRecord') - each element
+// occupies record_types[record_type_idx].field_count contiguous ints in
+// vm_array_mem[] (rather than 1, like every other array element type) -
+// see is_record_array/record_elem_field_count in the Symbol comment in
+// common.h. Only 1D is supported so far (2D/ND arrays of records are a
+// known gap - see docs/LANGUAGE.md); the record type itself must have no
+// array-typed field (an array of records with an array field would need
+// a variable stride per field, not a fixed one - out of scope for now).
+// Does NOT register the sym_table[]<->record_type_idx mapping itself -
+// see register_record_array() below, called separately by every call
+// site (global var section, add_local_array_rec()) right after this.
+static void register_record_array(int sym_idx, int record_type_idx) {
+    if (record_array_count >= MAX_RECORD_ARRAYS) {
+        compile_error(token.line, "Too many array-of-record declarations (limit is %d)", MAX_RECORD_ARRAYS);
+    }
+    record_arrays[record_array_count].sym_idx = sym_idx;
+    record_arrays[record_array_count].record_type_idx = record_type_idx;
+    record_array_count++;
+}
+
+static void add_array_var_rec(const char *name, int record_type_idx, int lower, int upper) {
+    for (int i = 0; i < sym_count; i++) {
+        if (strcmp(sym_table[i].name, name) == 0) {
+            compile_error(token.line, "Duplicate variable declaration '%s'", name);
+        }
+    }
+    if (find_const(name) != -1) {
+        compile_error(token.line, "'%s' is already declared as a constant", name);
+    }
+    {
+        int existing_enum_type_idx, existing_ordinal;
+        if (find_enum_value(name, &existing_enum_type_idx, &existing_ordinal)) {
+            compile_error(token.line, "'%s' is already declared as an enumerated value", name);
+        }
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        if (rt->fields[i].is_array) {
+            compile_error(token.line, "Array-of-record element type '%s' has an array field '%s' - arrays of records with an array field aren't supported yet",
+                          rt->name, rt->fields[i].name);
+        }
+    }
+    int size = (upper - lower + 1) * rt->field_count;
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = TYPE_INTEGER; // unused - see is_record_array in common.h
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = lower;
+    sym_table[sym_count].array_upper = upper;
+    sym_table[sym_count].array_base = array_mem_count;
+    sym_table[sym_count].is_2d = 0;
+    sym_table[sym_count].is_nd = 0;
+    sym_table[sym_count].is_subrange = 0;
+    sym_table[sym_count].subrange_lower = 0;
+    sym_table[sym_count].subrange_upper = 0;
+    sym_table[sym_count].is_record_array = 1;
+    sym_table[sym_count].record_elem_field_count = rt->field_count;
     array_mem_count += size;
     sym_count++;
 }
@@ -964,6 +1065,42 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     current_locals[current_local_count].array_upper = 0;  // (or anything else) in a previously-parsed procedure
     current_locals[current_local_count].is_subrange = 0;  // meaningless for is_array - lives on the mangled
     current_locals[current_local_count].subrange_lower = 0; // global's own Symbol (sym_table[array_sym_idx]) instead
+    current_locals[current_local_count].subrange_upper = 0;
+    current_locals[current_local_count].is_static = 0;
+    current_locals[current_local_count].static_sym_idx = 0;
+    current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    return current_local_count++;
+}
+
+// Same trick as add_local_array() above - a procedure-local array of
+// records is just another hidden, mangled GLOBAL array-of-records (see
+// add_array_var_rec()), shared/persistent across every call exactly like
+// a local array already is. Registers the sym_table[]<->record_type_idx
+// mapping too, so factor()/statement()'s local-array read/write paths
+// (which resolve to this same array_sym_idx) can look up field names via
+// find_record_array_type() exactly as they would for a true global.
+static int add_local_array_rec(const char *name, int record_type_idx, int lower, int upper) {
+    if (find_local(name) != -1 || local_record_name_collides(name)) {
+        compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
+    }
+    if (current_local_count >= MAX_LOCALS) {
+        compile_error(token.line, "Too many parameters/local variables (limit is %d)", MAX_LOCALS);
+    }
+    char mangled[MAX_NAME];
+    snprintf(mangled, MAX_NAME, "__local_arr%d", sym_count);
+    int array_sym_idx = sym_count; // add_array_var_rec() is about to append here
+    add_array_var_rec(mangled, record_type_idx, lower, upper);
+    register_record_array(array_sym_idx, record_type_idx);
+
+    strcpy(current_locals[current_local_count].name, name);
+    current_locals[current_local_count].type = TYPE_INTEGER; // unused - see add_array_var_rec()'s own comment
+    current_locals[current_local_count].is_array = 1;
+    current_locals[current_local_count].array_sym_idx = array_sym_idx;
+    current_locals[current_local_count].is_array_ref = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].array_lower = 0;
+    current_locals[current_local_count].array_upper = 0;
+    current_locals[current_local_count].is_subrange = 0;
+    current_locals[current_local_count].subrange_lower = 0;
     current_locals[current_local_count].subrange_upper = 0;
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
@@ -1348,6 +1485,14 @@ typedef struct {
                           // yet, so parse_scalar_type() below still
                           // rejects a record type name in that position)
     int record_type_idx;  // only meaningful if is_record
+    int is_array_of_record; // 1 if this is an array whose ELEMENT type is
+                          // a record type name - mutually exclusive with
+                          // is_record, but is_array is ALSO set (see
+                          // below): this is still an array, in every
+                          // sense parameter/local declaration dispatch
+                          // (statement()/subroutine_declaration()) needs
+                          // to tell apart from a whole-record group.
+    int array_record_type_idx; // only meaningful if is_array_of_record
 } NameGroup;
 
 static NameGroup parse_name_group(void) {
@@ -1359,6 +1504,8 @@ static NameGroup parse_name_group(void) {
     g.is_nd = 0;
     g.is_record = 0;
     g.record_type_idx = 0;
+    g.is_array_of_record = 0;
+    g.array_record_type_idx = 0;
     if (token.type != TOKEN_IDENTIFIER) compile_error(token.line, "Expected an identifier");
     strcpy(g.names[g.count++], token.text);
     match(TOKEN_IDENTIFIER);
@@ -1403,7 +1550,16 @@ static NameGroup parse_name_group(void) {
                 g.array_upper2 = upper[1];
             }
         }
-        g.type = parse_scalar_type();
+        if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+            if (dims != 1) {
+                compile_error(token.line, "Arrays of records are only supported for 1D arrays right now (see docs/LANGUAGE.md)");
+            }
+            g.array_record_type_idx = find_record_type(token.text);
+            g.is_array_of_record = 1;
+            match(TOKEN_IDENTIFIER);
+        } else {
+            g.type = parse_scalar_type();
+        }
         g.is_array = 1;
     } else if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
         g.record_type_idx = find_record_type(token.text);
@@ -1830,12 +1986,51 @@ static ASTNode *parse_call_arguments(int proc_idx) {
 // symbol under a mangled name, so once its index is resolved, everything
 // past that point (is it an array? a string that can be indexed? a plain
 // scalar?) is identical to resolving any other global variable.
+// Parses '[index].field' for an array-of-records already resolved to
+// arr_sym_idx (whether a true global or a local's hidden mangled global -
+// see is_record_array in common.h) - '[' has already been matched by the
+// caller. Shared between parse_global_symbol_reference() below and the
+// local-array read path in factor(), the two places a plain array
+// identifier's '[' gets matched on the read side.
+static ASTNode *parse_record_array_field_read(int arr_sym_idx, int line) {
+    ASTNode *index_expr = expression();
+    match(TOKEN_RBRACKET);
+    if (token.type != TOKEN_PERIOD) {
+        compile_error(token.line, "'%s' is an array of records - index it, then access a field, e.g. '%s[i].field'",
+                      sym_table[arr_sym_idx].name, sym_table[arr_sym_idx].name);
+    }
+    match(TOKEN_PERIOD);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a field name after '%s[...].'", sym_table[arr_sym_idx].name);
+    }
+    int record_type_idx = find_record_array_type(arr_sym_idx);
+    int field_idx = find_record_field(record_type_idx, token.text);
+    if (field_idx == -1) {
+        compile_error(token.line, "'%s' is not a field of '%s'", token.text, record_types[record_type_idx].name);
+    }
+    match(TOKEN_IDENTIFIER);
+    RecordField *f = &record_types[record_type_idx].fields[field_idx];
+    ASTNode *node = create_node(NODE_ARRAY_RECORD_FIELD_ACCESS);
+    node->line = line;
+    node->data.var_idx = arr_sym_idx;
+    node->left = index_expr;
+    ASTNode *offset_lit = create_node(NODE_NUMBER);
+    offset_lit->data.num_value = field_idx;
+    offset_lit->expression_type = TYPE_INTEGER;
+    node->right = offset_lit;
+    node->expression_type = f->type;
+    return node;
+}
+
 static ASTNode *parse_global_symbol_reference(int idx, int line) {
     if (sym_table[idx].is_array) {
         if (token.type != TOKEN_LBRACKET) {
             compile_error(token.line, "Array '%s' must be indexed", sym_table[idx].name);
         }
         match(TOKEN_LBRACKET);
+        if (sym_table[idx].is_record_array) {
+            return parse_record_array_field_read(idx, line);
+        }
         if (sym_table[idx].is_nd) {
             ASTNode *node = create_node(NODE_ARRAY_ACCESS_ND);
             node->line = line;
@@ -2379,6 +2574,9 @@ static ASTNode *factor(void) {
                     compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
                 }
                 match(TOKEN_LBRACKET);
+                if (sym_table[arr_sym_idx].is_record_array) {
+                    return parse_record_array_field_read(arr_sym_idx, line);
+                }
                 if (sym_table[arr_sym_idx].is_nd) {
                     ASTNode *node = create_node(NODE_ARRAY_ACCESS_ND);
                     node->line = line;
@@ -2856,6 +3054,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     record_type_count = 0;
     record_var_count = 0;
     local_record_var_count = 0;
+    record_array_count = 0;
     const_def_count = 0;
     type_alias_count = 0;
     enum_type_count = 0;
@@ -2913,22 +3112,35 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                 match(TOKEN_RBRACKET);
                 match(TOKEN_OF);
 
-                DataType elem_type = parse_scalar_type();
-                int is_subrange = scalar_type_is_subrange;
-                int subrange_lower = scalar_type_subrange_lower;
-                int subrange_upper = scalar_type_subrange_upper;
-
-                for (int i = 0; i < count; i++) {
-                    if (dims == 1) {
-                        add_array_var(temporary_names[i], elem_type, lower[0], upper[0]);
-                    } else if (dims == 2) {
-                        add_array_var_2d(temporary_names[i], elem_type, lower[0], upper[0], lower[1], upper[1]);
-                    } else {
-                        add_array_var_nd(temporary_names[i], elem_type, dims, lower, upper);
+                if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+                    if (dims != 1) {
+                        compile_error(token.line, "Arrays of records are only supported for 1D arrays right now (see docs/LANGUAGE.md)");
                     }
-                    sym_table[sym_count - 1].is_subrange = is_subrange;
-                    sym_table[sym_count - 1].subrange_lower = subrange_lower;
-                    sym_table[sym_count - 1].subrange_upper = subrange_upper;
+                    int elem_record_type_idx = find_record_type(token.text);
+                    match(TOKEN_IDENTIFIER);
+                    for (int i = 0; i < count; i++) {
+                        int array_sym_idx = sym_count; // add_array_var_rec() is about to append here
+                        add_array_var_rec(temporary_names[i], elem_record_type_idx, lower[0], upper[0]);
+                        register_record_array(array_sym_idx, elem_record_type_idx);
+                    }
+                } else {
+                    DataType elem_type = parse_scalar_type();
+                    int is_subrange = scalar_type_is_subrange;
+                    int subrange_lower = scalar_type_subrange_lower;
+                    int subrange_upper = scalar_type_subrange_upper;
+
+                    for (int i = 0; i < count; i++) {
+                        if (dims == 1) {
+                            add_array_var(temporary_names[i], elem_type, lower[0], upper[0]);
+                        } else if (dims == 2) {
+                            add_array_var_2d(temporary_names[i], elem_type, lower[0], upper[0], lower[1], upper[1]);
+                        } else {
+                            add_array_var_nd(temporary_names[i], elem_type, dims, lower, upper);
+                        }
+                        sym_table[sym_count - 1].is_subrange = is_subrange;
+                        sym_table[sym_count - 1].subrange_lower = subrange_lower;
+                        sym_table[sym_count - 1].subrange_upper = subrange_upper;
+                    }
                 }
             } else if (token.type == TOKEN_TEXT_TYPE) {
                 // A file variable - see TYPE_FILE in common.h for why
@@ -3210,6 +3422,9 @@ static void subroutine_declaration(int is_function_decl) {
                         if (is_var_group && g.is_record) {
                             compile_error(token.line, "'var' doesn't support whole records yet - only a scalar 'var' parameter is supported (see docs/LANGUAGE.md)");
                         }
+                        if (g.is_array_of_record) {
+                            compile_error(token.line, "Array-of-record parameters aren't supported yet - copy into/out of a local array of records instead (see docs/LANGUAGE.md)");
+                        }
                         if (g.is_array) {
                             // 'var' on an array parameter is accepted but
                             // redundant - an array parameter is already
@@ -3338,6 +3553,8 @@ static void subroutine_declaration(int is_function_decl) {
                     }
                     add_static_local(proc_table[proc_idx].name, g.names[i], g.type,
                                       g.is_subrange, g.subrange_lower, g.subrange_upper);
+                } else if (g.is_array_of_record) {
+                    add_local_array_rec(g.names[i], g.array_record_type_idx, g.array_lower, g.array_upper);
                 } else if (g.is_array) {
                     add_local_array(g.names[i], g.type, g.array_lower, g.array_upper,
                                      g.is_2d, g.array_lower2, g.array_upper2,
@@ -3979,6 +4196,204 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     return write_node;
 }
 
+// Caches 'expr' (an already-parsed expression, evaluated exactly once)
+// into a fresh hidden temp - a local frame slot if currently inside a
+// procedure/function body, a global otherwise - matching the existing
+// local/global split parse_local_for_tail()/parse_for_in_tail_global()
+// already use to cache a 'for' loop's end bound / a 'for x in s do's set
+// expression. Needed here because a whole-element record-array copy
+// ('arr[i] := someRecord;' or the reverse) reads/writes the SAME index
+// value once per field, not just once - re-evaluating the raw index
+// expression that many times would be both wrong (re-running any side
+// effects) and wasteful. Returns the caching NODE_ASSIGN/NODE_LOCAL_ASSIGN
+// statement (link it in via ->next before whatever uses the cached
+// value) and, via *out_slot/*out_is_local, enough to build fresh
+// NODE_VARIABLE/NODE_LOCAL_VAR references to it afterward - see
+// make_cached_ref() below.
+static ASTNode *cache_expr_once(ASTNode *expr, const char *name_prefix, int *out_slot, int *out_is_local) {
+    if (in_procedure) {
+        char hidden_name[MAX_NAME];
+        snprintf(hidden_name, MAX_NAME, "__%s_local%d", name_prefix, current_local_count);
+        int slot = add_local(hidden_name, TYPE_INTEGER);
+        ASTNode *cache_assign = create_node(NODE_LOCAL_ASSIGN);
+        cache_assign->data.var_idx = slot;
+        cache_assign->expression_type = TYPE_INTEGER;
+        cache_assign->left = expr;
+        *out_slot = slot;
+        *out_is_local = 1;
+        return cache_assign;
+    }
+    char hidden_name[MAX_NAME];
+    snprintf(hidden_name, MAX_NAME, "__%s%d", name_prefix, sym_count);
+    int slot = sym_count;
+    add_var(hidden_name, TYPE_INTEGER);
+    ASTNode *cache_assign = create_node(NODE_ASSIGN);
+    cache_assign->data.var_idx = slot;
+    cache_assign->left = expr;
+    *out_slot = slot;
+    *out_is_local = 0;
+    return cache_assign;
+}
+
+// Builds a fresh reference to a value already cached via cache_expr_once()
+// above - needed once per field a whole-element record-array copy
+// touches, since the same cached temp can't be read by reusing the same
+// ASTNode pointer in more than one place (ASTNode children form a tree,
+// not a DAG - a node linked in twice would have its ->next silently
+// double-managed).
+static ASTNode *make_cached_ref(int slot, int is_local) {
+    ASTNode *n = create_node(is_local ? NODE_LOCAL_VAR : NODE_VARIABLE);
+    n->data.var_idx = slot;
+    n->expression_type = TYPE_INTEGER;
+    return n;
+}
+
+// 'arr[i] := <record source>;' where arr (dest_sym_idx) is a 1D array of
+// records and index_expr is the already-parsed (not yet cached) index -
+// ':=' has already been matched by the caller. The source may be either
+// another record-array element ('arr[i] := other[j];', same or different
+// array, same record type) or a plain record variable, global or local
+// ('arr[i] := someRecord;'). Desugars into N field-by-field
+// NODE_ARRAY_RECORD_FIELD_ASSIGN nodes (one per field of the record
+// type), chained via ->next and wrapped in a NODE_COMPOUND - the same
+// "a record isn't one runtime value" philosophy parse_whole_record_
+// assignment() below already uses, generalized to a destination that's
+// an array ELEMENT rather than a whole record variable. The destination
+// index is cached once (see cache_expr_once()) since it's read once per
+// field, not just once; when the source is ALSO a record-array element,
+// its own index is cached too, for the same reason.
+static ASTNode *parse_record_array_dest_whole_assignment(int dest_sym_idx, ASTNode *index_expr) {
+    int dest_record_type_idx = find_record_array_type(dest_sym_idx);
+    RecordTypeDef *rt = &record_types[dest_record_type_idx];
+
+    int dest_slot, dest_is_local;
+    ASTNode *dest_cache = cache_expr_once(index_expr, "recarr_idx", &dest_slot, &dest_is_local);
+
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a record value of the same type as '%s's elements", sym_table[dest_sym_idx].name);
+    }
+    char src_name[MAX_NAME];
+    strcpy(src_name, token.text);
+    int src_line = token.line;
+
+    int src_arr_sym_idx = find_var_soft(src_name);
+    if (src_arr_sym_idx != -1 && sym_table[src_arr_sym_idx].is_record_array) {
+        int src_record_type_idx = find_record_array_type(src_arr_sym_idx);
+        if (src_record_type_idx != dest_record_type_idx) {
+            compile_error(src_line, "Cannot assign '%s' (array of '%s') to an element of '%s' (array of '%s') - different record types",
+                          src_name, record_types[src_record_type_idx].name, sym_table[dest_sym_idx].name, rt->name);
+        }
+        match(TOKEN_IDENTIFIER);
+        if (token.type != TOKEN_LBRACKET) {
+            compile_error(token.line, "Array '%s' must be indexed", src_name);
+        }
+        match(TOKEN_LBRACKET);
+        ASTNode *src_index_expr = expression();
+        match(TOKEN_RBRACKET);
+
+        int src_slot, src_is_local;
+        ASTNode *src_cache = cache_expr_once(src_index_expr, "recarr_idx", &src_slot, &src_is_local);
+        dest_cache->next = src_cache;
+
+        ASTNode *head = NULL, *tail = NULL;
+        for (int i = 0; i < rt->field_count; i++) {
+            ASTNode *offset_lit_r = create_node(NODE_NUMBER);
+            offset_lit_r->data.num_value = i;
+            offset_lit_r->expression_type = TYPE_INTEGER;
+            ASTNode *value = create_node(NODE_ARRAY_RECORD_FIELD_ACCESS);
+            value->data.var_idx = src_arr_sym_idx;
+            value->left = make_cached_ref(src_slot, src_is_local);
+            value->right = offset_lit_r;
+            value->expression_type = rt->fields[i].type;
+
+            ASTNode *offset_lit_w = create_node(NODE_NUMBER);
+            offset_lit_w->data.num_value = i;
+            offset_lit_w->expression_type = TYPE_INTEGER;
+            ASTNode *assign = create_node(NODE_ARRAY_RECORD_FIELD_ASSIGN);
+            assign->data.var_idx = dest_sym_idx;
+            assign->left = make_cached_ref(dest_slot, dest_is_local);
+            assign->right = value;
+            assign->extra = offset_lit_w;
+            assign->expression_type = rt->fields[i].type;
+
+            if (!head) head = assign; else tail->next = assign;
+            tail = assign;
+        }
+        src_cache->next = head;
+        ASTNode *compound = create_node(NODE_COMPOUND);
+        compound->left = dest_cache;
+        return compound;
+    }
+
+    int src_is_local2, src_record_type_idx2;
+    const int *src_field_idx;
+    if (!find_any_record_var(src_name, &src_is_local2, &src_record_type_idx2, &src_field_idx)) {
+        compile_error(src_line, "'%s' is not a record variable or an array of records", src_name);
+    }
+    if (src_record_type_idx2 != dest_record_type_idx) {
+        compile_error(src_line, "Cannot assign '%s' (type '%s') to an element of '%s' (array of '%s') - different record types",
+                      src_name, record_types[src_record_type_idx2].name, sym_table[dest_sym_idx].name, rt->name);
+    }
+    match(TOKEN_IDENTIFIER);
+
+    ASTNode *head = NULL, *tail = NULL;
+    for (int i = 0; i < rt->field_count; i++) {
+        ASTNode *value = record_field_read_node(src_is_local2, src_field_idx[i]);
+        ASTNode *offset_lit = create_node(NODE_NUMBER);
+        offset_lit->data.num_value = i;
+        offset_lit->expression_type = TYPE_INTEGER;
+        ASTNode *assign = create_node(NODE_ARRAY_RECORD_FIELD_ASSIGN);
+        assign->data.var_idx = dest_sym_idx;
+        assign->left = make_cached_ref(dest_slot, dest_is_local);
+        assign->right = value;
+        assign->extra = offset_lit;
+        assign->expression_type = rt->fields[i].type;
+        if (!head) head = assign; else tail->next = assign;
+        tail = assign;
+    }
+    dest_cache->next = head;
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = dest_cache;
+    return compound;
+}
+
+// Parses '[index].field := value' OR '[index] := <record source>' for an
+// array-of-records already resolved to arr_sym_idx (whether a true global
+// or a local's hidden mangled global) - '[' has already been matched by
+// the caller. The write-side mirror of parse_record_array_field_read()
+// above, shared between parse_global_assignment() below and the
+// local-array write path in statement().
+static ASTNode *parse_record_array_write(int arr_sym_idx) {
+    ASTNode *index_expr = expression();
+    match(TOKEN_RBRACKET);
+    if (token.type == TOKEN_PERIOD) {
+        match(TOKEN_PERIOD);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a field name after '%s[...].'", sym_table[arr_sym_idx].name);
+        }
+        int record_type_idx = find_record_array_type(arr_sym_idx);
+        int field_idx = find_record_field(record_type_idx, token.text);
+        if (field_idx == -1) {
+            compile_error(token.line, "'%s' is not a field of '%s'", token.text, record_types[record_type_idx].name);
+        }
+        match(TOKEN_IDENTIFIER);
+        RecordField *f = &record_types[record_type_idx].fields[field_idx];
+        match(TOKEN_ASSIGN);
+        ASTNode *stmt = create_node(NODE_ARRAY_RECORD_FIELD_ASSIGN);
+        stmt->data.var_idx = arr_sym_idx;
+        stmt->left = index_expr;
+        stmt->right = wrap_range_check(expression(), f->is_subrange, f->subrange_lower, f->subrange_upper);
+        ASTNode *offset_lit = create_node(NODE_NUMBER);
+        offset_lit->data.num_value = field_idx;
+        offset_lit->expression_type = TYPE_INTEGER;
+        stmt->extra = offset_lit;
+        stmt->expression_type = f->type;
+        return stmt;
+    }
+    match(TOKEN_ASSIGN);
+    return parse_record_array_dest_whole_assignment(arr_sym_idx, index_expr);
+}
+
 // Given an already-resolved GLOBAL symbol index, parses whatever follows
 // (array indexing, 2D array indexing) plus ':=' and the value expression,
 // and builds the appropriate assignment node. Shared between plain
@@ -3990,6 +4405,9 @@ static ASTNode *parse_global_assignment(int idx) {
             compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
         }
         match(TOKEN_LBRACKET);
+        if (sym_table[idx].is_record_array) {
+            return parse_record_array_write(idx);
+        }
         if (sym_table[idx].is_nd) {
             ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_ND);
             stmt->data.var_idx = idx;
@@ -4067,6 +4485,52 @@ static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected a record variable of the same type as '%s'", dest_name);
     }
+
+    // The source may be a record-array ELEMENT ('destRec := arr[i];'),
+    // not just another plain record variable - checked first via a soft
+    // lookup, since the overwhelmingly common case is a plain record var.
+    {
+        int src_arr_sym_idx = find_var_soft(token.text);
+        if (src_arr_sym_idx != -1 && sym_table[src_arr_sym_idx].is_record_array) {
+            int src_record_type_idx = find_record_array_type(src_arr_sym_idx);
+            if (src_record_type_idx != dest_record_type_idx) {
+                compile_error(token.line, "Cannot assign '%s' (array of '%s') to '%s' (type '%s') - different record types",
+                              token.text, record_types[src_record_type_idx].name,
+                              dest_name, record_types[dest_record_type_idx].name);
+            }
+            match(TOKEN_IDENTIFIER);
+            if (token.type != TOKEN_LBRACKET) {
+                compile_error(token.line, "Array '%s' must be indexed", sym_table[src_arr_sym_idx].name);
+            }
+            match(TOKEN_LBRACKET);
+            ASTNode *index_expr = expression();
+            match(TOKEN_RBRACKET);
+
+            int idx_slot, idx_is_local;
+            ASTNode *idx_cache = cache_expr_once(index_expr, "recarr_idx", &idx_slot, &idx_is_local);
+
+            RecordTypeDef *rt = &record_types[dest_record_type_idx];
+            ASTNode *head = NULL, *tail = NULL;
+            for (int i = 0; i < rt->field_count; i++) {
+                ASTNode *offset_lit = create_node(NODE_NUMBER);
+                offset_lit->data.num_value = i;
+                offset_lit->expression_type = TYPE_INTEGER;
+                ASTNode *value = create_node(NODE_ARRAY_RECORD_FIELD_ACCESS);
+                value->data.var_idx = src_arr_sym_idx;
+                value->left = make_cached_ref(idx_slot, idx_is_local);
+                value->right = offset_lit;
+                value->expression_type = rt->fields[i].type;
+                ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], value);
+                if (!head) head = assign; else tail->next = assign;
+                tail = assign;
+            }
+            idx_cache->next = head;
+            ASTNode *compound = create_node(NODE_COMPOUND);
+            compound->left = idx_cache;
+            return compound;
+        }
+    }
+
     int src_is_local, src_record_type_idx;
     const int *src_field_idx;
     if (!find_any_record_var(token.text, &src_is_local, &src_record_type_idx, &src_field_idx)) {
@@ -4436,6 +4900,10 @@ static ASTNode *statement(void) {
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
                     compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                }
+                if (sym_table[arr_sym_idx].is_record_array) {
+                    match(TOKEN_LBRACKET);
+                    return parse_record_array_write(arr_sym_idx);
                 }
                 if (sym_table[arr_sym_idx].is_nd) {
                     ASTNode *stmt = create_node(NODE_ARRAY_ASSIGN_ND);

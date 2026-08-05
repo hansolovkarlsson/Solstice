@@ -30,6 +30,7 @@ narration.
 .var <name> <integer|boolean|string|char|real>     ; declare a variable
 .array <name> <lower> <upper> <type>         ; declare a 1D array
 .array2d <name> <lo1> <hi1> <lo2> <hi2> <type> ; declare a 2D array
+.arrayrec <name> <lower> <upper> <field_count> ; declare a 1D array of records
 label:                                        ; a label, alone on its own line
 MNEMONIC [operand]                            ; one instruction per line
 ```
@@ -53,6 +54,7 @@ MNEMONIC [operand]                            ; one instruction per line
 | Integer literal | `PUSH`, `ENTER`, `LOAD_LOCAL`, `STORE_LOCAL` | `PUSH 5`, `ENTER 2`, `LOAD_LOCAL 0` — a local slot is just a number, not a named symbol |
 | Variable name | `LOAD`, `STORE`, `READ` | `LOAD x` — must have a matching `.var` |
 | Array name | `LOAD_IDX`, `STORE_IDX`, `LOAD_IDX2D`, `STORE_IDX2D` | `LOAD_IDX nums` — must have a matching `.array`/`.array2d`; the runtime index (indices, for the 2D ops) come off the stack, not the operand |
+| Array-of-records name | `LOAD_ARRAY_RECORD_FIELD`, `STORE_ARRAY_RECORD_FIELD`, `STORE_ARRAY_RECORD_FIELD_CHAR` | `LOAD_ARRAY_RECORD_FIELD pts` — must have a matching `.arrayrec`; the runtime index and the field's offset within one element both come off the stack (index pushed first, then field offset) |
 | Label name | `JMP`, `JZ`, `CALL` | `JZ done`, `CALL sum` — may be a forward reference |
 | Quoted string | `PUSH_STR` | `PUSH_STR "hello"` — interned into the string pool; content is everything between the first and last `"` on the line, so an embedded `"` works without escaping |
 | *(none)* | everything else (including `RET`) | |

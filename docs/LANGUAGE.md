@@ -1638,15 +1638,65 @@ global records of the same type can be freely mixed on either side of an
 assignment or comparison (`localRec := globalRec;`, `if localRec =
 globalRec then ...`).
 
+### Records as array elements
+
+```pascal
+type
+    TPoint = record
+        x, y: integer;
+    end;
+var
+    pts: array[1..10] of TPoint;
+    p: TPoint;
+begin
+    pts[1].x := 5;
+    pts[1].y := 10;
+    pts[2] := pts[1];      { whole-element copy: array element <- array element }
+    p := pts[2];            { plain record <- array element }
+    pts[3] := p;             { array element <- plain record }
+    writeln(pts[2].x);      { 5 }
+end.
+```
+
+An array's element type can be a record type, for both a global array and
+a procedure-local one (a local array of records reuses the same "hidden
+global" storage trick a local scalar array already does — shared/
+persistent across every call, including recursive ones). Read or write a
+single field via a runtime index (`pts[i].x := 5;`), or copy a whole
+element at once — the source (or destination) can be another array-of-
+records element (same array or a different one, as long as it's the same
+record type) or a plain record variable; whole-element copy desugars,
+same as ordinary whole-record assignment, into one field-by-field
+assignment per field, with the index evaluated exactly once regardless of
+how many fields the record has.
+
+Under the hood, each array element occupies as many contiguous storage
+slots as the record type has fields (rather than the usual one slot per
+element) — a genuinely runtime-addressable layout, unlike a plain
+(non-array) record, which is pure parse-time sugar over one hidden global
+per field. This is why a plain record and an array of records need two
+different implementations even though they look similar on the surface:
+a plain record's `p.field` is resolved entirely at parse time (there's no
+runtime "which record" to select), but `people[i].age`'s `i` is a runtime
+value, so the compiler can no longer resolve which storage location to
+touch until the program actually runs.
+
 ### What's not supported yet
 
-- **Records as array elements, or an array as a field's own bounds
-  varying per record** — the whole "mangled hidden global per field"
-  approach (for a global record) assumes exactly one, statically-known
-  storage location per field. `people[i].age`, where `i` is a runtime
-  value, doesn't fit that model — it would need a genuine addressing
-  scheme, similar to how arrays themselves work, not just sugar over
-  existing globals.
+- **2D or N-D arrays of records** — only a 1D array of records is
+  supported so far; `array[1..2, 1..2] of TPoint` is a compile error.
+- **A record type with an array-typed field, used as an array's element
+  type** — a record with an array field still works as a plain (non-array)
+  variable, but using it as an array's element type is a compile error:
+  each element would need a variable amount of storage per field, which
+  this feature's fixed-size-per-element layout doesn't support.
+- **Array-of-record parameters** — passing an array of records to a
+  procedure/function is a compile error; array parameters need a
+  by-reference mechanism this feature doesn't build yet. Work around it
+  by copying into/out of a local array of records instead.
+- **Passing a single array-of-records element directly as a by-value
+  record argument** (`Foo(pts[i])` where `Foo(p: TPoint)`) — copy it into
+  a plain record variable first (`p := pts[i]; Foo(p);`).
 - **An array-typed field in a record parameter or local record** — a
   compile error for now (a global record's field CAN be an array). Only
   affects local/parameter records; a global record with an array field
@@ -2048,13 +2098,13 @@ file.pas:1: Warning: function 'Average' never assigns a value to its own name - 
 
 ## What's not implemented
 
-- Three-or-more-dimensional arrays, and array parameters/locals for 2D
-  arrays specifically (1D supports both already) — see
-  [Two-dimensional arrays](#two-dimensional-arrays) above
-- Records as array elements, record parameters/locals, nested records,
-  and record comparison (plain record variables and whole-record
-  assignment work — see [Records](#records) above)
-- Sets, enumerated types
+- Pointers (`^Type`, `new`, `dispose`)
+- 2D/N-D arrays of records, array-of-record parameters, nested records,
+  and an array-typed field in a record parameter/local record — see
+  [Records as array elements](#records-as-array-elements) and
+  [Records](#records) above (1D arrays of records, plain record
+  variables, record parameters/locals, and record comparison all work)
 - Units/modules/`uses`
 
-See the project README's Status section for the current plan.
+See the project README's Status section and
+[docs/ROADMAP.md](ROADMAP.md) for the current plan.

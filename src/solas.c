@@ -206,6 +206,9 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"STORE_IDXND", OP_STORE_IDXND, OPERAND_VAR},
     {"LOAD_IDXND_DYN",  OP_LOAD_IDXND_DYN,  OPERAND_IMMEDIATE}, // operand = dimension count, not a symbol reference
     {"STORE_IDXND_DYN", OP_STORE_IDXND_DYN, OPERAND_IMMEDIATE},
+    {"LOAD_ARRAY_RECORD_FIELD",       OP_LOAD_ARRAY_RECORD_FIELD,       OPERAND_VAR},
+    {"STORE_ARRAY_RECORD_FIELD",      OP_STORE_ARRAY_RECORD_FIELD,      OPERAND_VAR},
+    {"STORE_ARRAY_RECORD_FIELD_CHAR", OP_STORE_ARRAY_RECORD_FIELD_CHAR, OPERAND_VAR},
     {"FILE_ASSIGN",  OP_FILE_ASSIGN,  OPERAND_VAR},
     {"FILE_RESET",   OP_FILE_RESET,   OPERAND_VAR},
     {"FILE_REWRITE", OP_FILE_REWRITE, OPERAND_VAR},
@@ -406,6 +409,45 @@ static void add_array_var_nd(int line_no, const char *name, DataType elem_type,
     sym_count++;
 }
 
+// A 1D array of records ('.arrayrec <name> <lower> <upper> <field_count>')
+// - see is_record_array/record_elem_field_count in the Symbol comment in
+// common.h. field_count is just an integer here (solas has no notion of
+// a "record type" at all - it never links parser.c's record_types[],
+// only ever sees the resulting Symbol's own stride).
+static void add_array_var_rec(int line_no, const char *name, int lower, int upper, int field_count) {
+    if (strlen(name) >= MAX_NAME) {
+        asm_error(line_no, "Array name '%s' too long (limit is %d characters)", name, MAX_NAME - 1);
+    }
+    if (find_var(name) != -1) {
+        asm_error(line_no, "Duplicate variable declaration '%s'", name);
+    }
+    if (sym_count >= MAX_SYMBOLS) {
+        asm_error(line_no, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
+    }
+    if (upper < lower) {
+        asm_error(line_no, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+    }
+    if (field_count < 1) {
+        asm_error(line_no, "Invalid record field count %d (must be >= 1)", field_count);
+    }
+    int size = (upper - lower + 1) * field_count;
+    if (array_mem_count + size > MAX_ARRAY_MEM) {
+        asm_error(line_no, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
+    }
+    strcpy(sym_table[sym_count].name, name);
+    sym_table[sym_count].type = TYPE_INTEGER; // unused - see is_record_array in common.h
+    sym_table[sym_count].is_array = 1;
+    sym_table[sym_count].array_lower = lower;
+    sym_table[sym_count].array_upper = upper;
+    sym_table[sym_count].array_base = array_mem_count;
+    sym_table[sym_count].is_2d = 0;
+    sym_table[sym_count].is_nd = 0;
+    sym_table[sym_count].is_record_array = 1;
+    sym_table[sym_count].record_elem_field_count = field_count;
+    array_mem_count += size;
+    sym_count++;
+}
+
 static void add_label(int line_no, const char *name, int index) {
     if (strlen(name) >= MAX_NAME) {
         asm_error(line_no, "Label name '%s' too long (limit is %d characters)", name, MAX_NAME - 1);
@@ -602,8 +644,15 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
                 else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', or 'set')", type_str); return; }
                 add_array_var_nd(line_no, name, type, dims, lower, upper);
+            } else if (strcasecmp(directive, "arrayrec") == 0) {
+                char name[MAX_NAME];
+                int lower, upper, field_count;
+                if (sscanf(line, ".%31s %31s %d %d %d", directive, name, &lower, &upper, &field_count) != 5) {
+                    asm_error(line_no, "Malformed directive (expected: .arrayrec <name> <lower> <upper> <field_count>)");
+                }
+                add_array_var_rec(line_no, name, lower, upper, field_count);
             } else {
-                asm_error(line_no, "Unknown directive '.%s' (expected .var, .array, .array2d, or .arrayNd)", directive);
+                asm_error(line_no, "Unknown directive '.%s' (expected .var, .array, .array2d, .arrayNd, or .arrayrec)", directive);
             }
         } else if (is_label_line(line)) {
             char label_name[MAX_NAME];
