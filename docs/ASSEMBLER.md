@@ -57,6 +57,8 @@ MNEMONIC [operand]                            ; one instruction per line
 | Array-of-records name | `LOAD_ARRAY_RECORD_FIELD`, `STORE_ARRAY_RECORD_FIELD`, `STORE_ARRAY_RECORD_FIELD_CHAR` | `LOAD_ARRAY_RECORD_FIELD pts` — must have a matching `.arrayrec`; the runtime index and the field's offset within one element both come off the stack (index pushed first, then field offset) |
 | Integer literal (heap) | `NEW`, `DISPOSE` | `NEW 2` — element size (ints per instance), not a symbol reference |
 | Integer literal (field offset) | `LOAD_HEAP_FIELD`, `STORE_HEAP_FIELD`, `STORE_HEAP_FIELD_CHAR` | `LOAD_HEAP_FIELD 1` — the pointer VALUE being dereferenced always comes off the stack (every pointer shares one heap, so there's no "which array"-style name operand here) |
+| Integer literal (hop count) | `PUSH_STATIC_LINK` | `PUSH_STATIC_LINK 1` — `0` = push the current `fp`, `N` = walk the static-link chain `N` times, `-1` = the "no valid link" sentinel |
+| Integer literal (packed levels_up/slot) | `LOAD_ENCLOSING`, `STORE_ENCLOSING`, `PUSH_ENCLOSING_REF` | `LOAD_ENCLOSING 4098` — compute by hand as `(levels_up << 12) \| slot`, e.g. `(1 << 12) \| 2` = `4098` for a slot 2 local one lexical level up |
 | Label name | `JMP`, `JZ`, `CALL` | `JZ done`, `CALL sum` — may be a forward reference |
 | Quoted string | `PUSH_STR` | `PUSH_STR "hello"` — interned into the string pool; content is everything between the first and last `"` on the line, so an embedded `"` works without escaping |
 | *(none)* | everything else (including `RET`) | |

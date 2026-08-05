@@ -15,6 +15,38 @@ static void emit(Opcode op, int arg) {
     code_idx++;
 }
 
+// Packs (levels_up, slot) into one Instruction.arg for OP_LOAD_ENCLOSING/
+// OP_STORE_ENCLOSING/OP_PUSH_ENCLOSING_REF - see their comments in
+// common.h's Opcode section. Only ever called with levels_up >= 1 (the
+// levels_up == 0 case always uses the plain, non-"enclosing" opcode
+// instead - see emit_load_local()/emit_store_local()/
+// emit_push_local_ref() below).
+static int pack_enclosing(int levels_up, int slot) {
+    return (levels_up << 12) | slot;
+}
+
+// A local/parameter access node's ->op holds levels_up (0 = this
+// procedure's own frame, N >= 1 = walk the static-link chain N times) -
+// see the parser.c comment above find_local_outward(). These three
+// helpers pick the plain LOCAL opcode or its ENCLOSING-chain-walking
+// counterpart accordingly, so every affected NODE_LOCAL_VAR/
+// NODE_LOCAL_ASSIGN/NODE_LOCAL_VAR_REF/NODE_VAR_PARAM_READ/
+// NODE_VAR_PARAM_ASSIGN/NODE_REF_ARRAY_ACCESS(_2D/_ND)/
+// NODE_REF_ARRAY_ASSIGN(_2D/_ND)/NODE_LOCAL_STRING_INDEX(_ASSIGN) case
+// below can share one three-line decision instead of repeating it.
+static void emit_load_local(int levels_up, int slot) {
+    if (levels_up == 0) emit(OP_LOAD_LOCAL, slot);
+    else emit(OP_LOAD_ENCLOSING, pack_enclosing(levels_up, slot));
+}
+static void emit_store_local(int levels_up, int slot) {
+    if (levels_up == 0) emit(OP_STORE_LOCAL, slot);
+    else emit(OP_STORE_ENCLOSING, pack_enclosing(levels_up, slot));
+}
+static void emit_push_local_ref(int levels_up, int slot) {
+    if (levels_up == 0) emit(OP_PUSH_LOCAL_REF, slot);
+    else emit(OP_PUSH_ENCLOSING_REF, pack_enclosing(levels_up, slot));
+}
+
 // char and string share the exact same runtime representation (a
 // string_pool[] index), so every opcode-selection decision that currently
 // checks "is this a string" needs to treat char the same way.
@@ -230,6 +262,48 @@ typedef struct {
 
 static PendingCall pending_calls[MAX_PENDING_CALLS];
 static int pending_call_count = 0;
+
+// proc_table[] index of whichever procedure/function generate_code() is
+// currently emitting bytecode for, or -1 while generating the main
+// program's own body. Set once per iteration by generate_program()'s
+// per-procedure loop - see there. Used only by emit_static_link_for_call()
+// below, to classify a call site's relationship to its own target.
+static int codegen_current_proc_idx = -1;
+
+// Emits whatever OP_PUSH_STATIC_LINK a call to target_proc_idx needs
+// (nothing at all, if the target isn't a nested procedure), right before
+// record_call()'s own OP_CALL. Four cases, matching OP_PUSH_STATIC_LINK's
+// own comment in common.h:
+//   1. target isn't nested (lexical_parent_idx == -1) - no static link.
+//   2. target's lexical parent IS the procedure currently being
+//      compiled - arg 0 ("push my own current fp").
+//   3. target's lexical parent is a proper ancestor of the procedure
+//      currently being compiled - arg N, the number of hops up MY OWN
+//      lexical_parent_idx chain to reach it (which mirrors, at compile
+//      time, exactly the runtime hop count OP_PUSH_STATIC_LINK's own
+//      chain walk performs over vm_static_link[] at the call site).
+//   4. neither of the above - the flat-namespace escape hatch (nested
+//      procedure names stay callable from anywhere, not just their own
+//      lexical scope) means there's no live ancestor activation to point
+//      at here. arg -1, the sentinel: compiles fine, only traps at
+//      runtime if the callee actually touches an enclosing local.
+static void emit_static_link_for_call(int target_proc_idx) {
+    int target_parent = proc_table[target_proc_idx].lexical_parent_idx;
+    if (target_parent == -1) {
+        return; // case 1
+    }
+    int walk = codegen_current_proc_idx;
+    int hops = 0;
+    while (walk != -1) {
+        if (walk == target_parent) {
+            emit(OP_PUSH_STATIC_LINK, hops); // case 2 (hops == 0) or case 3 (hops >= 1)
+            return;
+        }
+        walk = proc_table[walk].lexical_parent_idx;
+        hops++;
+    }
+    emit(OP_PUSH_STATIC_LINK, -1); // case 4
+}
 
 static void record_call(int target_proc_idx) {
     if (pending_call_count >= MAX_PENDING_CALLS) {
@@ -763,7 +837,7 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_LOCAL_STRING_INDEX:
-            emit(OP_LOAD_LOCAL, node->data.var_idx);
+            emit_load_local((int)node->op, node->data.var_idx);
             generate_code(node->left);
             emit(OP_STR_CHAR_AT, 0);
             break;
@@ -778,11 +852,11 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_LOCAL_STRING_INDEX_ASSIGN:
-            emit(OP_LOAD_LOCAL, node->data.var_idx);
+            emit_load_local((int)node->op, node->data.var_idx);
             generate_code(node->left);
             generate_code(node->right);
             emit(OP_STR_CHAR_REPLACE, 0);
-            emit(OP_STORE_LOCAL, node->data.var_idx);
+            emit_store_local((int)node->op, node->data.var_idx);
             generate_code(node->next);
             break;
 
@@ -872,6 +946,7 @@ void generate_code(ASTNode *node) {
             for (ASTNode *arg = node->left; arg; arg = arg->next) {
                 generate_code(arg);
             }
+            emit_static_link_for_call(node->data.var_idx);
             record_call(node->data.var_idx);
             if (node->op == TOKEN_PROCEDURE) {
                 // Statement context: continue the enclosing statement
@@ -888,23 +963,23 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_LOCAL_VAR:
-            emit(OP_LOAD_LOCAL, node->data.var_idx);
+            emit_load_local((int)node->op, node->data.var_idx);
             break;
 
         case NODE_LOCAL_ASSIGN:
             generate_code(node->left);
-            emit(OP_STORE_LOCAL, node->data.var_idx);
+            emit_store_local((int)node->op, node->data.var_idx);
             generate_code(node->next);
             break;
 
         case NODE_REF_ARRAY_ACCESS:
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference (sym_table index)
+            emit_load_local((int)node->op, node->data.var_idx); // the runtime array reference (sym_table index)
             generate_code(node->left);               // the runtime index
             emit(OP_LOAD_IDX_DYN, 0);
             break;
 
         case NODE_REF_ARRAY_ASSIGN:
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference
+            emit_load_local((int)node->op, node->data.var_idx); // the runtime array reference
             generate_code(node->left);               // the runtime index
             generate_code(node->right);               // the value
             emit(OP_STORE_IDX_DYN, 0);
@@ -912,14 +987,14 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_REF_ARRAY_ACCESS_2D:
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference (sym_table index)
+            emit_load_local((int)node->op, node->data.var_idx); // the runtime array reference (sym_table index)
             generate_code(node->left);  // first index
             generate_code(node->right); // second index
             emit(OP_LOAD_IDX2D_DYN, 0);
             break;
 
         case NODE_REF_ARRAY_ASSIGN_2D:
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference
+            emit_load_local((int)node->op, node->data.var_idx); // the runtime array reference
             generate_code(node->left);  // first index
             generate_code(node->right); // second index
             generate_code(node->extra); // the value
@@ -928,7 +1003,7 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_REF_ARRAY_ACCESS_ND: {
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference (sym_table index)
+            emit_load_local((int)node->op, node->data.var_idx); // the runtime array reference (sym_table index)
             int dims = 0;
             for (ASTNode *idx = node->left; idx; idx = idx->next) {
                 generate_code(idx);
@@ -943,7 +1018,7 @@ void generate_code(ASTNode *node) {
         }
 
         case NODE_REF_ARRAY_ASSIGN_ND: {
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the runtime array reference
+            emit_load_local((int)node->op, node->data.var_idx); // the runtime array reference
             int dims = 0;
             for (ASTNode *idx = node->left; idx; idx = idx->next) {
                 generate_code(idx);
@@ -1071,16 +1146,16 @@ void generate_code(ASTNode *node) {
             break;
 
         case NODE_LOCAL_VAR_REF:
-            emit(OP_PUSH_LOCAL_REF, node->data.var_idx);
+            emit_push_local_ref((int)node->op, node->data.var_idx);
             break;
 
         case NODE_VAR_PARAM_READ:
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the reference
+            emit_load_local((int)node->op, node->data.var_idx); // the reference
             emit(OP_LOAD_REF, 0);
             break;
 
         case NODE_VAR_PARAM_ASSIGN:
-            emit(OP_LOAD_LOCAL, node->data.var_idx); // the reference
+            emit_load_local((int)node->op, node->data.var_idx); // the reference
             generate_code(node->left);                // the value
             emit(OP_STORE_REF, 0);
             generate_code(node->next);
@@ -1154,9 +1229,22 @@ void generate_program(ASTNode *main_body) {
         emit(OP_JMP, 0); // placeholder, patched below
 
         for (int i = 0; i < proc_count; i++) {
+            codegen_current_proc_idx = i;
             proc_table[i].entry_address = code_idx;
-            if (proc_table[i].local_count > 0) {
+            // A nested procedure needs its own distinct fp (established
+            // only by OP_ENTER - see vm.c's OP_CALL, which deliberately
+            // leaves fp pointing at the CALLER's frame until OP_ENTER
+            // runs) so OP_POP_STATIC_LINK below has somewhere correct to
+            // record its static link, even if it happens to declare zero
+            // of its own params/locals (a plain "procedure Bump; begin
+            // outerX := outerX + 1; end;" is exactly this case). Without
+            // this, OP_POP_STATIC_LINK would write into the CALLER's own
+            // fp slot instead, corrupting the caller's static link.
+            if (proc_table[i].local_count > 0 || proc_table[i].lexical_parent_idx != -1) {
                 emit(OP_ENTER, proc_table[i].local_count);
+            }
+            if (proc_table[i].lexical_parent_idx != -1) {
+                emit(OP_POP_STATIC_LINK, 0);
             }
             // Caller pushed arguments left-to-right (a record argument as
             // N flattened field values - see parse_record_argument() in
@@ -1164,7 +1252,11 @@ void generate_program(ASTNode *main_body) {
             // pop into the last parameter SLOT first, working backwards to
             // slot 0. param_slot_count, not param_count: a record
             // parameter occupies multiple slots (one per field) but is
-            // still just one syntactic parameter.
+            // still just one syntactic parameter. The static link, if any,
+            // was pushed by the CALLER LAST - after every real argument,
+            // right before OP_CALL (see emit_static_link_for_call()'s own
+            // call site) - so it's the first thing popped here, via
+            // OP_POP_STATIC_LINK just above, before this loop even starts.
             for (int p = proc_table[i].param_slot_count - 1; p >= 0; p--) {
                 emit(OP_STORE_LOCAL, p);
             }
@@ -1177,6 +1269,7 @@ void generate_program(ASTNode *main_body) {
 
         code[jmp_idx].arg = code_idx; // main starts here
     }
+    codegen_current_proc_idx = -1;
     generate_block(main_body);
 
     for (int i = 0; i < pending_call_count; i++) {

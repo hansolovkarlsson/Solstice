@@ -61,10 +61,19 @@ static int find_declared_label(int id) {
 // The parameters and local variables of whichever procedure is currently
 // being parsed - a fresh, tiny scope, reset at the start of each
 // procedure_declaration() and cleared again once it's done. Empty (and
-// in_procedure == 0) while parsing the main program body, so every
+// nesting_depth == -1) while parsing the main program body, so every
 // identifier there resolves against sym_table exactly as before
 // procedures existed.
-#define MAX_LOCALS 32
+//
+// Nested procedures (a procedure/function declared inside another one's
+// declaration section) turn this into a STACK of scopes, one per active
+// nesting level, rather than one flat table - see nesting_depth/
+// scope_locals[]/current_locals below. MAX_LOCALS was bumped from 32 to
+// 64 for this: a nesting chain's cumulative locals (every enclosing
+// scope's own locals, all simultaneously in scope from the innermost
+// procedure's point of view) now share this per-level budget, where
+// before it only ever bounded one procedure's own locals at a time.
+#define MAX_LOCALS 64
 typedef struct {
     char name[MAX_NAME];
     DataType type;      // scalar type, or array ELEMENT type if is_array/is_array_ref
@@ -124,9 +133,45 @@ typedef struct {
                         // is_array/is_array_ref/is_static (only a plain
                         // scalar parameter can be a 'var' parameter).
 } LocalSymbol;
-static LocalSymbol current_locals[MAX_LOCALS];
-static int current_local_count = 0;
-static int in_procedure = 0;
+
+// How many procedure/function declarations deep we're currently parsing
+// INTO (a nested procedure's own declaration section, which may itself
+// declare further nested procedures). -1 = not currently inside any
+// procedure at all (parsing the main program's own declarations/body).
+// 0 = directly inside a top-level procedure/function. 1 = inside a
+// procedure/function declared directly inside THAT one, etc. This one
+// counter is the single source of truth for "how many local scopes are
+// currently live" - it replaces what used to be a separate in_procedure
+// boolean, since nesting_depth >= 0 means exactly the same thing
+// in_procedure == 1 used to.
+#define MAX_NESTING_DEPTH 16
+static int nesting_depth = -1;
+
+// scope_locals[d]/scope_local_count[d] hold nesting level d's own
+// parameters/locals - scope_locals[nesting_depth] is always "whichever
+// procedure is innermost right now", matching what current_locals used
+// to be back when only one level could ever be active. current_locals/
+// current_local_count are kept as macros aliasing the active level, so
+// every existing call site that declares into them (add_local() and
+// friends) needs no changes at all: it already only ever touches "the
+// currently active scope", which is exactly what these macros now mean.
+// A name declared in an OUTER scope is reached differently - see
+// find_local_outward()/local_at() below - current_locals[] itself only
+// ever represents the innermost level.
+static LocalSymbol scope_locals[MAX_NESTING_DEPTH][MAX_LOCALS];
+static int scope_local_count[MAX_NESTING_DEPTH];
+#define current_locals       (scope_locals[nesting_depth])
+#define current_local_count  (scope_local_count[nesting_depth])
+
+// Reaches the LocalSymbol a find_local_outward() (or otherwise known
+// levels_up) match actually lives in - current_locals[idx] alone is only
+// ever correct for levels_up == 0 (the innermost scope); every other
+// level needs this instead. Declared here (rather than next to
+// find_local_outward() itself, much later in this file) so the record-
+// variable machinery just below - which needs it too - can see it.
+static LocalSymbol *local_at(int idx, int levels_up) {
+    return &scope_locals[nesting_depth - levels_up][idx];
+}
 
 // Constants are the simplest possible compile-time-only feature: a
 // 'const Name = expr;' declaration never gets a Symbol/sym_table[] entry
@@ -228,10 +273,20 @@ typedef struct {
     char name[MAX_NAME];
     int record_type_idx;
     int field_local_idx[MAX_RECORD_FIELDS]; // current_locals[] index of
-                                // each field, in declared order
+                                // each field (in the SAME nesting level
+                                // as this LocalRecordVarDef itself, per
+                                // scope_record_vars[] below), in declared
+                                // order
 } LocalRecordVarDef;
-static LocalRecordVarDef local_record_vars[MAX_LOCAL_RECORD_VARS];
-static int local_record_var_count = 0;
+
+// Same per-nesting-level stack treatment as scope_locals[]/current_locals
+// above, and for the same reason - local_record_vars/local_record_var_count
+// are kept as macros aliasing the innermost active level, so every
+// existing call site needs no changes.
+static LocalRecordVarDef scope_record_vars[MAX_NESTING_DEPTH][MAX_LOCAL_RECORD_VARS];
+static int scope_record_var_count[MAX_NESTING_DEPTH];
+#define local_record_vars       (scope_record_vars[nesting_depth])
+#define local_record_var_count  (scope_record_var_count[nesting_depth])
 
 // Maps an array-of-records Symbol (by its OWN sym_table[] index - whether
 // a true global or a local's hidden mangled global, see
@@ -437,23 +492,57 @@ static int find_any_record_var(const char *name, int *is_local, int *record_type
     return 0;
 }
 
+// The find_local_outward() of record variables: searches every active
+// scope from innermost (nesting_depth) outward to the outermost (0)
+// before falling back to the flat global record_vars[] table, and (via
+// *out_levels_up, only meaningful when *is_local ends up 1) reports how
+// many lexical levels up a LOCAL match was found - needed by
+// record_field_read_node()/record_field_assign_node() below to reach the
+// right scope's own field_local_idx[] entries, and to tag the levels_up
+// this field access must carry on whatever AST node it builds.
+static int find_any_record_var_outward(const char *name, int *out_levels_up, int *is_local, int *record_type_idx, const int **field_idx_array) {
+    for (int d = nesting_depth; d >= 0; d--) {
+        for (int i = 0; i < scope_record_var_count[d]; i++) {
+            if (strcmp(scope_record_vars[d][i].name, name) == 0) {
+                *out_levels_up = nesting_depth - d;
+                *is_local = 1;
+                *record_type_idx = scope_record_vars[d][i].record_type_idx;
+                *field_idx_array = scope_record_vars[d][i].field_local_idx;
+                return 1;
+            }
+        }
+    }
+    int gi = find_record_var(name);
+    if (gi != -1) {
+        *out_levels_up = 0; // meaningless when *is_local is 0 - a global has no "level"
+        *is_local = 0;
+        *record_type_idx = record_vars[gi].record_type_idx;
+        *field_idx_array = record_vars[gi].field_sym_idx;
+        return 1;
+    }
+    return 0;
+}
+
 // Builds an expression node reading one already-resolved record field,
 // given find_any_record_var()'s *is_local output and the field's index
 // into its field_idx_array (a current_locals[] index if is_local, else a
 // sym_table[] index) - the two possible storage locations a record
 // variable's field can live in (see the LocalRecordVarDef/RecordVarDef
-// comments above). Mirrors parse_global_symbol_reference() for the
-// "plain scalar, no further indexing" case, which is the only case a
-// record field can ever need: an array-typed field is rejected by
-// add_local_record() for a local/parameter record, and whole-array
-// GLOBAL record fields aren't read through this helper (they still go
-// through parse_global_symbol_reference(), which knows how to index
-// them).
-static ASTNode *record_field_read_node(int is_local, int field_or_sym_idx) {
+// comments above). 'levels_up' (only meaningful when is_local) is
+// find_any_record_var_outward()'s own *out_levels_up - a plain
+// find_any_record_var() (current-scope-only) match is always levels_up 0.
+// Mirrors parse_global_symbol_reference() for the "plain scalar, no
+// further indexing" case, which is the only case a record field can ever
+// need: an array-typed field is rejected by add_local_record() for a
+// local/parameter record, and whole-array GLOBAL record fields aren't
+// read through this helper (they still go through
+// parse_global_symbol_reference(), which knows how to index them).
+static ASTNode *record_field_read_node(int is_local, int field_or_sym_idx, int levels_up) {
     if (is_local) {
         ASTNode *node = create_node(NODE_LOCAL_VAR);
         node->data.var_idx = field_or_sym_idx;
-        node->expression_type = current_locals[field_or_sym_idx].type;
+        node->op = (TokenType)levels_up;
+        node->expression_type = local_at(field_or_sym_idx, levels_up)->type;
         return node;
     }
     ASTNode *node = create_node(NODE_VARIABLE);
@@ -468,11 +557,14 @@ static ASTNode *record_field_read_node(int is_local, int field_or_sym_idx) {
 // checker.c has no visibility into parser.c's current_locals[] to look it
 // up by index, unlike NODE_ASSIGN, which type_checker.c checks straight
 // against sym_table[]).
-static ASTNode *record_field_assign_node(int is_local, int field_or_sym_idx, ASTNode *value) {
+static ASTNode *record_field_assign_node(int is_local, int field_or_sym_idx, int levels_up, ASTNode *value) {
     ASTNode *node = create_node(is_local ? NODE_LOCAL_ASSIGN : NODE_ASSIGN);
     node->data.var_idx = field_or_sym_idx;
     node->left = value;
-    if (is_local) node->expression_type = current_locals[field_or_sym_idx].type;
+    if (is_local) {
+        node->op = (TokenType)levels_up;
+        node->expression_type = local_at(field_or_sym_idx, levels_up)->type;
+    }
     return node;
 }
 
@@ -519,6 +611,17 @@ static int find_with_field(const char *name) {
 // recognize 'FunctionName := expr;' inside that function's own body as
 // setting its return value, rather than an ordinary assignment.
 static int current_function_idx = -1;
+
+// The proc_table index of the procedure/function whose declaration
+// section is currently being parsed, or -1 while parsing the main
+// program's own declarations. Distinct from current_function_idx (which
+// is function-only and return-value-assignment-specific): this tracks
+// EVERY currently-open procedure/function, so add_proc() can stamp a
+// newly-declared nested procedure's lexical_parent_idx from it. Both are
+// saved/restored as plain C locals around subroutine_declaration()'s own
+// recursive call, exactly like the C call stack already threads any
+// other per-invocation state - see subroutine_declaration() itself.
+static int current_proc_idx = -1;
 
 const char *get_current_filename(void) {
     return current_filename;
@@ -932,6 +1035,13 @@ static int add_proc(const char *name) {
     proc_table[proc_count].is_forward = 0;     // may be set to 1 right after, if this is a forward declaration
     proc_table[proc_count].param_count = 0;    // defensive reset (see comment above the struct)
     proc_table[proc_count].is_function = 0;    // may be set to 1 right after, if this is a function
+    // Lexical nesting: current_proc_idx is whichever procedure/function's
+    // declaration section is currently being parsed (-1 for the main
+    // program), set/restored by subroutine_declaration() around its own
+    // recursive call - see there. Fixed at registration time and never
+    // touched again.
+    proc_table[proc_count].lexical_parent_idx = current_proc_idx;
+    proc_table[proc_count].lexical_depth = nesting_depth + 1;
     return proc_count++;
 }
 
@@ -942,9 +1052,55 @@ static int add_proc(const char *name) {
 // standard Pascal lexical scoping - which is exactly why every call site
 // below checks this first.
 static int find_local(const char *name) {
-    if (!in_procedure) return -1;
+    if (nesting_depth < 0) return -1;
     for (int i = 0; i < current_local_count; i++) {
         if (strcmp(current_locals[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+// Scope-local only, by design - do NOT use this for ordinary name
+// resolution (see find_local_outward() below for that). Every
+// add_local()/add_local_array()/add_local_array_rec()/add_static_local()
+// duplicate-declaration check needs exactly this "does this name already
+// exist in MY OWN scope" question, not "is this name visible from here" -
+// searching outward here would wrongly reject a nested procedure's local
+// legitimately shadowing an ancestor's same-named local, which standard
+// Pascal allows.
+static int find_local_in_current_scope(const char *name) {
+    return find_local(name);
+}
+
+// The general-purpose local lookup: searches from the innermost active
+// scope (nesting_depth) outward to the outermost (0), returning the
+// first match - standard lexical shadowing, an inner declaration hiding
+// an outer one of the same name. On a match, *out_levels_up receives how
+// many lexical levels up it was found (0 = the innermost/currently
+// active scope, identical to what find_local() alone already means) -
+// callers that go on to build a runtime-access AST node (NODE_LOCAL_VAR/
+// NODE_LOCAL_ASSIGN/NODE_LOCAL_VAR_REF/NODE_VAR_PARAM_READ/
+// NODE_VAR_PARAM_ASSIGN/NODE_REF_ARRAY_ACCESS or _ASSIGN, in any
+// dimensionality) must tag it onto that node (node->op = (TokenType)
+// levels_up - see the ASTNode field-reuse comment in common.h's Opcode
+// section) so codegen knows whether to address the current frame
+// (OP_LOAD_LOCAL/OP_STORE_LOCAL/OP_PUSH_LOCAL_REF, levels_up == 0) or an
+// ancestor's, via the static-link chain (OP_LOAD_ENCLOSING/
+// OP_STORE_ENCLOSING/OP_PUSH_ENCLOSING_REF, levels_up >= 1).
+//
+// NODE_LOCAL_FOR and NODE_LOCAL_READLN can NOT carry a levels_up tag this
+// way (their own ->op already holds TOKEN_TO/TOKEN_DOWNTO and
+// TOKEN_READ/TOKEN_READLN respectively) - a 'for' loop counter and a
+// readln target must resolve to the CURRENT procedure's own scope only;
+// see their call sites for the explicit "found outward" rejection this
+// implies (a documented known gap, not a silent wrong answer).
+static int find_local_outward(const char *name, int *out_levels_up) {
+    for (int d = nesting_depth; d >= 0; d--) {
+        for (int i = 0; i < scope_local_count[d]; i++) {
+            if (strcmp(scope_locals[d][i].name, name) == 0) {
+                *out_levels_up = nesting_depth - d;
+                return i;
+            }
+        }
     }
     return -1;
 }
@@ -963,10 +1119,12 @@ static int find_local(const char *name) {
 // silently returning one dimension's bounds - there's no defined answer
 // yet for "which dimension" here.
 static int try_get_array_bounds(const char *name, int *lower, int *upper) {
-    int local_idx = find_local(name);
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
     if (local_idx != -1) {
-        if (current_locals[local_idx].is_array) {
-            int sym_idx = current_locals[local_idx].array_sym_idx;
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->is_array) {
+            int sym_idx = ls->array_sym_idx;
             if (sym_table[sym_idx].is_2d || sym_table[sym_idx].is_nd) {
                 compile_error(token.line, "'%s' is a multi-dimensional array - low/high/length don't support 2D/N-D arrays yet", name);
             }
@@ -974,12 +1132,12 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
             *upper = sym_table[sym_idx].array_upper;
             return 1;
         }
-        if (current_locals[local_idx].is_array_ref) {
-            if (current_locals[local_idx].is_2d || current_locals[local_idx].is_nd) {
+        if (ls->is_array_ref) {
+            if (ls->is_2d || ls->is_nd) {
                 compile_error(token.line, "'%s' is a multi-dimensional array - low/high/length don't support 2D/N-D arrays yet", name);
             }
-            *lower = current_locals[local_idx].array_lower;
-            *upper = current_locals[local_idx].array_upper;
+            *lower = ls->array_lower;
+            *upper = ls->array_upper;
             return 1;
         }
         return 0; // a local, but not an array
@@ -1015,7 +1173,7 @@ static int local_record_name_collides(const char *name) {
 }
 
 static int add_local(const char *name, DataType type) {
-    if (find_local(name) != -1 || local_record_name_collides(name)) {
+    if (find_local_in_current_scope(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -1092,7 +1250,7 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
                             int is_2d, int lower2, int upper2,
                             int is_nd, int nd_dims, const int *nd_lower, const int *nd_upper,
                             int is_subrange, int subrange_lower, int subrange_upper) {
-    if (find_local(name) != -1 || local_record_name_collides(name)) {
+    if (find_local_in_current_scope(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -1136,7 +1294,7 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
 // (which resolve to this same array_sym_idx) can look up field names via
 // find_record_array_type() exactly as they would for a true global.
 static int add_local_array_rec(const char *name, int record_type_idx, int lower, int upper) {
-    if (find_local(name) != -1 || local_record_name_collides(name)) {
+    if (find_local_in_current_scope(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -1176,7 +1334,7 @@ static int add_local_array_rec(const char *name, int record_type_idx, int lower,
 // function at all - they're already global-backed by nature.
 static int add_static_local(const char *proc_name, const char *name, DataType type,
                              int is_subrange, int subrange_lower, int subrange_upper) {
-    if (find_local(name) != -1 || local_record_name_collides(name)) {
+    if (find_local_in_current_scope(name) != -1 || local_record_name_collides(name)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (current_local_count >= MAX_LOCALS) {
@@ -1213,7 +1371,7 @@ static int add_static_local(const char *proc_name, const char *name, DataType ty
 static void add_local_record(const char *name, int record_type_idx) {
     int existing_is_local, existing_record_type_idx;
     const int *existing_field_idx;
-    if (find_local(name) != -1 || find_any_record_var(name, &existing_is_local, &existing_record_type_idx, &existing_field_idx)) {
+    if (find_local_in_current_scope(name) != -1 || find_any_record_var(name, &existing_is_local, &existing_record_type_idx, &existing_field_idx)) {
         compile_error(token.line, "Duplicate parameter or local variable '%s'", name);
     }
     if (local_record_var_count >= MAX_LOCAL_RECORD_VARS) {
@@ -1743,11 +1901,14 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
         expected.nd_upper[d] = proc_table[proc_idx].param_nd_upper[param_index][d];
     }
 
-    int local_idx = find_local(arg_name);
-    if (local_idx != -1 && (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref)) {
+    int levels_up;
+    int local_idx = find_local_outward(arg_name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->is_array || ls->is_array_ref) {
         ArrayShape actual = {0};
-        if (current_locals[local_idx].is_array) {
-            int s = current_locals[local_idx].array_sym_idx;
+        if (ls->is_array) {
+            int s = ls->array_sym_idx;
             actual.elem = sym_table[s].type;
             actual.lower = sym_table[s].array_lower;
             actual.upper = sym_table[s].array_upper;
@@ -1761,17 +1922,17 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
                 actual.nd_upper[d] = sym_table[s].nd_upper[d];
             }
         } else {
-            actual.elem = current_locals[local_idx].type;
-            actual.lower = current_locals[local_idx].array_lower;
-            actual.upper = current_locals[local_idx].array_upper;
-            actual.is_2d = current_locals[local_idx].is_2d;
-            actual.lower2 = current_locals[local_idx].array_lower2;
-            actual.upper2 = current_locals[local_idx].array_upper2;
-            actual.is_nd = current_locals[local_idx].is_nd;
-            actual.nd_dims = current_locals[local_idx].nd_dims;
+            actual.elem = ls->type;
+            actual.lower = ls->array_lower;
+            actual.upper = ls->array_upper;
+            actual.is_2d = ls->is_2d;
+            actual.lower2 = ls->array_lower2;
+            actual.upper2 = ls->array_upper2;
+            actual.is_nd = ls->is_nd;
+            actual.nd_dims = ls->nd_dims;
             for (int d = 0; d < actual.nd_dims; d++) {
-                actual.nd_lower[d] = current_locals[local_idx].nd_lower[d];
-                actual.nd_upper[d] = current_locals[local_idx].nd_upper[d];
+                actual.nd_lower[d] = ls->nd_lower[d];
+                actual.nd_upper[d] = ls->nd_upper[d];
             }
         }
         if (!array_shapes_match(&actual, &expected)) {
@@ -1779,15 +1940,17 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
                            arg_name, param_index + 1, proc_table[proc_idx].name);
         }
         ASTNode *node;
-        if (current_locals[local_idx].is_array) {
-            node = create_node(NODE_ARRAY_REF); // compile-time-known sym_table index
-            node->data.var_idx = current_locals[local_idx].array_sym_idx;
+        if (ls->is_array) {
+            node = create_node(NODE_ARRAY_REF); // compile-time-known sym_table index - level-independent
+            node->data.var_idx = ls->array_sym_idx;
         } else {
             node = create_node(NODE_LOCAL_VAR); // the caller's own array-ref param's runtime value
             node->data.var_idx = local_idx;
+            node->op = (TokenType)levels_up;
         }
         node->expression_type = expected.elem;
         return node;
+        }
     }
 
     int global_idx = find_var(arg_name);
@@ -1843,9 +2006,9 @@ static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **o
     strcpy(arg_name, token.text);
     match(TOKEN_IDENTIFIER);
 
-    int arg_is_local, arg_record_type_idx;
+    int arg_levels_up, arg_is_local, arg_record_type_idx;
     const int *arg_field_idx;
-    if (!find_any_record_var(arg_name, &arg_is_local, &arg_record_type_idx, &arg_field_idx)) {
+    if (!find_any_record_var_outward(arg_name, &arg_levels_up, &arg_is_local, &arg_record_type_idx, &arg_field_idx)) {
         compile_error(arg_line, "'%s' is not a record variable", arg_name);
     }
     int expected_type_idx = proc_table[proc_idx].param_record_type_idx[param_index];
@@ -1859,7 +2022,7 @@ static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **o
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
     for (int i = 0; i < rt->field_count; i++) {
-        ASTNode *value = record_field_read_node(arg_is_local, arg_field_idx[i]);
+        ASTNode *value = record_field_read_node(arg_is_local, arg_field_idx[i], arg_levels_up);
         value = wrap_range_check(value, rt->fields[i].is_subrange, rt->fields[i].subrange_lower, rt->fields[i].subrange_upper);
         if (!head) head = value; else tail->next = value;
         tail = value;
@@ -1916,9 +2079,9 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
     }
 
     {
-        int rv_is_local, rv_record_type_idx;
+        int rv_levels_up, rv_is_local, rv_record_type_idx;
         const int *rv_field_idx;
-        if (find_any_record_var(name, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+        if (find_any_record_var_outward(name, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
             match(TOKEN_IDENTIFIER);
             if (token.type != TOKEN_PERIOD) {
                 compile_error(token.line, "'%s' is a record - 'var' expects a field, e.g. '%s.field' (whole records aren't supported as 'var' arguments yet)",
@@ -1934,26 +2097,29 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
             }
             int resolved_idx = rv_field_idx[field_idx];
             match(TOKEN_IDENTIFIER);
-            DataType field_type = rv_is_local ? current_locals[resolved_idx].type : sym_table[resolved_idx].type;
+            DataType field_type = rv_is_local ? local_at(resolved_idx, rv_levels_up)->type : sym_table[resolved_idx].type;
             if (field_type != expected_type) {
                 compile_error(line, "'var' argument does not match parameter %d of '%s' (wrong type)",
                                param_index + 1, proc_table[proc_idx].name);
             }
             ASTNode *node = create_node(rv_is_local ? NODE_LOCAL_VAR_REF : NODE_VAR_REF);
             node->data.var_idx = resolved_idx;
+            if (rv_is_local) node->op = (TokenType)rv_levels_up;
             node->expression_type = expected_type;
             return node;
         }
     }
 
-    int local_idx = find_local(name);
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
     if (local_idx != -1) {
-        if (current_locals[local_idx].is_array || current_locals[local_idx].is_array_ref) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->is_array || ls->is_array_ref) {
             compile_error(line, "'%s' is an array - array elements aren't supported as 'var' arguments yet (an array itself is already always by reference, without needing 'var')", name);
         }
         match(TOKEN_IDENTIFIER);
-        if (current_locals[local_idx].is_static) {
-            int static_idx = current_locals[local_idx].static_sym_idx;
+        if (ls->is_static) {
+            int static_idx = ls->static_sym_idx;
             if (sym_table[static_idx].type != expected_type) {
                 compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
                                name, param_index + 1, proc_table[proc_idx].name);
@@ -1963,20 +2129,22 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
             node->expression_type = expected_type;
             return node;
         }
-        if (current_locals[local_idx].type != expected_type) {
+        if (ls->type != expected_type) {
             compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
                            name, param_index + 1, proc_table[proc_idx].name);
         }
-        if (current_locals[local_idx].is_var_param) {
+        if (ls->is_var_param) {
             // Forwarding: this slot already holds a valid reference (from
             // this procedure's OWN caller) - pass it through unchanged.
             ASTNode *node = create_node(NODE_LOCAL_VAR);
             node->data.var_idx = local_idx;
+            node->op = (TokenType)levels_up;
             node->expression_type = expected_type;
             return node;
         }
         ASTNode *node = create_node(NODE_LOCAL_VAR_REF);
         node->data.var_idx = local_idx;
+        node->op = (TokenType)levels_up;
         node->expression_type = expected_type;
         return node;
     }
@@ -2267,15 +2435,15 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
 // generic recursion fills in every wrapper node normally once parsing
 // finishes, exactly as if a user had written the field-by-field chain
 // by hand.
-static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, const int *field_idx1, const char *rec_name) {
+static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, const int *field_idx1, int levels_up1, const char *rec_name) {
     TokenType op = token.type; // TOKEN_EQ or TOKEN_NEQ
     match(op);
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected a record variable of the same type as '%s'", rec_name);
     }
-    int is_local2, record_type_idx2;
+    int levels_up2, is_local2, record_type_idx2;
     const int *field_idx2;
-    if (!find_any_record_var(token.text, &is_local2, &record_type_idx2, &field_idx2)) {
+    if (!find_any_record_var_outward(token.text, &levels_up2, &is_local2, &record_type_idx2, &field_idx2)) {
         compile_error(token.line, "'%s' is not a record variable", token.text);
     }
     if (record_type_idx1 != record_type_idx2) {
@@ -2292,8 +2460,8 @@ static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, con
             compile_error(token.line, "Cannot compare record '%s': field '%s' is an array, and this compiler doesn't support whole-array comparison",
                            rec_name, rt->fields[i].name);
         }
-        ASTNode *left = record_field_read_node(is_local1, field_idx1[i]);
-        ASTNode *right = record_field_read_node(is_local2, field_idx2[i]);
+        ASTNode *left = record_field_read_node(is_local1, field_idx1[i], levels_up1);
+        ASTNode *right = record_field_read_node(is_local2, field_idx2[i], levels_up2);
         ASTNode *eq = create_node(NODE_BINARY_OP);
         eq->op = TOKEN_EQ;
         eq->left = left;
@@ -2703,14 +2871,14 @@ static ASTNode *factor(void) {
         }
 
         {
-            int rv_is_local, rv_record_type_idx;
+            int rv_levels_up, rv_is_local, rv_record_type_idx;
             const int *rv_field_idx;
-            if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            if (find_any_record_var_outward(token.text, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
                 char rec_name[MAX_NAME];
                 strcpy(rec_name, token.text);
                 match(TOKEN_IDENTIFIER);
                 if (token.type == TOKEN_EQ || token.type == TOKEN_NEQ) {
-                    return parse_record_comparison(rv_is_local, rv_record_type_idx, rv_field_idx, rec_name);
+                    return parse_record_comparison(rv_is_local, rv_record_type_idx, rv_field_idx, rv_levels_up, rec_name);
                 }
                 if (token.type != TOKEN_PERIOD) {
                     compile_error(token.line, "'%s' is a record variable and can't be used directly here - access a field with '%s.fieldname', compare it with '=' or '<>', or use whole-record assignment ('%s := otherRecord;')",
@@ -2726,7 +2894,7 @@ static ASTNode *factor(void) {
                 }
                 match(TOKEN_IDENTIFIER);
                 if (rv_is_local) {
-                    ASTNode *node = record_field_read_node(1, rv_field_idx[field_idx]);
+                    ASTNode *node = record_field_read_node(1, rv_field_idx[field_idx], rv_levels_up);
                     node->line = line;
                     return node;
                 }
@@ -2734,33 +2902,36 @@ static ASTNode *factor(void) {
             }
         }
 
-        int local_idx = find_local(token.text);
+        int levels_up;
+        int local_idx = find_local_outward(token.text, &levels_up);
         if (local_idx != -1) {
-            if (current_locals[local_idx].is_var_param) {
+            LocalSymbol *ls = local_at(local_idx, levels_up);
+            if (ls->is_var_param) {
                 match(TOKEN_IDENTIFIER);
-                if ((current_locals[local_idx].type == TYPE_STRING || current_locals[local_idx].type == TYPE_CHAR)
+                if ((ls->type == TYPE_STRING || ls->type == TYPE_CHAR)
                     && token.type == TOKEN_LBRACKET) {
                     compile_error(token.line, "Indexing a 'var' parameter's string/char value ('%s[i]') is not supported yet - only the whole value can be read/written through it",
-                                   current_locals[local_idx].name);
+                                   ls->name);
                 }
                 ASTNode *node = create_node(NODE_VAR_PARAM_READ);
                 node->line = line;
                 node->data.var_idx = local_idx;
-                node->expression_type = current_locals[local_idx].type;
+                node->op = (TokenType)levels_up;
+                node->expression_type = ls->type;
                 if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
                     return parse_heap_deref_read(node, line);
                 }
                 return node;
             }
-            if (current_locals[local_idx].is_static) {
+            if (ls->is_static) {
                 match(TOKEN_IDENTIFIER);
-                return parse_global_symbol_reference(current_locals[local_idx].static_sym_idx, line);
+                return parse_global_symbol_reference(ls->static_sym_idx, line);
             }
-            if (current_locals[local_idx].is_array) {
+            if (ls->is_array) {
                 match(TOKEN_IDENTIFIER);
-                int arr_sym_idx = current_locals[local_idx].array_sym_idx;
+                int arr_sym_idx = ls->array_sym_idx;
                 if (token.type != TOKEN_LBRACKET) {
-                    compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
+                    compile_error(token.line, "Array '%s' must be indexed", ls->name);
                 }
                 match(TOKEN_LBRACKET);
                 if (sym_table[arr_sym_idx].is_record_array) {
@@ -2793,46 +2964,50 @@ static ASTNode *factor(void) {
                 match(TOKEN_RBRACKET);
                 return node;
             }
-            if (current_locals[local_idx].is_array_ref) {
+            if (ls->is_array_ref) {
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
-                    compile_error(token.line, "Array '%s' must be indexed", current_locals[local_idx].name);
+                    compile_error(token.line, "Array '%s' must be indexed", ls->name);
                 }
                 match(TOKEN_LBRACKET);
-                if (current_locals[local_idx].is_nd) {
+                if (ls->is_nd) {
                     ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS_ND);
                     node->line = line;
                     node->data.var_idx = local_idx;
-                    node->left = parse_nd_index_list(current_locals[local_idx].nd_dims); // consumes ']' itself
-                    node->expression_type = current_locals[local_idx].type;
+                    node->op = (TokenType)levels_up;
+                    node->left = parse_nd_index_list(ls->nd_dims); // consumes ']' itself
+                    node->expression_type = ls->type;
                     return node;
                 }
-                if (current_locals[local_idx].is_2d) {
+                if (ls->is_2d) {
                     ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS_2D);
                     node->line = line;
                     node->data.var_idx = local_idx;
+                    node->op = (TokenType)levels_up;
                     node->left = expression();  // first index
                     match(TOKEN_COMMA);
                     node->right = expression(); // second index
-                    node->expression_type = current_locals[local_idx].type;
+                    node->expression_type = ls->type;
                     match(TOKEN_RBRACKET);
                     return node;
                 }
                 ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS);
                 node->line = line;
                 node->data.var_idx = local_idx; // the parameter's OWN slot, holding a runtime sym_table index
+                node->op = (TokenType)levels_up;
                 node->left = expression(); // index
-                node->expression_type = current_locals[local_idx].type;
+                node->expression_type = ls->type;
                 match(TOKEN_RBRACKET);
                 return node;
             }
             match(TOKEN_IDENTIFIER);
-            if ((current_locals[local_idx].type == TYPE_STRING || current_locals[local_idx].type == TYPE_CHAR)
+            if ((ls->type == TYPE_STRING || ls->type == TYPE_CHAR)
                 && token.type == TOKEN_LBRACKET) {
                 match(TOKEN_LBRACKET);
                 ASTNode *node = create_node(NODE_LOCAL_STRING_INDEX);
                 node->line = line;
                 node->data.var_idx = local_idx;
+                node->op = (TokenType)levels_up;
                 node->left = expression(); // index
                 node->expression_type = TYPE_CHAR;
                 match(TOKEN_RBRACKET);
@@ -2841,7 +3016,8 @@ static ASTNode *factor(void) {
             ASTNode *node = create_node(NODE_LOCAL_VAR);
             node->line = line;
             node->data.var_idx = local_idx;
-            node->expression_type = current_locals[local_idx].type;
+            node->op = (TokenType)levels_up;
+            node->expression_type = ls->type;
             if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
                 return parse_heap_deref_read(node, line);
             }
@@ -3310,12 +3486,18 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     array_mem_count = 0;
     loop_depth = 0;
     proc_count = 0;
-    current_local_count = 0;
-    in_procedure = 0;
+    nesting_depth = -1; // must be reset before current_local_count/
+                        // local_record_var_count below - both are macros
+                        // aliasing scope_locals[nesting_depth]/
+                        // scope_record_vars[nesting_depth], meaningless
+                        // (and out of bounds) until this is set first.
+                        // Each level's own count is zeroed when
+                        // subroutine_declaration() actually enters it,
+                        // not needed here.
+    current_proc_idx = -1;
     current_function_idx = -1;
     record_type_count = 0;
     record_var_count = 0;
-    local_record_var_count = 0;
     record_array_count = 0;
     pointer_type_count = 0;
     const_def_count = 0;
@@ -3530,8 +3712,22 @@ ASTNode *parse_ast(const char *source, const char *filename) {
 static void scan_local_usage(ASTNode *node, char *read_flag, char *assigned_flag) {
     if (!node) return;
 
+    // A nonzero ->op on any of these node types means "this slot index is
+    // in an ENCLOSING procedure's own scope, not this body's own" (see
+    // the levels_up-via-->op comment in common.h's Opcode section) - this
+    // whole pass is scoped to ONE procedure's own locals (see the comment
+    // above), so such a node must be skipped here: node->data.var_idx
+    // would otherwise coincidentally alias one of THIS procedure's own
+    // slot indices and corrupt its read/assigned tracking. NODE_LOCAL_FOR
+    // and NODE_LOCAL_READLN can never have a nonzero ->op here (their own
+    // ->op is TOKEN_TO/TOKEN_DOWNTO/TOKEN_READ/TOKEN_READLN instead - see
+    // their own parse sites, which restrict both to this procedure's own
+    // locals for exactly this reason) so they need no such check.
+    int levels_up = (node->type == NODE_LOCAL_VAR || node->type == NODE_LOCAL_ASSIGN ||
+                      node->type == NODE_LOCAL_VAR_REF) ? (int)node->op : 0;
+
     if (node->type == NODE_LOCAL_VAR) {
-        read_flag[node->data.var_idx] = 1;
+        if (levels_up == 0) read_flag[node->data.var_idx] = 1;
     } else if (node->type == NODE_LOCAL_ASSIGN || node->type == NODE_LOCAL_FOR ||
                node->type == NODE_LOCAL_READLN || node->type == NODE_LOCAL_VAR_REF) {
         // NODE_LOCAL_VAR_REF (passing this local by reference to another
@@ -3539,7 +3735,7 @@ static void scan_local_usage(ASTNode *node, char *read_flag, char *assigned_flag
         // assignment too - the callee might set it through that
         // reference, and this pass would rather miss a real bug than
         // wrongly warn about a value a callee legitimately provides.
-        assigned_flag[node->data.var_idx] = 1;
+        if (levels_up == 0) assigned_flag[node->data.var_idx] = 1;
     }
 
     scan_local_usage(node->left, read_flag, assigned_flag);
@@ -3602,7 +3798,21 @@ static void subroutine_declaration(int is_function_decl) {
 
     int proc_idx = completing_forward ? existing_idx : add_proc(name);
 
-    in_procedure = 1;
+    // Saved/restored as plain C locals - the C call stack itself threads
+    // the enclosing procedure's own state back correctly once a nested
+    // declaration (parsed recursively, below) finishes, without needing
+    // any array/stack of its own. An unconditional clear at the end of
+    // this function (as it used to do, back when only one level could
+    // ever be active) would otherwise wrongly clobber an ENCLOSING
+    // procedure's own current_function_idx/current_proc_idx once a
+    // nested child finishes parsing and control returns here.
+    int saved_function_idx = current_function_idx;
+    int saved_proc_idx = current_proc_idx;
+    current_proc_idx = proc_idx;
+    nesting_depth++;
+    if (nesting_depth >= MAX_NESTING_DEPTH) {
+        compile_error(decl_line, "'%s' is nested too deeply (limit is %d levels)", name, MAX_NESTING_DEPTH);
+    }
     current_local_count = 0;
     local_record_var_count = 0;
     declared_label_count = 0;
@@ -3787,9 +3997,11 @@ static void subroutine_declaration(int is_function_decl) {
         match(TOKEN_FORWARD);
         match(TOKEN_SEMI);
         proc_table[proc_idx].is_forward = 1;
-        in_procedure = 0;
         current_local_count = 0;
         local_record_var_count = 0;
+        nesting_depth--;
+        current_proc_idx = saved_proc_idx;
+        current_function_idx = saved_function_idx;
         return; // the real body comes later, in a completing declaration
     }
 
@@ -3836,6 +4048,26 @@ static void subroutine_declaration(int is_function_decl) {
         }
     }
 
+    // Nested procedure/function declarations - one or more procedure/
+    // function declarations INSIDE this one's own declaration section,
+    // recursing back into this same function. Mirrors parse_ast()'s own
+    // top-level procedure-parsing loop exactly (same loop condition, same
+    // label-table stash/restore around it, for the same reason: each
+    // nested declaration resets and reuses this same static
+    // declared_labels table for its own independent label namespace, so
+    // THIS procedure's own label section - already parsed above, if any -
+    // must survive parsing every nested child below).
+    DeclaredLabel saved_labels[MAX_DECLARED_LABELS];
+    int saved_label_count = declared_label_count;
+    memcpy(saved_labels, declared_labels, sizeof(DeclaredLabel) * declared_label_count);
+
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION);
+    }
+
+    memcpy(declared_labels, saved_labels, sizeof(DeclaredLabel) * saved_label_count);
+    declared_label_count = saved_label_count;
+
     // A function gets one more hidden local slot, reserved last (after
     // every real parameter/local), to hold its return value. Assigning to
     // the function's own name inside its body (see statement()) targets
@@ -3859,10 +4091,11 @@ static void subroutine_declaration(int is_function_decl) {
 
     check_uninitialized_locals(proc_idx, body, decl_line);
 
-    in_procedure = 0;
     current_local_count = 0;
     local_record_var_count = 0;
-    current_function_idx = -1;
+    nesting_depth--;
+    current_proc_idx = saved_proc_idx;
+    current_function_idx = saved_function_idx;
 }
 
 // Parses one compile-time-constant case-label value: an (optionally
@@ -4123,6 +4356,21 @@ static ASTNode *parse_read_target(void) {
         }
     }
 
+    // NODE_LOCAL_READLN's own ->op already carries TOKEN_READ/TOKEN_READLN
+    // (see parse_read_statement()), so it has nowhere to also carry a
+    // levels_up tag - a readln target must be the CURRENT procedure's own
+    // local, never an enclosing scope's (a documented known gap: read
+    // into a local of the current procedure and assign it to the outer
+    // one afterward instead). find_local_outward() (rather than plain
+    // find_local()) is used only so this can be detected and reported
+    // clearly, rather than silently falling through to "undefined
+    // variable" below.
+    {
+        int outer_levels_up;
+        if (find_local_outward(token.text, &outer_levels_up) != -1 && outer_levels_up > 0) {
+            compile_error(token.line, "readln into an enclosing procedure's local '%s' is not supported yet - readln into one of this procedure's own locals instead, then assign it to '%s'", token.text, token.text);
+        }
+    }
     int local_idx = find_local(token.text);
     if (local_idx != -1) {
         if (current_locals[local_idx].is_var_param) {
@@ -4335,6 +4583,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     match(TOKEN_IDENTIFIER);
 
     int local_idx = -1;
+    int levels_up = 0;
     int is_local = 0;
     int is_var_param = 0;
     int global_idx = -1;
@@ -4342,11 +4591,12 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     int target_is_subrange = 0, target_subrange_lower = 0, target_subrange_upper = 0;
 
     int with_field_idx = find_with_field(name);
-    int rv_is_local = 0, rv_record_type_idx = 0;
+    int rv_levels_up = 0, rv_is_local = 0, rv_record_type_idx = 0;
     const int *rv_field_idx_arr = NULL;
-    int rv_found = (with_field_idx == -1) && find_any_record_var(name, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
-    int static_local_idx = (with_field_idx == -1 && !rv_found) ? find_local(name) : -1;
-    if (static_local_idx != -1 && !current_locals[static_local_idx].is_static) static_local_idx = -1;
+    int rv_found = (with_field_idx == -1) && find_any_record_var_outward(name, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
+    int static_levels_up = 0;
+    int static_local_idx = (with_field_idx == -1 && !rv_found) ? find_local_outward(name, &static_levels_up) : -1;
+    if (static_local_idx != -1 && !local_at(static_local_idx, static_levels_up)->is_static) static_local_idx = -1;
     if (with_field_idx != -1) {
         global_idx = with_field_idx;
         if (sym_table[global_idx].is_array) {
@@ -4373,10 +4623,12 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         if (rv_is_local) {
             is_local = 1;
             local_idx = resolved_idx;
-            target_type = current_locals[local_idx].type;
-            target_is_subrange = current_locals[local_idx].is_subrange;
-            target_subrange_lower = current_locals[local_idx].subrange_lower;
-            target_subrange_upper = current_locals[local_idx].subrange_upper;
+            levels_up = rv_levels_up;
+            LocalSymbol *ls = local_at(local_idx, levels_up);
+            target_type = ls->type;
+            target_is_subrange = ls->is_subrange;
+            target_subrange_lower = ls->subrange_lower;
+            target_subrange_upper = ls->subrange_upper;
         } else {
             global_idx = resolved_idx;
             if (sym_table[global_idx].is_array) {
@@ -4388,7 +4640,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
             target_subrange_upper = sym_table[global_idx].subrange_upper;
         }
     } else if (static_local_idx != -1) {
-        global_idx = current_locals[static_local_idx].static_sym_idx;
+        global_idx = local_at(static_local_idx, static_levels_up)->static_sym_idx;
         if (sym_table[global_idx].is_array) {
             compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
         }
@@ -4397,16 +4649,17 @@ static ASTNode *parse_inc_dec(TokenType kind) {
         target_subrange_lower = sym_table[global_idx].subrange_lower;
         target_subrange_upper = sym_table[global_idx].subrange_upper;
     } else {
-        local_idx = find_local(name);
-        is_local = (local_idx != -1 && !current_locals[local_idx].is_array && !current_locals[local_idx].is_array_ref);
+        local_idx = find_local_outward(name, &levels_up);
+        is_local = (local_idx != -1 && !local_at(local_idx, levels_up)->is_array && !local_at(local_idx, levels_up)->is_array_ref);
         if (local_idx != -1 && !is_local) {
             compile_error(line, "'%s' expects a plain integer variable, not an array", name_str);
         }
         if (is_local) {
-            target_type = current_locals[local_idx].type;
-            target_is_subrange = current_locals[local_idx].is_subrange;
-            target_subrange_lower = current_locals[local_idx].subrange_lower;
-            target_subrange_upper = current_locals[local_idx].subrange_upper;
+            LocalSymbol *ls = local_at(local_idx, levels_up);
+            target_type = ls->type;
+            target_is_subrange = ls->is_subrange;
+            target_subrange_lower = ls->subrange_lower;
+            target_subrange_upper = ls->subrange_upper;
             // is_var_param is set below, after target_type's own integer
             // check - a 'var' parameter's read/write node kind is decided
             // separately from is_local (see the read_node/write_node
@@ -4426,7 +4679,7 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     if (target_type != TYPE_INTEGER) {
         compile_error(line, "'%s' only supports integer variables", name_str);
     }
-    if (is_local && current_locals[local_idx].is_var_param) {
+    if (is_local && local_at(local_idx, levels_up)->is_var_param) {
         is_var_param = 1;
     }
 
@@ -4445,10 +4698,12 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     if (is_var_param) {
         read_node = create_node(NODE_VAR_PARAM_READ);
         read_node->data.var_idx = local_idx;
+        read_node->op = (TokenType)levels_up;
         read_node->expression_type = TYPE_INTEGER;
     } else if (is_local) {
         read_node = create_node(NODE_LOCAL_VAR);
         read_node->data.var_idx = local_idx;
+        read_node->op = (TokenType)levels_up;
         read_node->expression_type = TYPE_INTEGER;
     } else {
         read_node = create_node(NODE_VARIABLE);
@@ -4465,10 +4720,12 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     if (is_var_param) {
         write_node = create_node(NODE_VAR_PARAM_ASSIGN);
         write_node->data.var_idx = local_idx;
+        write_node->op = (TokenType)levels_up;
         write_node->expression_type = TYPE_INTEGER;
     } else if (is_local) {
         write_node = create_node(NODE_LOCAL_ASSIGN);
         write_node->data.var_idx = local_idx;
+        write_node->op = (TokenType)levels_up;
         write_node->expression_type = TYPE_INTEGER;
     } else {
         write_node = create_node(NODE_ASSIGN);
@@ -4503,17 +4760,19 @@ static ASTNode *parse_new_statement(void) {
     match(TOKEN_IDENTIFIER);
 
     int local_idx = -1;
+    int levels_up = 0;
     int is_local = 0;
     int is_var_param = 0;
     int global_idx = -1;
     DataType target_type;
 
     int with_field_idx = find_with_field(name);
-    int rv_is_local = 0, rv_record_type_idx = 0;
+    int rv_levels_up = 0, rv_is_local = 0, rv_record_type_idx = 0;
     const int *rv_field_idx_arr = NULL;
-    int rv_found = (with_field_idx == -1) && find_any_record_var(name, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
-    int static_local_idx = (with_field_idx == -1 && !rv_found) ? find_local(name) : -1;
-    if (static_local_idx != -1 && !current_locals[static_local_idx].is_static) static_local_idx = -1;
+    int rv_found = (with_field_idx == -1) && find_any_record_var_outward(name, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx_arr);
+    int static_levels_up = 0;
+    int static_local_idx = (with_field_idx == -1 && !rv_found) ? find_local_outward(name, &static_levels_up) : -1;
+    if (static_local_idx != -1 && !local_at(static_local_idx, static_levels_up)->is_static) static_local_idx = -1;
     if (with_field_idx != -1) {
         global_idx = with_field_idx;
         target_type = sym_table[global_idx].type;
@@ -4534,22 +4793,23 @@ static ASTNode *parse_new_statement(void) {
         if (rv_is_local) {
             is_local = 1;
             local_idx = resolved_idx;
-            target_type = current_locals[local_idx].type;
+            levels_up = rv_levels_up;
+            target_type = local_at(local_idx, levels_up)->type;
         } else {
             global_idx = resolved_idx;
             target_type = sym_table[global_idx].type;
         }
     } else if (static_local_idx != -1) {
-        global_idx = current_locals[static_local_idx].static_sym_idx;
+        global_idx = local_at(static_local_idx, static_levels_up)->static_sym_idx;
         target_type = sym_table[global_idx].type;
     } else {
-        local_idx = find_local(name);
-        is_local = (local_idx != -1 && !current_locals[local_idx].is_array && !current_locals[local_idx].is_array_ref);
+        local_idx = find_local_outward(name, &levels_up);
+        is_local = (local_idx != -1 && !local_at(local_idx, levels_up)->is_array && !local_at(local_idx, levels_up)->is_array_ref);
         if (local_idx != -1 && !is_local) {
             compile_error(line, "'new' expects a plain pointer variable, not an array");
         }
         if (is_local) {
-            target_type = current_locals[local_idx].type;
+            target_type = local_at(local_idx, levels_up)->type;
         } else {
             global_idx = find_var(name);
             target_type = sym_table[global_idx].type;
@@ -4558,7 +4818,7 @@ static ASTNode *parse_new_statement(void) {
     if (!is_pointer_type(target_type)) {
         compile_error(line, "'new' expects a pointer variable");
     }
-    if (is_local && current_locals[local_idx].is_var_param) {
+    if (is_local && local_at(local_idx, levels_up)->is_var_param) {
         is_var_param = 1;
     }
 
@@ -4574,10 +4834,12 @@ static ASTNode *parse_new_statement(void) {
         if (is_var_param) {
             base = create_node(NODE_VAR_PARAM_READ);
             base->data.var_idx = local_idx;
+            base->op = (TokenType)levels_up;
             base->expression_type = target_type;
         } else if (is_local) {
             base = create_node(NODE_LOCAL_VAR);
             base->data.var_idx = local_idx;
+            base->op = (TokenType)levels_up;
             base->expression_type = target_type;
         } else {
             base = create_node(NODE_VARIABLE);
@@ -4613,10 +4875,12 @@ static ASTNode *parse_new_statement(void) {
     if (is_var_param) {
         write_node = create_node(NODE_VAR_PARAM_ASSIGN);
         write_node->data.var_idx = local_idx;
+        write_node->op = (TokenType)levels_up;
         write_node->expression_type = target_type;
     } else if (is_local) {
         write_node = create_node(NODE_LOCAL_ASSIGN);
         write_node->data.var_idx = local_idx;
+        write_node->op = (TokenType)levels_up;
         write_node->expression_type = target_type;
     } else {
         write_node = create_node(NODE_ASSIGN);
@@ -4663,7 +4927,7 @@ static ASTNode *parse_dispose_statement(void) {
 // NODE_VARIABLE/NODE_LOCAL_VAR references to it afterward - see
 // make_cached_ref() below.
 static ASTNode *cache_expr_once(ASTNode *expr, const char *name_prefix, int *out_slot, int *out_is_local) {
-    if (in_procedure) {
+    if (nesting_depth >= 0) {
         char hidden_name[MAX_NAME];
         snprintf(hidden_name, MAX_NAME, "__%s_local%d", name_prefix, current_local_count);
         int slot = add_local(hidden_name, TYPE_INTEGER);
@@ -4777,9 +5041,9 @@ static ASTNode *parse_record_array_dest_whole_assignment(int dest_sym_idx, ASTNo
         return compound;
     }
 
-    int src_is_local2, src_record_type_idx2;
+    int src_levels_up2, src_is_local2, src_record_type_idx2;
     const int *src_field_idx;
-    if (!find_any_record_var(src_name, &src_is_local2, &src_record_type_idx2, &src_field_idx)) {
+    if (!find_any_record_var_outward(src_name, &src_levels_up2, &src_is_local2, &src_record_type_idx2, &src_field_idx)) {
         compile_error(src_line, "'%s' is not a record variable or an array of records", src_name);
     }
     if (src_record_type_idx2 != dest_record_type_idx) {
@@ -4790,7 +5054,7 @@ static ASTNode *parse_record_array_dest_whole_assignment(int dest_sym_idx, ASTNo
 
     ASTNode *head = NULL, *tail = NULL;
     for (int i = 0; i < rt->field_count; i++) {
-        ASTNode *value = record_field_read_node(src_is_local2, src_field_idx[i]);
+        ASTNode *value = record_field_read_node(src_is_local2, src_field_idx[i], src_levels_up2);
         ASTNode *offset_lit = create_node(NODE_NUMBER);
         offset_lit->data.num_value = i;
         offset_lit->expression_type = TYPE_INTEGER;
@@ -4933,11 +5197,12 @@ static ASTNode *parse_global_assignment(int idx) {
 // parse_global_assignment() there's no indexing to handle - this is the
 // simple tail end of NODE_LOCAL_ASSIGN construction, reused wherever a
 // local record field is a write target.
-static ASTNode *parse_local_assignment(int local_idx) {
+static ASTNode *parse_local_assignment(int local_idx, int levels_up) {
     match(TOKEN_ASSIGN);
-    return record_field_assign_node(1, local_idx,
-        wrap_range_check(expression(), current_locals[local_idx].is_subrange,
-                          current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper));
+    LocalSymbol *ls = local_at(local_idx, levels_up);
+    return record_field_assign_node(1, local_idx, levels_up,
+        wrap_range_check(expression(), ls->is_subrange,
+                          ls->subrange_lower, ls->subrange_upper));
 }
 
 // 'p2 := p1;' where p2 (already resolved) and p1 must be record variables
@@ -4951,7 +5216,7 @@ static ASTNode *parse_local_assignment(int local_idx) {
 // returning a multi-node chain directly would have its own internal
 // links silently overwritten - wrapping keeps the chain intact via the
 // compound's ->left while still presenting a single well-behaved node.
-static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record_type_idx, const int *dest_field_idx, const char *dest_name) {
+static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record_type_idx, const int *dest_field_idx, int dest_levels_up, const char *dest_name) {
     match(TOKEN_ASSIGN);
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected a record variable of the same type as '%s'", dest_name);
@@ -4991,7 +5256,7 @@ static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record
                 value->left = make_cached_ref(idx_slot, idx_is_local);
                 value->right = offset_lit;
                 value->expression_type = rt->fields[i].type;
-                ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], value);
+                ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], dest_levels_up, value);
                 if (!head) head = assign; else tail->next = assign;
                 tail = assign;
             }
@@ -5002,9 +5267,9 @@ static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record
         }
     }
 
-    int src_is_local, src_record_type_idx;
+    int src_levels_up, src_is_local, src_record_type_idx;
     const int *src_field_idx;
-    if (!find_any_record_var(token.text, &src_is_local, &src_record_type_idx, &src_field_idx)) {
+    if (!find_any_record_var_outward(token.text, &src_levels_up, &src_is_local, &src_record_type_idx, &src_field_idx)) {
         compile_error(token.line, "'%s' is not a record variable", token.text);
     }
     if (src_record_type_idx != dest_record_type_idx) {
@@ -5025,8 +5290,8 @@ static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
     for (int i = 0; i < rt->field_count; i++) {
-        ASTNode *value = record_field_read_node(src_is_local, src_field_idx[i]);
-        ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], value);
+        ASTNode *value = record_field_read_node(src_is_local, src_field_idx[i], src_levels_up);
+        ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], dest_levels_up, value);
         if (!head) head = assign; else tail->next = assign;
         tail = assign;
     }
@@ -5300,9 +5565,9 @@ static ASTNode *statement(void) {
         }
 
         {
-            int rv_is_local, rv_record_type_idx;
+            int rv_levels_up, rv_is_local, rv_record_type_idx;
             const int *rv_field_idx;
-            if (find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            if (find_any_record_var_outward(token.text, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
                 char rec_name[MAX_NAME];
                 strcpy(rec_name, token.text);
                 match(TOKEN_IDENTIFIER);
@@ -5317,12 +5582,12 @@ static ASTNode *statement(void) {
                     }
                     match(TOKEN_IDENTIFIER);
                     if (rv_is_local) {
-                        return parse_local_assignment(rv_field_idx[field_idx]);
+                        return parse_local_assignment(rv_field_idx[field_idx], rv_levels_up);
                     }
                     return parse_global_assignment(rv_field_idx[field_idx]);
                 }
                 // No '.field' - this is a whole-record assignment: 'p2 := p1;'
-                return parse_whole_record_assignment(rv_is_local, rv_record_type_idx, rv_field_idx, rec_name);
+                return parse_whole_record_assignment(rv_is_local, rv_record_type_idx, rv_field_idx, rv_levels_up, rec_name);
             }
         }
 
@@ -5350,16 +5615,19 @@ static ASTNode *statement(void) {
             return stmt;
         }
 
-        int local_idx = find_local(token.text);
+        int levels_up;
+        int local_idx = find_local_outward(token.text, &levels_up);
         if (local_idx != -1) {
-            if (current_locals[local_idx].is_var_param) {
+            LocalSymbol *ls = local_at(local_idx, levels_up);
+            if (ls->is_var_param) {
                 match(TOKEN_IDENTIFIER);
-                if (is_pointer_type(current_locals[local_idx].type) && token.type == TOKEN_CARET) {
+                if (is_pointer_type(ls->type) && token.type == TOKEN_CARET) {
                     int line = token.line;
                     ASTNode *base = create_node(NODE_VAR_PARAM_READ);
                     base->line = line;
                     base->data.var_idx = local_idx;
-                    base->expression_type = current_locals[local_idx].type;
+                    base->op = (TokenType)levels_up;
+                    base->expression_type = ls->type;
                     HeapDerefStep step;
                     base = parse_heap_deref_write(base, line, &step);
                     match(TOKEN_ASSIGN);
@@ -5376,20 +5644,21 @@ static ASTNode *statement(void) {
                 match(TOKEN_ASSIGN);
                 ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);
                 stmt->data.var_idx = local_idx;
-                stmt->expression_type = current_locals[local_idx].type;
-                stmt->left = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
-                    current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
+                stmt->op = (TokenType)levels_up;
+                stmt->expression_type = ls->type;
+                stmt->left = wrap_range_check(expression(), ls->is_subrange,
+                    ls->subrange_lower, ls->subrange_upper);
                 return stmt;
             }
-            if (current_locals[local_idx].is_static) {
+            if (ls->is_static) {
                 match(TOKEN_IDENTIFIER);
-                return parse_global_assignment(current_locals[local_idx].static_sym_idx);
+                return parse_global_assignment(ls->static_sym_idx);
             }
-            if (current_locals[local_idx].is_array) {
-                int arr_sym_idx = current_locals[local_idx].array_sym_idx;
+            if (ls->is_array) {
+                int arr_sym_idx = ls->array_sym_idx;
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
-                    compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                    compile_error(token.line, "Array '%s' must be indexed for assignment", ls->name);
                 }
                 if (sym_table[arr_sym_idx].is_record_array) {
                     match(TOKEN_LBRACKET);
@@ -5428,64 +5697,69 @@ static ASTNode *statement(void) {
                     sym_table[arr_sym_idx].subrange_lower, sym_table[arr_sym_idx].subrange_upper); // value
                 return stmt;
             }
-            if (current_locals[local_idx].is_array_ref) {
+            if (ls->is_array_ref) {
                 match(TOKEN_IDENTIFIER);
                 if (token.type != TOKEN_LBRACKET) {
-                    compile_error(token.line, "Array '%s' must be indexed for assignment", current_locals[local_idx].name);
+                    compile_error(token.line, "Array '%s' must be indexed for assignment", ls->name);
                 }
-                if (current_locals[local_idx].is_nd) {
+                if (ls->is_nd) {
                     ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN_ND);
                     stmt->data.var_idx = local_idx;
-                    stmt->expression_type = current_locals[local_idx].type;
+                    stmt->op = (TokenType)levels_up;
+                    stmt->expression_type = ls->type;
                     match(TOKEN_LBRACKET);
-                    stmt->left = parse_nd_index_list(current_locals[local_idx].nd_dims); // consumes ']' itself
+                    stmt->left = parse_nd_index_list(ls->nd_dims); // consumes ']' itself
                     match(TOKEN_ASSIGN);
-                    stmt->right = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
-                        current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper); // value
+                    stmt->right = wrap_range_check(expression(), ls->is_subrange,
+                        ls->subrange_lower, ls->subrange_upper); // value
                     return stmt;
                 }
-                if (current_locals[local_idx].is_2d) {
+                if (ls->is_2d) {
                     ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN_2D);
                     stmt->data.var_idx = local_idx;
-                    stmt->expression_type = current_locals[local_idx].type;
+                    stmt->op = (TokenType)levels_up;
+                    stmt->expression_type = ls->type;
                     match(TOKEN_LBRACKET);
                     stmt->left = expression();  // first index
                     match(TOKEN_COMMA);
                     stmt->right = expression(); // second index
                     match(TOKEN_RBRACKET);
                     match(TOKEN_ASSIGN);
-                    stmt->extra = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
-                        current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper); // value
+                    stmt->extra = wrap_range_check(expression(), ls->is_subrange,
+                        ls->subrange_lower, ls->subrange_upper); // value
                     return stmt;
                 }
                 ASTNode *stmt = create_node(NODE_REF_ARRAY_ASSIGN);
                 stmt->data.var_idx = local_idx; // the parameter's OWN slot, holding a runtime sym_table index
-                stmt->expression_type = current_locals[local_idx].type; // element type, for the type checker
+                stmt->op = (TokenType)levels_up;
+                stmt->expression_type = ls->type; // element type, for the type checker
                 match(TOKEN_LBRACKET);
                 stmt->left = expression();  // index
                 match(TOKEN_RBRACKET);
                 match(TOKEN_ASSIGN);
-                stmt->right = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
-                    current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper); // value
+                stmt->right = wrap_range_check(expression(), ls->is_subrange,
+                    ls->subrange_lower, ls->subrange_upper); // value
                 return stmt;
             }
             match(TOKEN_IDENTIFIER);
-            if (token.type == TOKEN_LBRACKET && (current_locals[local_idx].type == TYPE_STRING || current_locals[local_idx].type == TYPE_CHAR)) {
+            if (token.type == TOKEN_LBRACKET && (ls->type == TYPE_STRING || ls->type == TYPE_CHAR)) {
                 match(TOKEN_LBRACKET);
                 ASTNode *stmt = create_node(NODE_LOCAL_STRING_INDEX_ASSIGN);
                 stmt->data.var_idx = local_idx;
+                stmt->op = (TokenType)levels_up;
                 stmt->left = expression();  // index
                 match(TOKEN_RBRACKET);
                 match(TOKEN_ASSIGN);
                 stmt->right = expression(); // new character
                 return stmt;
             }
-            if (is_pointer_type(current_locals[local_idx].type) && token.type == TOKEN_CARET) {
+            if (is_pointer_type(ls->type) && token.type == TOKEN_CARET) {
                 int line = token.line;
                 ASTNode *base = create_node(NODE_LOCAL_VAR);
                 base->line = line;
                 base->data.var_idx = local_idx;
-                base->expression_type = current_locals[local_idx].type;
+                base->op = (TokenType)levels_up;
+                base->expression_type = ls->type;
                 HeapDerefStep step;
                 base = parse_heap_deref_write(base, line, &step);
                 match(TOKEN_ASSIGN);
@@ -5501,10 +5775,11 @@ static ASTNode *statement(void) {
             }
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
             stmt->data.var_idx = local_idx;
-            stmt->expression_type = current_locals[local_idx].type; // target type, for the type checker
+            stmt->op = (TokenType)levels_up;
+            stmt->expression_type = ls->type; // target type, for the type checker
             match(TOKEN_ASSIGN);
-            stmt->left = wrap_range_check(expression(), current_locals[local_idx].is_subrange,
-                current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
+            stmt->left = wrap_range_check(expression(), ls->is_subrange,
+                ls->subrange_lower, ls->subrange_upper);
             return stmt;
         }
 
@@ -5753,6 +6028,21 @@ static ASTNode *statement(void) {
             stmt->extra = statement();       // body
             loop_depth--;
             return stmt;
+        }
+        // NODE_LOCAL_FOR's own ->op already carries TOKEN_TO/TOKEN_DOWNTO
+        // (see parse_local_for_tail()/parse_for_in_tail_local()), so it
+        // has nowhere to also carry a levels_up tag - a 'for' loop
+        // counter must be the CURRENT procedure's own local, never an
+        // enclosing scope's (a documented known gap - standard Pascal
+        // requires the counter be local to the enclosing block anyway).
+        // find_local_outward() is used only so this can be detected and
+        // reported clearly, rather than silently falling through to
+        // "undefined variable" below.
+        {
+            int outer_levels_up;
+            if (find_local_outward(token.text, &outer_levels_up) != -1 && outer_levels_up > 0) {
+                compile_error(token.line, "'for' loop variable can't be an enclosing procedure's local '%s' yet - use one of this procedure's own locals as the loop counter instead", token.text);
+            }
         }
         int local_idx = find_local(token.text);
         if (local_idx != -1 && current_locals[local_idx].is_var_param) {

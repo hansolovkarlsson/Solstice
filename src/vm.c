@@ -71,6 +71,20 @@ static int vm_array_mem[MAX_ARRAY_MEM];
 static int vm_frame_stack[MAX_FRAME_STACK]; // local variable slots for
                                              // every active call, stacked
 
+// Nested procedures' lexical (as opposed to vm_call_stack's DYNAMIC/
+// caller) chain. vm_static_link[fp] = the fp of the ACTIVE ANCESTOR
+// ACTIVATION that fp's own procedure was lexically declared inside, or
+// -1 (OP_PUSH_STATIC_LINK's own sentinel) if there isn't a valid one to
+// point at right now (the flat-namespace "called from outside my
+// lexical scope" case - see common.h's OP_PUSH_STATIC_LINK comment).
+// Set once per call, by OP_POP_STATIC_LINK, in a nested procedure's own
+// prologue. Indexed by fp rather than by vm_call_stack[] position, so
+// each activation of a RECURSIVE nested procedure gets its own
+// independent entry for free - frame-stack space is never reused while
+// a frame is still live, so two simultaneously-active calls to the same
+// procedure always have two different fp values.
+static int vm_static_link[MAX_FRAME_STACK];
+
 // The heap ('new'/'dispose'/'p^') - this VM's only source of genuinely
 // dynamic allocation (see MAX_HEAP_MEM's comment in common.h). Unlike
 // vm_array_mem (whose layout is 100% fixed at compile time), how much of
@@ -288,6 +302,48 @@ static int vm_local_index(int fp, int frame_sp, int k) {
         fatal_abort();
     }
     return fp + k;
+}
+
+// Walks vm_static_link[] `levels_up` times starting from the CURRENT fp,
+// returning the resulting ancestor activation's own fp. Aborts with a
+// clear Runtime Error (rather than silently reading garbage) if fp isn't
+// currently valid at all, or if the walk ever hits the -1 sentinel -
+// this second case IS the concrete runtime trap for a nested procedure
+// called from somewhere its lexical parent isn't an active ancestor (the
+// flat-namespace escape hatch this project's nested-procedure design
+// deliberately allows at compile time - see OP_PUSH_STATIC_LINK's own
+// comment in common.h).
+static int vm_enclosing_fp(int fp, int levels_up) {
+    if (fp < 0) {
+        fprintf(stderr, "VM Runtime Error: No active stack frame (enclosing variable access outside a procedure)\n");
+        fatal_abort();
+    }
+    int target = fp;
+    for (int i = 0; i < levels_up; i++) {
+        if (target < 0 || target >= MAX_FRAME_STACK || vm_static_link[target] == -1) {
+            fprintf(stderr, "VM Runtime Error: No active enclosing procedure activation - called from outside its lexical scope\n");
+            fatal_abort();
+        }
+        target = vm_static_link[target];
+    }
+    return target;
+}
+
+// Resolves an OP_LOAD_ENCLOSING/OP_STORE_ENCLOSING/OP_PUSH_ENCLOSING_REF
+// packed (levels_up, slot) arg to an absolute vm_frame_stack[] index.
+// Unlike vm_local_index(), this can't bounds-check `slot` against the
+// target frame's own actual size (only the CURRENTLY active frame's
+// frame_sp is tracked at any given moment, not every ancestor's) - a
+// plain array-bounds check is the best available defense for
+// hand-written .sasm, matching this project's existing bounds-check
+// style elsewhere (e.g. vm_var_index()).
+static int vm_enclosing_index(int fp, int levels_up, int slot) {
+    int target_fp = vm_enclosing_fp(fp, levels_up);
+    if (slot < 0 || target_fp + slot < 0 || target_fp + slot >= MAX_FRAME_STACK) {
+        fprintf(stderr, "VM Runtime Error: Enclosing local variable index %d out of range\n", slot);
+        fatal_abort();
+    }
+    return target_fp + slot;
 }
 
 // char and string share the exact same runtime representation (a
@@ -565,6 +621,10 @@ void run_vm(void) {
     memset(vm_heap_mem, 0, sizeof(vm_heap_mem));
     vm_heap_count = 0;
     for (int i = 0; i < MAX_RECORD_FIELDS + 1; i++) vm_heap_freelist[i] = -1;
+    for (int i = 0; i < MAX_FRAME_STACK; i++) vm_static_link[i] = -1; // -1, not 0 -
+                                             // 0 is a valid fp value, so this can't
+                                             // just be memset to zero like the plain
+                                             // data arrays above
     int sp = -1;
     int call_sp = -1;
     int fp = -1;         // -1 = no active frame
@@ -1545,6 +1605,41 @@ void run_vm(void) {
                 } else {
                     vm_frame_stack[-(ref + 1)] = val;
                 }
+                break;
+            }
+
+            case OP_PUSH_STATIC_LINK:
+                if (instr.arg == 0) {
+                    vm_push(&sp, fp); // calling my own direct lexical child
+                } else if (instr.arg == -1) {
+                    vm_push(&sp, -1); // sentinel: no valid enclosing activation (see vm_enclosing_fp())
+                } else {
+                    vm_push(&sp, vm_enclosing_fp(fp, instr.arg));
+                }
+                break;
+
+            case OP_POP_STATIC_LINK:
+                // fp is already this (nested) procedure's OWN frame here -
+                // OP_ENTER (always emitted for a nested procedure, even
+                // with zero of its own locals - see generate_program() in
+                // codegen.c) runs first and sets it, before this pops the
+                // static link the caller pushed.
+                vm_static_link[fp] = vm_pop(&sp);
+                break;
+
+            case OP_LOAD_ENCLOSING:
+                vm_push(&sp, vm_frame_stack[vm_enclosing_index(fp, instr.arg >> 12, instr.arg & 0xFFF)]);
+                break;
+
+            case OP_STORE_ENCLOSING: {
+                int val = vm_pop(&sp);
+                vm_frame_stack[vm_enclosing_index(fp, instr.arg >> 12, instr.arg & 0xFFF)] = val;
+                break;
+            }
+
+            case OP_PUSH_ENCLOSING_REF: {
+                int abs_index = vm_enclosing_index(fp, instr.arg >> 12, instr.arg & 0xFFF);
+                vm_push(&sp, -(abs_index + 1)); // literally OP_PUSH_LOCAL_REF's own encoding
                 break;
             }
 

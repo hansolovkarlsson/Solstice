@@ -508,13 +508,64 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       `var` arguments, `readln` into a `var` parameter, and a `var`
       parameter as a `for` loop counter — see
       [docs/LANGUAGE.md](LANGUAGE.md#var-parameters).
-- [ ] Nested procedure/function declarations — a procedure/function
+- [x] Nested procedure/function declarations — a procedure/function
       declared inside another one, with lexical access to the enclosing
-      procedure's own locals; not supported in any form yet (only
-      top-level declarations are). Distinct from Closures (Phase 2, non-
-      standard): plain lexical nesting doesn't let the nested
-      procedure/function escape/outlive its enclosing call, so it needs
-      none of closures' capture machinery
+      procedure's own locals, at arbitrary nesting depth. Distinct from
+      Closures (Phase 2, non-standard): plain lexical nesting doesn't let
+      the nested procedure/function escape/outlive its enclosing call, so
+      it needed none of closures' capture machinery. Implementation
+      notes:
+      - `current_locals[]`/`local_record_vars[]` (parser.c) became a
+        per-nesting-level STACK (`scope_locals[MAX_NESTING_DEPTH][...]`),
+        aliased back via macros so the ~50+ existing declaration call
+        sites needed zero textual changes. Only outward NAME RESOLUTION
+        (`find_local_outward()`/`find_any_record_var_outward()`, new)
+        needed to actually search past the innermost scope - duplicate-
+        declaration checks deliberately stayed scope-local-only, so a
+        nested local can legally shadow an ancestor's same-named one.
+      - "How many lexical levels up" (`levels_up`) rides on the
+        `ASTNode.op` field for every affected node type
+        (`NODE_LOCAL_VAR`/`_ASSIGN`/`_VAR_REF`, `NODE_VAR_PARAM_READ`/
+        `_ASSIGN`, `NODE_REF_ARRAY_ACCESS`/`_ASSIGN` incl. 2D/ND,
+        `NODE_LOCAL_STRING_INDEX`/`_ASSIGN`) - confirmed unused by every
+        one of them beforehand, so this needed **zero new `NodeType`
+        values and zero `ASTNode` struct changes**, directly following
+        this project's "reuse existing fields" convention. `NODE_LOCAL_FOR`/
+        `NODE_LOCAL_READLN` already used `op` for something else, so a
+        `for` counter/`readln` target stayed restricted to the current
+        procedure's own locals - a documented gap, not a silent bug.
+      - Local arrays and `static` locals needed **zero new runtime
+        machinery at all** for enclosing-scope access - both were already
+        implemented as hidden, mangled GLOBAL symbols, so outward name
+        resolution finding one declared in an outer scope was already
+        the whole fix.
+      - New VM machinery: a static-LINK chain (`vm_static_link[]` in
+        vm.c, indexed by `fp`) distinct from the existing DYNAMIC
+        (caller) chain `vm_call_stack[]` already tracks - 5 new opcodes
+        (`OP_PUSH_STATIC_LINK`/`OP_POP_STATIC_LINK`/`OP_LOAD_ENCLOSING`/
+        `OP_STORE_ENCLOSING`/`OP_PUSH_ENCLOSING_REF`; the latter three
+        pack `(levels_up, slot)` into one `Instruction.arg`, precedented
+        by `OP_PUSH_LOCAL_REF`'s own sign-encoding trick).
+      - **Deliberately non-standard**: a nested procedure's name stays in
+        the same flat, whole-program namespace every procedure already
+        shares (matching how `forward`/mutual recursion already work),
+        rather than being lexically hidden outside its declaring scope -
+        avoids a scope-stack rearchitecture of name RESOLUTION, which
+        was never the hard part of this feature (reaching an enclosing
+        LOCAL at runtime was). The consequence: a nested procedure can be
+        called from somewhere its lexical parent isn't an active
+        ancestor. This compiles fine and only traps - a genuine `VM
+        Runtime Error`, not silently wrong data - the moment such a call
+        actually touches an inaccessible enclosing local; see
+        [docs/LANGUAGE.md](LANGUAGE.md#nested-procedures-and-functions).
+      - Real bug caught during implementation, not before shipping: the
+        uninitialized-variable warning pass's `scan_local_usage()` walks
+        one procedure body looking for `NODE_LOCAL_VAR`/`_ASSIGN`/
+        `_VAR_REF` nodes and marks `read_flag[node->data.var_idx]`/
+        `assigned_flag[...]` - unguarded, a nested body's own `levels_up
+        > 0` node (referencing an ANCESTOR's slot) would coincidentally
+        alias one of THIS procedure's own slot indices and corrupt its
+        tracking. Fixed by skipping any such node unless `levels_up == 0`.
 - [ ] Functional/procedural parameters — passing a function or procedure
       as a formal parameter (`function Apply(function f(n: integer):
       integer; v: integer): integer;`), standard ISO 7185 Pascal's inline

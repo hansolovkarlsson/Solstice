@@ -878,6 +878,60 @@ typedef enum {
                   // shared heap has no single element type to dispatch a
                   // char-check on at runtime the way OP_STORE does via
                   // sym_table[]).
+
+    // Nested procedure/function declarations - lexical access to an
+    // enclosing procedure's own locals, at arbitrary nesting depth, via a
+    // static-link chain (see vm_static_link[] in vm.c). Distinct from
+    // OP_CALL's return-address call stack and from OP_ENTER/OP_RET's
+    // frame-pointer save/restore, which are about the DYNAMIC (caller)
+    // chain - the static link is a separate, LEXICAL (declaring-scope)
+    // chain, tracked per-frame in vm_static_link[fp].
+    OP_PUSH_STATIC_LINK, // arg = hop count, a compile-time constant from
+                  // comparing the callee's lexical parent against the
+                  // procedure currently being compiled. 0 = "push my own
+                  // current fp" (calling a direct lexical child). N > 0 =
+                  // "walk my own static-link chain N times starting at my
+                  // own fp, push the result" (calling deeper into an
+                  // ancestor's other nested descendants). -1 = the
+                  // sentinel "no valid link" - the flat-namespace escape
+                  // hatch means a nested procedure can be called from
+                  // somewhere its lexical parent isn't an active ancestor;
+                  // this is legal right up until the callee actually tries
+                  // to use OP_LOAD_ENCLOSING/OP_STORE_ENCLOSING/
+                  // OP_PUSH_ENCLOSING_REF, at which point walking into the
+                  // sentinel is a Runtime Error, not silently wrong data.
+                  // Emitted right before OP_CALL, only when the callee is
+                  // itself a nested procedure - never emitted for a call
+                  // to a top-level (non-nested) procedure.
+    OP_POP_STATIC_LINK, // No arg. Pops one value (pushed by the caller's
+                  // OP_PUSH_STATIC_LINK) and records it as vm_static_link[]
+                  // for the frame currently being entered. Emitted once,
+                  // in the prologue of every nested procedure, right after
+                  // OP_ENTER and before its ordinary parameter-unpacking
+                  // OP_STORE_LOCAL sequence (the caller pushes real
+                  // arguments first, the static link last/on top).
+    OP_LOAD_ENCLOSING,  // arg packs (levels_up, slot) as
+                  // (levels_up << 12) | slot. Walks vm_static_link[]
+                  // levels_up times starting from the current fp (a
+                  // Runtime Error if that walk hits the -1 sentinel),
+                  // then pushes vm_frame_stack[target_fp + slot]. Only
+                  // ever emitted for levels_up >= 1 - the levels_up == 0
+                  // case still uses the plain OP_LOAD_LOCAL.
+    OP_STORE_ENCLOSING, // Same addressing/encoding as OP_LOAD_ENCLOSING.
+                  // Pops a value; stores it into
+                  // vm_frame_stack[target_fp + slot].
+    OP_PUSH_ENCLOSING_REF, // The levels_up-aware generalization of
+                  // OP_PUSH_LOCAL_REF, same (levels_up, slot) packed arg
+                  // and the same chain walk as OP_LOAD_ENCLOSING/
+                  // OP_STORE_ENCLOSING. Pushes -(target_fp + slot + 1) -
+                  // literally OP_PUSH_LOCAL_REF's own encoding, just
+                  // computed from an ancestor frame's fp instead of the
+                  // current one. Lets a nested procedure forward one of
+                  // its enclosing scope's locals as a 'var' argument to a
+                  // further call - OP_LOAD_REF/OP_STORE_REF downstream
+                  // need no changes, since they already treat any
+                  // negative value as "an absolute vm_frame_stack[]
+                  // index" regardless of which opcode produced it.
 } Opcode;
 
 typedef struct {
@@ -1515,6 +1569,26 @@ typedef struct {
                                     // to the function's own name targets
                                     // this slot (see parser.c), and its
                                     // value is pushed just before RET
+    int lexical_parent_idx;         // proc_table[] index of the procedure
+                                    // this one is declared directly inside
+                                    // (its 'var'/'const'/nested-declaration
+                                    // section), or -1 if this is a
+                                    // top-level (non-nested) procedure.
+                                    // Set once, at add_proc() time, from
+                                    // the parser's current nesting state -
+                                    // never changes afterward. Used by
+                                    // codegen.c to classify every call site
+                                    // (not-nested / direct child / deeper
+                                    // ancestor descendant / flat-namespace
+                                    // "out of lexical scope") and emit the
+                                    // right OP_PUSH_STATIC_LINK, if any.
+    int lexical_depth;              // 0 for a top-level procedure, 1 for
+                                    // one declared directly inside a
+                                    // top-level procedure, etc. Redundant
+                                    // with walking lexical_parent_idx
+                                    // repeatedly, but makes that
+                                    // classification an O(depth) walk
+                                    // instead of a chain of table lookups.
     struct ASTNode *body;
 } ProcSymbol;
 

@@ -185,8 +185,13 @@ corruption.
 | `PUSH_LOCAL_REF` | `arg` = a slot index relative to the CURRENT `fp` (the caller, about to pass one of its own locals/parameters as a `var` argument - see `param_is_var` in `common.h`). Push `-(fp + arg + 1)` - the absolute `vm_frame_stack[]` index of that slot, encoded as a negative int so `LOAD_REF`/`STORE_REF` below can tell it apart from a global's (non-negative) `sym_table[]` index. Safe without any extra liveness tracking: this reference is only ever created right before a `CALL` and consumed during that one call, never stored anywhere it could outlive the frame it points into. |
 | `LOAD_REF` | Pop a reference (from `PUSH_LOCAL_REF` above, or a plain compile-time `PUSH` of a global's `sym_table[]` index - a `var` argument that's already a global needs no opcode of its own for this). Push `vm_vars[ref]` if `ref >= 0`, else `vm_frame_stack[-(ref + 1)]`. |
 | `STORE_REF` | Pop a value, then a reference (same encoding as `LOAD_REF`, same push order `STORE_IDX_DYN` already uses: reference pushed first/deepest, value pushed last/on top). Store the value through it, using the same `ref >= 0` / `ref < 0` dispatch as `LOAD_REF`. |
+| `PUSH_STATIC_LINK` | `arg` = a hop count. `0` pushes the current `fp` (calling a direct lexical child). `N > 0` walks `vm_static_link[]` `N` times starting at the current `fp` (calling deeper into an ancestor's other nested descendants). `-1` pushes the sentinel `-1` (no live ancestor to point at - see [Nested procedures: the static-link chain](#nested-procedures-the-static-link-chain) below). Emitted right before `CALL`, only when the callee is itself a nested procedure. |
+| `POP_STATIC_LINK` | Pop a value (pushed by the caller's `PUSH_STATIC_LINK`); store it as `vm_static_link[fp]` for the frame just entered. Emitted once, in a nested procedure's own prologue, right after `ENTER` and before its parameter-unpacking `STORE_LOCAL`s. |
+| `LOAD_ENCLOSING` | `arg` packs `(levels_up, slot)` as `(levels_up << 12) \| slot`. Walk `vm_static_link[]` `levels_up` times from the current `fp` (a runtime error if that hits the `-1` sentinel), then push `vm_frame_stack[target_fp + slot]`. Only ever emitted for `levels_up >= 1` - the `levels_up == 0` case still uses plain `LOAD_LOCAL`. |
+| `STORE_ENCLOSING` | Same addressing/encoding as `LOAD_ENCLOSING`. Pop a value; store it at `vm_frame_stack[target_fp + slot]`. |
+| `PUSH_ENCLOSING_REF` | Same chain walk/encoding as `LOAD_ENCLOSING`. Push `-(target_fp + slot + 1)` - literally `PUSH_LOCAL_REF`'s own encoding, just computed from an ancestor frame's `fp` instead of the current one, so `LOAD_REF`/`STORE_REF` need no changes to consume it. |
 
-See [Procedures: CALL, RET, and stack frames](#procedures-call-ret-and-stack-frames) below for the full picture, including why `CALL` needs to save more than just a return address.
+See [Procedures: CALL, RET, and stack frames](#procedures-call-ret-and-stack-frames) below for the full picture, including why `CALL` needs to save more than just a return address, and [Nested procedures: the static-link chain](#nested-procedures-the-static-link-chain) for `PUSH_STATIC_LINK`/`POP_STATIC_LINK`/`LOAD_ENCLOSING`/`STORE_ENCLOSING`/`PUSH_ENCLOSING_REF` specifically.
 
 ## How control flow compiles
 
@@ -319,6 +324,42 @@ scoped again to A's own locals.
   comes next.
 - **Locals**: anything beyond the parameters just gets its own slot
   number (`k..n-1`) reserved by the same `ENTER <n>`.
+
+### Nested procedures: the static-link chain
+
+A nested procedure (one `pascalc` declared inside another one's own
+declaration section) needs to reach an *enclosing* procedure's locals,
+not just its own - `vm_call_stack[]` doesn't help here, because it tracks
+the **dynamic** (who-called-whom) chain, and the two aren't the same
+thing. A recursive procedure that happens to also be nested is the clearest
+case this distinction matters for: every recursive call is dynamically
+"called by the same procedure", but the enclosing activation each one
+needs to reach is always the *original* one that was active when the whole
+recursive chain started, not whichever activation is the immediate caller.
+
+`vm_static_link[]` (indexed by `fp`, distinct from `vm_call_stack[]`) is
+this second, **lexical** chain: `vm_static_link[fp]` holds the `fp` of the
+activation that frame's own procedure was lexically declared inside. It's
+set once, by `POP_STATIC_LINK`, in a nested procedure's own prologue -
+right after `ENTER` (which is *always* emitted for a nested procedure,
+even with zero of its own locals, purely so it gets a distinct `fp` to
+record a static link at) and before its ordinary parameter-unpacking
+`STORE_LOCAL`s, since the caller pushes the static link *last*, on top of
+every real argument.
+
+At a call site, the compiler classifies the callee against whichever
+procedure is currently being compiled and emits `PUSH_STATIC_LINK` with
+one of three meanings (`arg`, per the opcode table above): `0` if the
+callee is a direct lexical child, `N` (a compile-time-constant hop count)
+if the callee's lexical parent is `N` levels up the *caller's own* static
+chain, or the `-1` sentinel if neither - which can genuinely happen here,
+since `pascalc` deliberately keeps a nested procedure's name in the same
+flat, whole-program namespace every procedure shares (see
+[docs/LANGUAGE.md](LANGUAGE.md#nested-procedures-and-functions)), so a
+call to it isn't restricted to only originating from inside its lexical
+parent. `-1` isn't itself an error: `LOAD_ENCLOSING`/`STORE_ENCLOSING`/
+`PUSH_ENCLOSING_REF` only abort (a `VM Runtime Error`, not silently wrong
+data) if a chain walk actually hits it.
 
 ### Worked example: recursive sum
 

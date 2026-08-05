@@ -24,6 +24,16 @@
 //                                        instruction of a procedure body)
 //     LOAD_LOCAL/STORE_LOCAL <k>         slot k, relative to the current
 //                                        frame - not a name, just a number
+//     PUSH_STATIC_LINK <n>               n = hop count: 0 pushes the
+//                                        current fp, N>0 walks the CALLER's
+//                                        own static-link chain N times, -1
+//                                        is the "no valid link" sentinel
+//     LOAD_ENCLOSING/STORE_ENCLOSING <k> k packs (levels_up, slot) as
+//     PUSH_ENCLOSING_REF <k>             (levels_up << 12) | slot - a
+//                                        nested-procedure local N levels
+//                                        up the static-link chain; compute
+//                                        k by hand as (N << 12) | slot
+//                                        when hand-writing one of these
 //     everything else                    no operand
 //
 // Procedures: CALL pushes a return address and jumps; the callee's first
@@ -242,6 +252,11 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"READ_FILE_LOCAL_REAL_NOFLUSH", OP_READ_FILE_LOCAL_REAL_NOFLUSH, OPERAND_IMMEDIATE},
     {"SKIP_PENDING_NEWLINE",      OP_SKIP_PENDING_NEWLINE,      OPERAND_NONE},
     {"SKIP_PENDING_NEWLINE_FILE", OP_SKIP_PENDING_NEWLINE_FILE, OPERAND_VAR},
+    {"PUSH_STATIC_LINK",   OP_PUSH_STATIC_LINK,   OPERAND_IMMEDIATE}, // operand = hop count (see header comment)
+    {"POP_STATIC_LINK",    OP_POP_STATIC_LINK,    OPERAND_NONE},
+    {"LOAD_ENCLOSING",     OP_LOAD_ENCLOSING,     OPERAND_IMMEDIATE}, // operand = packed (levels_up, slot)
+    {"STORE_ENCLOSING",    OP_STORE_ENCLOSING,    OPERAND_IMMEDIATE},
+    {"PUSH_ENCLOSING_REF", OP_PUSH_ENCLOSING_REF, OPERAND_IMMEDIATE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 

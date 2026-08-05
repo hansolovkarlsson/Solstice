@@ -1859,6 +1859,83 @@ end.
 - Functions (procedures that return a value) work — see
   [Functions](#functions) below.
 
+### Nested procedures and functions
+
+```pascal
+procedure outer;
+var
+    total: integer;
+
+    procedure addUp(n: integer);
+    procedure step(k: integer);
+    begin
+        total := total + k;   { outer's own local, not step's/addUp's }
+    end;
+    begin
+        if n > 0 then begin
+            step(n);
+            addUp(n - 1);
+        end;
+    end;
+
+begin
+    total := 0;
+    addUp(3);
+    writeln(total);   { 6 }
+end;
+
+begin
+    outer;
+end.
+```
+
+- A procedure or function may be declared **inside** another
+  procedure/function's own declaration section (after its `var` section,
+  before its `begin`), at any nesting depth. The nested body can read
+  and write **any enclosing procedure's own locals and parameters** —
+  not just its immediate parent's, as `step` reaching all the way up
+  through `addUp` to `outer`'s own `total` above demonstrates — matching
+  standard Pascal lexical scoping.
+- A nested local **shadows** a same-named local in an enclosing
+  procedure, exactly like a procedure's own local already shadows a
+  global — the enclosing one is simply inaccessible by that name from
+  inside the nested body, standard Pascal scoping. A duplicate name
+  *within the same* declaration section is still rejected, as always.
+- Unlike standard Pascal, a nested procedure/function's name is **not**
+  restricted to being called only from inside its lexically enclosing
+  procedure — it shares the same single, whole-program namespace every
+  top-level procedure already does (this is also how `forward` and
+  mutual recursion between procedures already work). Calling a nested
+  procedure from somewhere its lexical parent isn't currently active
+  compiles fine; it's only a **runtime error** if that call actually
+  goes on to touch one of the (inaccessible) enclosing locals — see
+  [Errors](#errors) below.
+- A local **array** or **`static` local** declared in an enclosing
+  procedure works the same way from a nested body, at zero extra cost —
+  both are already implemented as global storage under the hood (see
+  [Local arrays](#local-arrays) and [Static local
+  variables](#static-local-variables) below), so nothing new is needed
+  to reach one from a nested procedure.
+- Recursion works the same for a nested procedure as a top-level one,
+  including a nested procedure calling *itself* while still reaching an
+  enclosing local correctly on every recursive call.
+
+#### What's not supported yet
+
+- **A `for` loop counter, or a `readln` target, that's an enclosing
+  procedure's local** — both must be one of the current procedure's own
+  locals. Use one of this procedure's own locals as the counter/target
+  instead, and (for `readln`) assign it to the outer one afterward.
+  (Standard Pascal requires a `for` loop counter be local to the
+  enclosing block anyway, so this is a narrow, defensible restriction.)
+- **Whole-record `var`-parameter forwarding, or an array element as a
+  `var` argument, through an enclosing scope** — already-existing gaps
+  (see [`var` parameters](#var-parameters) below) that nesting doesn't
+  lift; a nested procedure inherits whatever restrictions its enclosing
+  one already has.
+- Nesting deeper than 16 levels is a compile-time error (`'name' is
+  nested too deeply`) — a generous, arbitrary limit, not a language rule.
+
 ### Static local variables
 
 ```pascal

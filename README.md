@@ -288,7 +288,21 @@ dynamically-sized memory region, a single shared heap with a size-
 bucketed freelist so `dispose` actually makes space reusable rather than
 just leaking it (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#pointers)); pointer to an array or to
-another pointer isn't supported yet.
+another pointer isn't supported yet. Also working: nested procedure/
+function declarations, with lexical access to any enclosing procedure's
+own locals and parameters at arbitrary nesting depth — a local array or
+`static` local needs zero new runtime machinery to reach from a nested
+body (both are already global storage under the hood), while a plain
+scalar/parameter/record-field local reaches an enclosing frame via a new
+static-link chain distinct from the VM's existing call stack, five new
+opcodes (`PUSH_STATIC_LINK`/`POP_STATIC_LINK`/`LOAD_ENCLOSING`/
+`STORE_ENCLOSING`/`PUSH_ENCLOSING_REF`) (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#nested-procedures-and-functions)); a
+nested procedure's name stays in the same flat, whole-program namespace
+every procedure already shares, rather than being lexically hidden
+outside its own declaring scope, so calling one from outside its
+lexical parent's active scope is a runtime error, not a compile-time
+one, the moment it actually touches an inaccessible enclosing local.
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), nested
 records, and a whole record or an array element as a `var` argument.
