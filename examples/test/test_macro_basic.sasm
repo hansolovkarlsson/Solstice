@@ -1,0 +1,10 @@
+; Basic macro: print a value with a trailing newline, parameterized.
+.macro PRINTLN val
+    push val
+    print
+    newline
+.endmacro
+
+    println 5
+    println 10
+    halt

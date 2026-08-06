@@ -12,6 +12,7 @@
 //     .array <name> <lower> <upper> <type>       ; declare an array
 //     label:                             ; a label, alone on its own line
 //     MNEMONIC [operand]                 ; one instruction per line
+//     .macro NAME [params...] / <body> / .endmacro   ; see docs/ASSEMBLER.md
 //
 // Operand kinds, by instruction:
 //     PUSH <integer literal>             e.g. PUSH 5, PUSH -1
@@ -87,6 +88,13 @@
 
 #define MAX_LABELS 512
 #define MAX_LINES  4096
+
+#define MAX_MACROS 64
+#define MAX_MACRO_PARAMS 8
+#define MAX_MACRO_BODY_LINES 128
+#define MAX_MACRO_EXPANSION_DEPTH 16
+#define MAX_MACRO_LINE_LEN 256
+#define MACRO_LINE_POOL_SIZE (MAX_LINES * 4)
 
 typedef struct {
     char name[MAX_NAME];
@@ -257,6 +265,11 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"LOAD_ENCLOSING",     OP_LOAD_ENCLOSING,     OPERAND_IMMEDIATE}, // operand = packed (levels_up, slot)
     {"STORE_ENCLOSING",    OP_STORE_ENCLOSING,    OPERAND_IMMEDIATE},
     {"PUSH_ENCLOSING_REF", OP_PUSH_ENCLOSING_REF, OPERAND_IMMEDIATE},
+    {"SWAP",      OP_SWAP,      OPERAND_NONE},
+    {"OVER",      OP_OVER,      OPERAND_NONE},
+    {"ROT",       OP_ROT,       OPERAND_NONE},
+    {"DEBUG_STACK", OP_DEBUG_STACK, OPERAND_NONE},
+    {"DEBUG_SYMS",  OP_DEBUG_SYMS,  OPERAND_NONE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
@@ -553,6 +566,267 @@ static void split_lines(char *source) {
     }
 }
 
+// Macro support: '.macro NAME param1 param2 ... / <body lines> /
+// .endmacro' defines a macro; a later line whose first token is NAME
+// (with exactly param_count space-separated arguments) expands into the
+// body, with every whole-word occurrence of a parameter name replaced by
+// its argument text - one text substitution pass, not a typed operand
+// substitution, so a parameter can stand in for a variable name, a
+// label, or an immediate value alike. A label DEFINED inside the body
+// (a "name:" line) is automatically given a fresh, per-expansion-unique
+// name (both the definition and any same-name reference elsewhere in
+// that same body get the same rename), so a macro containing its own
+// loop/branch labels can be invoked more than once without a duplicate-
+// label error - a label referenced but not defined in the body (e.g. one
+// passed in as a parameter) is left untouched, so a macro can still jump
+// to a caller-supplied or genuinely global label. Expansion is a single
+// top-to-bottom pass over the file, so a macro must be defined (its
+// .macro/.endmacro block already seen) before any line that invokes it,
+// including another macro's body - no forward references, unlike labels.
+typedef struct {
+    char name[MAX_NAME];
+    char params[MAX_MACRO_PARAMS][MAX_NAME];
+    int param_count;
+    char *body_lines[MAX_MACRO_BODY_LINES];
+    int body_line_numbers[MAX_MACRO_BODY_LINES];
+    int body_count;
+} Macro;
+
+static Macro macros[MAX_MACROS];
+static int macro_count = 0;
+static int macro_expansion_counter = 0;
+
+static char macro_line_pool[MACRO_LINE_POOL_SIZE][MAX_MACRO_LINE_LEN];
+static int macro_line_pool_used = 0;
+
+static char *expanded_lines[MAX_LINES];
+static int expanded_line_numbers[MAX_LINES];
+static int num_expanded = 0;
+
+// Case-insensitive, matching find_opcode() - a macro name reads like an
+// instruction mnemonic at its call site, so it follows the same rule
+// rather than the case-sensitive one variable/array/label names use.
+static Macro *find_macro(const char *name) {
+    for (int i = 0; i < macro_count; i++) {
+        if (strcasecmp(macros[i].name, name) == 0) return &macros[i];
+    }
+    return NULL;
+}
+
+static char *alloc_macro_line(int line_no) {
+    if (macro_line_pool_used >= MACRO_LINE_POOL_SIZE) {
+        asm_error(line_no, "Macro expansion exhausted internal line buffer (limit is %d generated lines)", MACRO_LINE_POOL_SIZE);
+    }
+    return macro_line_pool[macro_line_pool_used++];
+}
+
+typedef struct { const char *from; const char *to; } WordSub;
+
+// Replaces every whole-word occurrence of one of `subs`' `from` names
+// with its `to` text; anything that isn't part of a matched word (other
+// identifiers, punctuation, numbers, whitespace) passes through
+// unchanged. A "word" starts with a letter or underscore, matching this
+// assembler's identifier syntax (variable/label/macro names).
+static void substitute_words(const char *line, const WordSub *subs, int nsubs, char *out, size_t out_cap) {
+    size_t oi = 0;
+    const char *p = line;
+    while (*p) {
+        if (isalpha((unsigned char)*p) || *p == '_') {
+            const char *start = p;
+            while (isalnum((unsigned char)*p) || *p == '_') p++;
+            size_t wlen = (size_t)(p - start);
+            const char *replacement = NULL;
+            size_t replacement_len = 0;
+            for (int i = 0; i < nsubs; i++) {
+                size_t flen = strlen(subs[i].from);
+                if (flen == wlen && strncmp(start, subs[i].from, wlen) == 0) {
+                    replacement = subs[i].to;
+                    replacement_len = strlen(replacement);
+                    break;
+                }
+            }
+            const char *src = replacement ? replacement : start;
+            size_t len = replacement ? replacement_len : wlen;
+            if (oi + len >= out_cap) { out[oi] = '\0'; return; }
+            memcpy(out + oi, src, len);
+            oi += len;
+        } else {
+            if (oi + 1 >= out_cap) { out[oi] = '\0'; return; }
+            out[oi++] = *p++;
+        }
+    }
+    out[oi] = '\0';
+}
+
+static void emit_expanded_line(char *text, int line_no) {
+    if (num_expanded >= MAX_LINES) {
+        asm_error(line_no, "Macro expansion produced too many lines (limit is %d)", MAX_LINES);
+    }
+    expanded_lines[num_expanded] = text;
+    expanded_line_numbers[num_expanded] = line_no;
+    num_expanded++;
+}
+
+static void expand_line(const char *line, int line_no, int depth) {
+    char first_tok[MAX_NAME];
+    if (sscanf(line, "%31s", first_tok) != 1) return; // blank - split_lines already drops these, but be safe
+
+    Macro *m = find_macro(first_tok);
+    if (!m) {
+        emit_expanded_line((char *)line, line_no);
+        return;
+    }
+
+    if (depth >= MAX_MACRO_EXPANSION_DEPTH) {
+        asm_error(line_no, "Macro expansion nested too deeply calling '%s' (possible macro recursion)", m->name);
+    }
+
+    // Tokenize the invocation's arguments (everything after the macro name).
+    char line_copy[MAX_MACRO_LINE_LEN];
+    strncpy(line_copy, line, sizeof(line_copy) - 1);
+    line_copy[sizeof(line_copy) - 1] = '\0';
+    strtok(line_copy, " \t"); // the macro name itself - already matched above
+    char args[MAX_MACRO_PARAMS][MAX_NAME];
+    int nargs = 0;
+    char *tok;
+    while ((tok = strtok(NULL, " \t")) != NULL) {
+        if (nargs >= MAX_MACRO_PARAMS) {
+            asm_error(line_no, "Too many arguments to macro '%s' (limit is %d)", m->name, MAX_MACRO_PARAMS);
+        }
+        strncpy(args[nargs], tok, MAX_NAME - 1);
+        args[nargs][MAX_NAME - 1] = '\0';
+        nargs++;
+    }
+    if (nargs != m->param_count) {
+        asm_error(line_no, "Macro '%s' expects %d argument(s), got %d", m->name, m->param_count, nargs);
+    }
+
+    WordSub param_subs[MAX_MACRO_PARAMS];
+    for (int i = 0; i < m->param_count; i++) {
+        param_subs[i].from = m->params[i];
+        param_subs[i].to = args[i];
+    }
+
+    // Pass 1: substitute parameters into each body line.
+    char *after_params[MAX_MACRO_BODY_LINES];
+    for (int i = 0; i < m->body_count; i++) {
+        char *buf = alloc_macro_line(line_no);
+        substitute_words(m->body_lines[i], param_subs, m->param_count, buf, MAX_MACRO_LINE_LEN);
+        after_params[i] = buf;
+    }
+
+    // Find every label DEFINED in the substituted body and give it a
+    // fresh name unique to this one expansion, so a second invocation of
+    // the same macro doesn't produce a duplicate-label error.
+    int expansion_id = macro_expansion_counter++;
+    char label_orig[MAX_MACRO_BODY_LINES][MAX_NAME];
+    char label_unique[MAX_MACRO_BODY_LINES][MAX_NAME];
+    WordSub label_subs[MAX_MACRO_BODY_LINES];
+    int nlabel_subs = 0;
+    for (int i = 0; i < m->body_count; i++) {
+        if (is_label_line(after_params[i])) {
+            size_t len = strlen(after_params[i]) - 1;
+            if (len >= MAX_NAME) asm_error(m->body_line_numbers[i], "Label name too long inside macro '%s'", m->name);
+            memcpy(label_orig[nlabel_subs], after_params[i], len);
+            label_orig[nlabel_subs][len] = '\0';
+            snprintf(label_unique[nlabel_subs], MAX_NAME, "%.*s__%s%d", (int)(MAX_NAME / 2), label_orig[nlabel_subs], m->name, expansion_id);
+            label_subs[nlabel_subs].from = label_orig[nlabel_subs];
+            label_subs[nlabel_subs].to = label_unique[nlabel_subs];
+            nlabel_subs++;
+        }
+    }
+
+    // Pass 2: rename local-label definitions/references, then recursively
+    // expand the result (supports one macro's body invoking another).
+    for (int i = 0; i < m->body_count; i++) {
+        char *final_line = alloc_macro_line(m->body_line_numbers[i]);
+        substitute_words(after_params[i], label_subs, nlabel_subs, final_line, MAX_MACRO_LINE_LEN);
+        expand_line(final_line, line_no, depth + 1);
+    }
+}
+
+// Scans the split lines top to bottom, pulling '.macro'/'.endmacro'
+// blocks out into the macro table and expanding every other line
+// (including a macro invocation) into expanded_lines[]/num_expanded -
+// which is then copied back over lines[]/num_lines so the rest of
+// assemble() (both existing passes) needs no changes at all to see the
+// fully-expanded program.
+static void expand_macros(void) {
+    macro_count = 0;
+    macro_expansion_counter = 0;
+    macro_line_pool_used = 0;
+    num_expanded = 0;
+
+    int i = 0;
+    while (i < num_lines) {
+        char *line = lines[i];
+        int line_no = line_numbers[i];
+
+        char directive[MAX_NAME];
+        if (line[0] == '.' && sscanf(line, ".%31s", directive) == 1 && strcasecmp(directive, "macro") == 0) {
+            if (macro_count >= MAX_MACROS) {
+                asm_error(line_no, "Too many macro definitions (limit is %d)", MAX_MACROS);
+            }
+            Macro *m = &macros[macro_count];
+
+            char line_copy[MAX_MACRO_LINE_LEN];
+            strncpy(line_copy, line, sizeof(line_copy) - 1);
+            line_copy[sizeof(line_copy) - 1] = '\0';
+            strtok(line_copy, " \t"); // ".macro" - discarded
+            char *name_tok = strtok(NULL, " \t");
+            if (!name_tok) asm_error(line_no, "Malformed .macro directive (expected: .macro <name> [param...])");
+            if (strlen(name_tok) >= MAX_NAME) asm_error(line_no, "Macro name '%s' too long (limit is %d characters)", name_tok, MAX_NAME - 1);
+            if (find_opcode(name_tok)) asm_error(line_no, "Macro name '%s' collides with an instruction mnemonic", name_tok);
+            if (find_macro(name_tok)) asm_error(line_no, "Duplicate macro definition '%s'", name_tok);
+            strcpy(m->name, name_tok);
+
+            m->param_count = 0;
+            char *ptok;
+            while ((ptok = strtok(NULL, " \t")) != NULL) {
+                if (m->param_count >= MAX_MACRO_PARAMS) {
+                    asm_error(line_no, "Macro '%s' has too many parameters (limit is %d)", m->name, MAX_MACRO_PARAMS);
+                }
+                strncpy(m->params[m->param_count], ptok, MAX_NAME - 1);
+                m->params[m->param_count][MAX_NAME - 1] = '\0';
+                m->param_count++;
+            }
+
+            m->body_count = 0;
+            i++;
+            int found_end = 0;
+            while (i < num_lines) {
+                char *bline = lines[i];
+                char bdirective[MAX_NAME];
+                if (bline[0] == '.' && sscanf(bline, ".%31s", bdirective) == 1) {
+                    if (strcasecmp(bdirective, "endmacro") == 0) { found_end = 1; i++; break; }
+                    if (strcasecmp(bdirective, "macro") == 0) {
+                        asm_error(line_numbers[i], "Nested .macro definitions are not supported (missing .endmacro for '%s'?)", m->name);
+                    }
+                }
+                if (m->body_count >= MAX_MACRO_BODY_LINES) {
+                    asm_error(line_numbers[i], "Macro '%s' body too long (limit is %d lines)", m->name, MAX_MACRO_BODY_LINES);
+                }
+                m->body_lines[m->body_count] = bline;
+                m->body_line_numbers[m->body_count] = line_numbers[i];
+                m->body_count++;
+                i++;
+            }
+            if (!found_end) asm_error(line_no, "Missing .endmacro for macro '%s'", m->name);
+            macro_count++;
+            continue;
+        }
+
+        expand_line(line, line_no, 0);
+        i++;
+    }
+
+    for (int j = 0; j < num_expanded; j++) {
+        lines[j] = expanded_lines[j];
+        line_numbers[j] = expanded_line_numbers[j];
+    }
+    num_lines = num_expanded;
+}
+
 void assemble(char *source, const char *filename) {
     asm_filename = filename;
     sym_count = 0;
@@ -562,6 +836,7 @@ void assemble(char *source, const char *filename) {
     label_count = 0;
 
     split_lines(source);
+    expand_macros();
 
     // Pass 1: register every .var declaration and every label's target
     // instruction index. This is what lets JMP/JZ (and, for consistency,

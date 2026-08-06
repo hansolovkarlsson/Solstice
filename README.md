@@ -304,5 +304,15 @@ outside its own declaring scope, so calling one from outside its
 lexical parent's active scope is a runtime error, not a compile-time
 one, the moment it actually touches an inaccessible enclosing local.
 
+Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
+Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation
+opcodes, `DEBUG_STACK`/`DEBUG_SYMS` VM debug built-ins, a `desole -x`
+raw hexdump mode, and `.macro`/`.endmacro` macro support in `solas`
+(text-substitution parameters, with automatic per-expansion renaming of
+any label the macro body defines itself — see
+[docs/ASSEMBLER.md](docs/ASSEMBLER.md#macros)). Also working, in Pascal
+source: `(* ... *)` as an alternate comment style alongside `{ }` and
+`//` (see [docs/LANGUAGE.md](docs/LANGUAGE.md#comments)).
+
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), nested
 records, and a whole record or an array element as a `var` argument.

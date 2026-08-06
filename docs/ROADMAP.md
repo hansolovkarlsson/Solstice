@@ -597,16 +597,53 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
 
 ### VM / bytecode
 
-- [ ] Additional stack-manipulation opcodes for hand-written `.sasm`
-      (`over`, `rot`, `swap` — `DUP` and `POP`/drop already exist, see
-      [docs/BYTECODE.md](BYTECODE.md))
+- [x] Additional stack-manipulation opcodes for hand-written `.sasm`
+      (`SWAP`/`OVER`/`ROT` — `DUP` and `POP`/drop already existed).
+      Hand-written `.sasm` only; `pascalc` never emits any of the three,
+      since it always knows an expression's evaluation order at compile
+      time and never needs to rearrange the stack at runtime — see
+      [docs/BYTECODE.md](BYTECODE.md#comparison-integer--logic-boolean).
+- [x] VM debug built-ins: dump the current stack, dump the current symbol
+      table (`DEBUG_STACK`/`DEBUG_SYMS`, hand-written `.sasm` only, no
+      `-v` dependency). `DEBUG_SYMS` reuses the exact global-dump loop
+      `HALT`'s own `-v` output already used, factored out into a shared
+      `vm_dump_globals()` helper so both call sites (end-of-run and
+      mid-run-on-demand) stay identical - see
+      [docs/BYTECODE.md](BYTECODE.md#debugging).
 
 ### Tooling
 
-- [ ] `desole` hexdump output option
-- [ ] Macro support in `solas`
-- [ ] `(* ... *)` as an alternate comment style (currently only `{ }` and `//`)
-- [ ] VM debug built-ins: dump the current stack, dump the current symbol table
+- [x] `desole` hexdump output option (`-x`) — a classic offset/hex/ASCII
+      dump of the `.bin` file's raw on-disk bytes, bypassing
+      `load_bytecode()` entirely (so it still works on a corrupted/
+      truncated file the normal loader would refuse to open) — see
+      [docs/ASSEMBLER.md](ASSEMBLER.md).
+- [x] Macro support in `solas` (`.macro NAME [params...]` / body /
+      `.endmacro`) — a preprocessing pass between `split_lines()` and the
+      existing two-pass assembler, so neither pass needed any changes:
+      expansion produces a fully-expanded line list that's copied back
+      over the original `lines[]`/`num_lines` before Pass 1 ever runs.
+      Parameter substitution is plain whole-word text replacement (one
+      mechanism covers a parameter standing in for a variable name, a
+      label, or an integer literal alike). A label *defined* inside a
+      macro body gets a fresh, per-expansion-unique name generated
+      automatically (both the definition and any same-name reference
+      within that body are renamed together), so invoking the same macro
+      twice doesn't collide — a label the body only references without
+      defining (e.g. one passed in as a parameter) is left alone. Nested
+      macro invocations work (one macro's body calling another), guarded
+      by a fixed recursion-depth limit; a macro must be defined before
+      any line that invokes it (single top-to-bottom pass, no forward
+      references the way labels get) — see
+      [docs/ASSEMBLER.md](ASSEMBLER.md#macros).
+- [x] `(* ... *)` as an alternate comment style (alongside the existing
+      `{ }` and `//`) — same "scan until the closing delimiter, don't
+      nest" handling `{ }` already had, added as a third case in
+      `lexer.c`'s comment-skipping block. Unambiguous with the `*`
+      multiplication operator since Pascal has no prefix/unary `*`, so
+      `(` immediately followed by `*` can only ever be the start of a
+      comment — see
+      [docs/LANGUAGE.md](LANGUAGE.md#comments).
 
 ## Phase 2 — Object-oriented Pascal + general OOP support in the VM
 

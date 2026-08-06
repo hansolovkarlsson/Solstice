@@ -1,0 +1,15 @@
+; A macro invoking another already-defined macro (nested expansion).
+.macro DOUBLE n
+    push n
+    push 2
+    mul
+.endmacro
+
+.macro PRINT_DOUBLED n
+    double n
+    print
+    newline
+.endmacro
+
+    print_doubled 21
+    halt

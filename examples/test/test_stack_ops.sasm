@@ -1,0 +1,26 @@
+; Exercises SWAP, OVER, ROT.
+    push 1
+    push 2
+    swap        ; stack becomes (bottom->top) 2 1
+    print       ; pops top first: 1
+    print       ; 2
+    newline
+
+    push 1
+    push 2
+    over        ; ( a b -- a b a ) -> 1 2 1
+    print       ; 1
+    print       ; 2
+    print       ; 1
+    newline
+
+    push 1
+    push 2
+    push 3
+    rot         ; ( a b c -- b c a ) -> 2 3 1
+    print       ; pops top first: 1
+    print       ; 3
+    print       ; 2
+    newline
+
+    halt

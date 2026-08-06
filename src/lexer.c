@@ -52,6 +52,17 @@ void next_token(void) {
         return;
     }
 
+    if (*src == '(' && *(src + 1) == '*') {
+        src += 2;
+        while (*src && !(*src == '*' && *(src + 1) == ')')) {
+            if (*src == '\n') current_line++;
+            src++;
+        }
+        if (*src) src += 2;
+        next_token();
+        return;
+    }
+
     if (!*src) {
         token.type = TOKEN_EOF;
         token.text[0] = '\0';

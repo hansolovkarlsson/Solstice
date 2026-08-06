@@ -932,6 +932,25 @@ typedef enum {
                   // need no changes, since they already treat any
                   // negative value as "an absolute vm_frame_stack[]
                   // index" regardless of which opcode produced it.
+
+    // Additional stack-manipulation opcodes, for hand-written .sasm only -
+    // the compiler never emits these (OP_DUP/OP_POP already cover every
+    // stack shape codegen.c needs). No arg on any of the three.
+    OP_SWAP,      // Swap the top two stack values: ( a b -- b a ).
+    OP_OVER,      // Copy the second-from-top value to the top:
+                  // ( a b -- a b a ).
+    OP_ROT,       // Rotate the top three values, bringing the third-from-
+                  // top to the top: ( a b c -- b c a ).
+
+    // VM debug built-ins, for hand-written .sasm only - the compiler never
+    // emits these. Both print to stdout and leave the stack/globals
+    // untouched; neither depends on -v.
+    OP_DEBUG_STACK, // No arg. Prints the current evaluation stack,
+                  // bottom to top.
+    OP_DEBUG_SYMS,  // No arg. Prints every global variable/array's
+                  // current value by name - the same listing OP_HALT
+                  // prints under -v, callable mid-program instead of
+                  // only at the very end of a run.
 } Opcode;
 
 typedef struct {

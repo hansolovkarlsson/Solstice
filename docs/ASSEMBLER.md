@@ -15,6 +15,7 @@ frontend or the VM, only the shared `bytecode.c` file-format code (see
 ```sh
 solas [-v] <input.sasm> <output.bin>
 desole [-v] <input.bin> [output.sasm]     # omit output to print to stdout
+desole -x <input.bin> [output.txt]        # raw hexdump instead of disassembly
 ```
 
 `-v` shows a write-confirmation message (instruction/symbol/string
@@ -22,6 +23,12 @@ counts). Without it, both tools are silent on success — `solas` produces
 nothing but the output file; `desole`'s actual output (the disassembly
 listing) is unaffected either way, since that's its real job, not debug
 narration.
+
+`desole -x` prints a classic offset/hex/ASCII hexdump of the `.bin`
+file's raw on-disk bytes instead of the structured disassembly — useful
+for inspecting the exact byte layout, or for a corrupted/truncated file
+that `load_bytecode()` itself refuses to open (hexdump mode reads the
+file directly, without going through the normal loader at all).
 
 ## `.sasm` syntax
 
@@ -86,10 +93,73 @@ then one `NEWLINE` only for `writeln`.
 `PRINT_PADDED`, `PRINT_STR_PADDED`, `PRINT_BOOL_PADDED`,
 `FPRINT_PADDED`, `FPRINT_PADDED_PRECISE`, `CALL`,
 `RET`, `ENTER`, `LOAD_LOCAL`,
-`STORE_LOCAL`, `POP`. See
+`STORE_LOCAL`, `POP`, `SWAP`, `OVER`, `ROT`,
+`DEBUG_STACK`, `DEBUG_SYMS`. See
 [docs/BYTECODE.md](BYTECODE.md#opcode-reference) for what each one does,
 and [Procedures](BYTECODE.md#procedures-call-ret-and-stack-frames) for
 the calling convention and a worked recursive example.
+
+## Macros
+
+```
+.macro NAME [param1 param2 ...]
+    <body lines>
+.endmacro
+```
+
+A later line whose first token is `NAME`, followed by exactly as many
+space-separated arguments as the macro has parameters, expands into the
+body. Expansion is pure text substitution: every whole-word occurrence
+of a parameter name in the body is replaced by the corresponding
+argument text, so a parameter can stand in for a variable name, a label,
+or an integer literal alike — there's no notion of a parameter's "kind".
+Macro names are matched case-insensitively, like instruction mnemonics
+(a macro invocation reads just like an instruction), and a macro name
+can't collide with an existing mnemonic.
+
+A label *defined* inside a macro's body (a `name:` line) is
+automatically given a fresh name unique to that one expansion, so
+invoking the same macro more than once doesn't produce a duplicate-label
+error — a label the body only *references*, without defining (e.g. one
+passed in as a parameter), is left untouched, so a macro can still jump
+to a caller-supplied or genuinely global label.
+
+```
+.macro COUNTDOWN start
+    push start
+    store i
+loop:
+    load i
+    push 0
+    gt
+    jz done
+    load i
+    print
+    load i
+    push 1
+    sub
+    store i
+    jmp loop
+done:
+    newline
+.endmacro
+
+    countdown 3    ; prints 321
+    countdown 2    ; prints 21 - loop:/done: don't collide with the call above
+```
+
+A macro's body may invoke another macro (nested expansion, up to a
+fixed depth limit as a recursion guard). Expansion is a single
+top-to-bottom pass over the file, so **a macro must be defined — its
+`.macro`/`.endmacro` block already seen — before any line that invokes
+it**, including from inside another macro's body; unlike labels, there's
+no forward reference. Macro definitions don't nest (no `.macro` inside
+another `.macro`'s body).
+
+Macro invocation happens entirely before `solas`'s own two-pass
+assembly, so `desole` never reconstructs `.macro` syntax — disassembling
+a program that used a macro shows the fully expanded instructions, with
+the mangled local-label names macro expansion generated.
 
 ## Example: countdown loop
 

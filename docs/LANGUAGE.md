@@ -41,8 +41,9 @@ end.
 
 ## Comments
 
-Two forms: block comments delimited by curly braces (may span multiple
-lines), and `//` line comments (run to end of line):
+Three forms: block comments delimited by curly braces or by `(* *)`
+(either may span multiple lines - neither nests), and `//` line
+comments (run to end of line):
 
 ```pascal
 { this is a comment }
@@ -50,6 +51,7 @@ x := 1; { so is this }
 {
   and this
 }
+(* this is also a comment, an alternate spelling of { } *)
 y := 2; // this too, to end of line
 ```
 
@@ -1781,6 +1783,22 @@ sized entirely at compile time. `dispose` doesn't just leak a freed
 block — it links it onto a freelist bucketed by allocation size, so a
 later `new()` targeting the same size reuses it instead of growing the
 heap further.
+
+**There is no garbage collector.** Losing every reference to an
+allocated block — assigning its pointer `nil`, overwriting it with
+another `new()`, or just letting the local variable that held it go out
+of scope at `RET` — without first calling `dispose` on it does not
+reclaim that memory. Nothing walks live pointers looking for orphaned
+blocks; the heap only ever grows via `new` and only ever gets storage
+back via a matching `dispose`, exactly like C's `malloc`/`free`. This
+matches standard Pascal's own contract (`dispose` is always manual
+there too) - it's mentioned here because the *consequence* is worth
+knowing: a long-running program that leaks allocations in a loop will
+eventually exhaust the heap and abort with a clean `VM Runtime Error`
+(never a crash or silent corruption - see
+[docs/BYTECODE.md](BYTECODE.md#memory-model)), but it genuinely can run
+out. Always pair `new` with a `dispose` once
+you're done with a block, the same discipline `malloc`/`free` demands.
 
 ### What's not supported yet
 

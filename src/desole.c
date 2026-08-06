@@ -7,8 +7,14 @@
 // a .bin through desole then solas reproduces an equivalent program.
 //
 // Usage:
-//   desole <input.bin>              prints to stdout
-//   desole <input.bin> <output.sasm>  writes to a file
+//   desole [-v] <input.bin> [output.sasm]  prints to stdout, or a file
+//   desole -x <input.bin> [output.txt]     raw hexdump instead
+//
+// -x prints a classic offset/hex/ASCII hexdump of the .bin file's raw
+// bytes (the on-disk format: bytecode.c's magic/counts/Symbol/
+// Instruction/string_pool records), rather than the structured
+// disassembly - useful for inspecting the exact byte layout or a
+// corrupted/truncated file that load_bytecode() itself refuses to open.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -173,6 +179,11 @@ static const char *opcode_name(Opcode op) {
         case OP_LOAD_ENCLOSING:     return "load_enclosing";
         case OP_STORE_ENCLOSING:    return "store_enclosing";
         case OP_PUSH_ENCLOSING_REF: return "push_enclosing_ref";
+        case OP_SWAP:  return "swap";
+        case OP_OVER:  return "over";
+        case OP_ROT:   return "rot";
+        case OP_DEBUG_STACK: return "debug_stack";
+        case OP_DEBUG_SYMS:  return "debug_syms";
         default:       return NULL;
     }
 }
@@ -271,6 +282,33 @@ static void mark_jump_targets(void) {
     }
 }
 
+static void hex_dump(const char *bin_path, FILE *out) {
+    FILE *f = fopen(bin_path, "rb");
+    if (!f) { perror("Failed to open input file"); fatal_abort(); }
+
+    unsigned char buf[16];
+    size_t n;
+    long offset = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        fprintf(out, "%08lx  ", offset);
+        for (size_t i = 0; i < sizeof(buf); i++) {
+            if (i < n) fprintf(out, "%02x ", buf[i]);
+            else fprintf(out, "   ");
+            if (i == 7) fprintf(out, " ");
+        }
+        fprintf(out, " |");
+        for (size_t i = 0; i < n; i++) {
+            unsigned char c = buf[i];
+            fputc((c >= 0x20 && c < 0x7f) ? (int)c : '.', out);
+        }
+        fprintf(out, "|\n");
+        offset += (long)n;
+    }
+    fprintf(out, "%08lx\n", offset);
+
+    fclose(f);
+}
+
 static void disassemble(FILE *out) {
     if (sym_count > 0) {
         for (int i = 0; i < sym_count; i++) {
@@ -347,9 +385,12 @@ static void disassemble(FILE *out) {
 int main(int argc, char *argv[]) {
     const char *positional[2];
     int npos = 0;
+    int hex_mode = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) {
             verbose_mode = 1;
+        } else if (strcmp(argv[i], "-x") == 0) {
+            hex_mode = 1;
         } else if (npos < 2) {
             positional[npos++] = argv[i];
         } else {
@@ -359,6 +400,7 @@ int main(int argc, char *argv[]) {
 
     if (npos != 1 && npos != 2) {
         printf("Usage: %s [-v] <input.bin> [output.sasm]\n", argv[0]);
+        printf("       %s -x <input.bin> [output.txt]\n", argv[0]);
         return 1;
     }
 
@@ -369,13 +411,21 @@ int main(int argc, char *argv[]) {
     fatal_error_active = 1;
 
     const char *bin_path = positional[0];
-    load_bytecode(bin_path);
 
     FILE *out = stdout;
     if (npos == 2) {
         out = fopen(positional[1], "w");
         if (!out) { perror("Failed to open output file"); fatal_abort(); }
     }
+
+    if (hex_mode) {
+        hex_dump(bin_path, out);
+        if (out != stdout) fclose(out);
+        fatal_error_active = 0;
+        return 0;
+    }
+
+    load_bytecode(bin_path);
 
     disassemble(out);
 

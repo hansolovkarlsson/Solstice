@@ -1,0 +1,24 @@
+; Exercises DEBUG_STACK and DEBUG_SYMS.
+.var x integer
+.var name string
+.array nums 1 3 integer
+
+    push 42
+    store x
+    push_str "hi"
+    store name
+    push 1
+    push 10
+    store_idx nums
+
+    push 1
+    push 2
+    push 3
+    debug_stack   ; should show 1 2 3, and leave them on the stack
+    pop
+    pop
+    pop
+
+    debug_syms    ; should show x, name, nums
+
+    halt

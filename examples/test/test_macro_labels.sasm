@@ -1,0 +1,27 @@
+; A macro with its own internal label, invoked twice - exercises
+; per-expansion label uniqueification (would otherwise be a duplicate
+; label error the second time).
+.var i integer
+
+.macro COUNTDOWN start
+    push start
+    store i
+loop:
+    load i
+    push 0
+    gt
+    jz done
+    load i
+    print
+    load i
+    push 1
+    sub
+    store i
+    jmp loop
+done:
+    newline
+.endmacro
+
+    countdown 3
+    countdown 2
+    halt

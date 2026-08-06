@@ -7,9 +7,9 @@ index — never more than one of these per instruction).
 
 ## Memory model
 
-SolVM has six separate storage regions, each a fixed-size array sized at
-compile time (`common.h`'s `MAX_*` constants) — there is no dynamic
-allocation, no garbage collector, and no shared addressable memory between
+SolVM has seven separate storage regions, each a fixed-size array sized
+at compile time (`common.h`'s `MAX_*` constants) — no region can grow
+past its limit, and there is no shared addressable memory between
 regions:
 
 | Region | What it holds | Size limit |
@@ -20,6 +20,25 @@ regions:
 | `string_pool[]` | Interned string contents (`char[256]` each) — populated at compile/assemble time, and can also grow at runtime (concatenation, `readln` into a string) | `MAX_STRINGS` = 256 |
 | `vm_call_stack[]` | One record per active call: `{return_addr, saved_fp, saved_frame_sp}` — see [Procedures](#procedures-call-ret-and-stack-frames) | `MAX_CALL_DEPTH` = 256 |
 | `vm_frame_stack[]` | Local variable slots for every active call, stacked | `MAX_FRAME_STACK` = 4096 |
+| `vm_heap_mem[]` | Pointer targets — `NEW` allocates from here, `DISPOSE` returns a block to a size-bucketed freelist (see below) | `MAX_HEAP_MEM` = 4096 ints total |
+
+**The heap is the one region with genuine runtime-managed allocation,
+and the one exception to "no garbage collector."** Every other region's
+contents are either fixed at compile time or grow/shrink by simple,
+fully-determined rules (a call's frame appears at `CALL` and vanishes at
+`RET`, in its entirety, as one step). The heap instead behaves like C's
+`malloc`/`free`: `NEW` either pops a same-size block off
+`vm_heap_freelist[]` or bump-allocates fresh space via `vm_heap_count`;
+`DISPOSE` is the *only* thing that ever returns a block to the
+freelist. Nothing scans for pointers going out of scope, being
+overwritten, or being set to `nil` — losing every reference to a live
+block without calling `DISPOSE` on it first leaks that block for the
+rest of the run (not corrupted, just permanently unreachable and
+unreusable). A program that does this repeatedly, e.g. in a loop, will
+eventually exhaust `MAX_HEAP_MEM` and abort with a `VM Runtime Error`,
+the same clean-failure guarantee every other bounds check in this VM
+gives — see [Pointers](LANGUAGE.md#pointers) in docs/LANGUAGE.md for the
+Pascal-level version of this same note.
 
 **Strings and booleans are represented as integers.** A string *value*
 anywhere in the VM — on the stack, in a variable slot, in an array
@@ -124,6 +143,9 @@ corruption.
 | `BNOT` | Pop `a`, push `~a` (bitwise NOT / ones' complement). Distinct from `NOT` because `~0` is `-1`, not `1` - reusing `NOT` for integers would be wrong. |
 | `SHL` / `SHR` | Pop `b` (shift amount), pop `a`, push `a << b` / a *logical* (not sign-extending) `a >> b`. Runtime error if `b` is outside `0..31`, rather than the undefined behavior C's `<<`/`>>` give for an out-of-range shift. |
 | `DUP` | Duplicate the top of the stack (push a second copy). A generic primitive - first used by `sqr(x)` (evaluate `x` once, `DUP`, `MUL`), rather than evaluating `x`'s bytecode twice. |
+| `SWAP` | `( a b -- b a )` - pop two, push them back swapped. Hand-written `.sasm` only; `pascalc` never emits this (it always knows an expression's evaluation order at compile time, so it never needs to rearrange the stack at runtime). |
+| `OVER` | `( a b -- a b a )` - copy the second-from-top value to the top. Hand-written `.sasm` only. |
+| `ROT` | `( a b c -- b c a )` - rotate the top three, bringing the third-from-top to the top. Hand-written `.sasm` only. |
 | `CHECK_LOWER` / `CHECK_UPPER` | `arg` = a subrange type's lower/upper bound (a compile-time constant). Peeks at the value on top of the stack - pop it, compare against `arg`, push it back unchanged if in range; a runtime error (not a crash) if it's below/above the bound. Emitted as a pair right before storing into a subrange-typed target (`type TAge = 0..150;`) - see `NODE_RANGE_CHECK` in [docs/ARCHITECTURE.md](ARCHITECTURE.md). Two separate opcodes, each with one immediate bound, since an opcode only carries a single int arg. |
 | `ABS` | Pop `a`, push its absolute value. |
 | `FABS` | Pop a value, reinterpret as float; push its absolute value. `sqr(real)` needs no equivalent new opcode - it reuses the existing generic `DUP` (duplicates whatever's on top of the stack, regardless of type) followed by `FMUL`. |
@@ -192,6 +214,17 @@ corruption.
 | `PUSH_ENCLOSING_REF` | Same chain walk/encoding as `LOAD_ENCLOSING`. Push `-(target_fp + slot + 1)` - literally `PUSH_LOCAL_REF`'s own encoding, just computed from an ancestor frame's `fp` instead of the current one, so `LOAD_REF`/`STORE_REF` need no changes to consume it. |
 
 See [Procedures: CALL, RET, and stack frames](#procedures-call-ret-and-stack-frames) below for the full picture, including why `CALL` needs to save more than just a return address, and [Nested procedures: the static-link chain](#nested-procedures-the-static-link-chain) for `PUSH_STATIC_LINK`/`POP_STATIC_LINK`/`LOAD_ENCLOSING`/`STORE_ENCLOSING`/`PUSH_ENCLOSING_REF` specifically.
+
+### Debugging
+
+Hand-written `.sasm` only - `pascalc` never emits either of these. Both
+print to stdout and leave the stack/globals completely untouched, and
+neither depends on `-v`.
+
+| Opcode | Effect |
+|---|---|
+| `DEBUG_STACK` | Print every value currently on the operand stack, bottom to top, without popping any of them. |
+| `DEBUG_SYMS` | Print every global variable/array's current value by name - the same listing `HALT` prints under `-v`, but callable anywhere mid-program rather than only once, at the very end of a run. |
 
 ## How control flow compiles
 

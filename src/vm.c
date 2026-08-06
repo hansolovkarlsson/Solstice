@@ -613,6 +613,78 @@ static int vm_peek_stdin(void) {
     return c;
 }
 
+// Prints every global's current value by name - the same listing
+// OP_HALT prints under -v, factored out so OP_DEBUG_SYMS can trigger it
+// mid-execution too, not just at the very end of a run.
+static void vm_dump_globals(void) {
+    for (int i = 0; i < sym_count; i++) {
+        if (sym_table[i].name[0] == '_' && sym_table[i].name[1] == '_') {
+            continue; // hidden compiler-internal variable (e.g. a for-loop's cached bound)
+        }
+        if (sym_table[i].is_array) {
+            printf("%s = [", sym_table[i].name);
+            // Total flattened element count - a plain
+            // product of every dimension's size, so this
+            // correctly covers 1D, 2D, and N-D uniformly
+            // (each is just "how many dimensions", 1/2/N).
+            int total;
+            if (sym_table[i].is_nd) {
+                total = 1;
+                for (int d = 0; d < sym_table[i].nd_dims; d++) {
+                    total *= (sym_table[i].nd_upper[d] - sym_table[i].nd_lower[d] + 1);
+                }
+            } else if (sym_table[i].is_2d) {
+                total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
+                        (sym_table[i].array_upper2 - sym_table[i].array_lower2 + 1);
+            } else if (sym_table[i].is_record_array) {
+                // Every field of every element, flattened -
+                // this dump has no per-field type/name
+                // info to show (that only ever lives in
+                // parser.c's record_types[]), so it just
+                // prints the raw ints (sym_table[i].type
+                // is a meaningless dummy for a record
+                // array - see is_record_array in
+                // common.h - so every element prints as a
+                // plain integer via the final 'else'
+                // branch below).
+                total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
+                        sym_table[i].record_elem_field_count;
+            } else {
+                total = sym_table[i].array_upper - sym_table[i].array_lower + 1;
+            }
+            int base = sym_table[i].array_base;
+            for (int j = 0; j < total; j++) {
+                if (j > 0) printf(", ");
+                int elem = vm_array_mem[base + j];
+                if (is_string_type(sym_table[i].type)) {
+                    if (elem >= 0 && elem < string_count) printf("%s", string_pool[elem]);
+                    else printf("<invalid string index %d>", elem);
+                } else if (sym_table[i].type == TYPE_BOOLEAN) {
+                    printf("%s", elem ? "TRUE" : "FALSE");
+                } else if (sym_table[i].type == TYPE_REAL) {
+                    printf("%.6g", bits_to_float(elem));
+                } else {
+                    printf("%d", elem);
+                }
+            }
+            printf("]\n");
+        } else if (is_string_type(sym_table[i].type)) {
+            int idx = vm_vars[i];
+            if (idx >= 0 && idx < string_count) {
+                printf("%s = %s\n", sym_table[i].name, string_pool[idx]);
+            } else {
+                printf("%s = <invalid string index %d>\n", sym_table[i].name, idx);
+            }
+        } else if (sym_table[i].type == TYPE_BOOLEAN) {
+            printf("%s = %s\n", sym_table[i].name, vm_vars[i] ? "TRUE" : "FALSE");
+        } else if (sym_table[i].type == TYPE_REAL) {
+            printf("%s = %.6g\n", sym_table[i].name, bits_to_float(vm_vars[i]));
+        } else {
+            printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
+        }
+    }
+}
+
 void run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
@@ -1220,6 +1292,33 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_SWAP: {
+                int b = vm_pop(&sp);
+                int a = vm_pop(&sp);
+                vm_push(&sp, b);
+                vm_push(&sp, a);
+                break;
+            }
+
+            case OP_OVER: {
+                int b = vm_pop(&sp);
+                int a = vm_pop(&sp);
+                vm_push(&sp, a);
+                vm_push(&sp, b);
+                vm_push(&sp, a);
+                break;
+            }
+
+            case OP_ROT: {
+                int c = vm_pop(&sp);
+                int b = vm_pop(&sp);
+                int a = vm_pop(&sp);
+                vm_push(&sp, b);
+                vm_push(&sp, c);
+                vm_push(&sp, a);
+                break;
+            }
+
             case OP_CHECK_LOWER: {
                 int a = vm_pop(&sp);
                 if (a < instr.arg) {
@@ -1689,74 +1788,21 @@ void run_vm(void) {
             case OP_HALT:
                 if (verbose_mode) {
                     printf("\n--- Final Runtime Execution Output Results ---\n");
-                    for (int i = 0; i < sym_count; i++) {
-                        if (sym_table[i].name[0] == '_' && sym_table[i].name[1] == '_') {
-                            continue; // hidden compiler-internal variable (e.g. a for-loop's cached bound)
-                        }
-                        if (sym_table[i].is_array) {
-                            printf("%s = [", sym_table[i].name);
-                            // Total flattened element count - a plain
-                            // product of every dimension's size, so this
-                            // correctly covers 1D, 2D, and N-D uniformly
-                            // (each is just "how many dimensions", 1/2/N).
-                            int total;
-                            if (sym_table[i].is_nd) {
-                                total = 1;
-                                for (int d = 0; d < sym_table[i].nd_dims; d++) {
-                                    total *= (sym_table[i].nd_upper[d] - sym_table[i].nd_lower[d] + 1);
-                                }
-                            } else if (sym_table[i].is_2d) {
-                                total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
-                                        (sym_table[i].array_upper2 - sym_table[i].array_lower2 + 1);
-                            } else if (sym_table[i].is_record_array) {
-                                // Every field of every element, flattened -
-                                // this dump has no per-field type/name
-                                // info to show (that only ever lives in
-                                // parser.c's record_types[]), so it just
-                                // prints the raw ints (sym_table[i].type
-                                // is a meaningless dummy for a record
-                                // array - see is_record_array in
-                                // common.h - so every element prints as a
-                                // plain integer via the final 'else'
-                                // branch below).
-                                total = (sym_table[i].array_upper - sym_table[i].array_lower + 1) *
-                                        sym_table[i].record_elem_field_count;
-                            } else {
-                                total = sym_table[i].array_upper - sym_table[i].array_lower + 1;
-                            }
-                            int base = sym_table[i].array_base;
-                            for (int j = 0; j < total; j++) {
-                                if (j > 0) printf(", ");
-                                int elem = vm_array_mem[base + j];
-                                if (is_string_type(sym_table[i].type)) {
-                                    if (elem >= 0 && elem < string_count) printf("%s", string_pool[elem]);
-                                    else printf("<invalid string index %d>", elem);
-                                } else if (sym_table[i].type == TYPE_BOOLEAN) {
-                                    printf("%s", elem ? "TRUE" : "FALSE");
-                                } else if (sym_table[i].type == TYPE_REAL) {
-                                    printf("%.6g", bits_to_float(elem));
-                                } else {
-                                    printf("%d", elem);
-                                }
-                            }
-                            printf("]\n");
-                        } else if (is_string_type(sym_table[i].type)) {
-                            int idx = vm_vars[i];
-                            if (idx >= 0 && idx < string_count) {
-                                printf("%s = %s\n", sym_table[i].name, string_pool[idx]);
-                            } else {
-                                printf("%s = <invalid string index %d>\n", sym_table[i].name, idx);
-                            }
-                        } else if (sym_table[i].type == TYPE_BOOLEAN) {
-                            printf("%s = %s\n", sym_table[i].name, vm_vars[i] ? "TRUE" : "FALSE");
-                        } else if (sym_table[i].type == TYPE_REAL) {
-                            printf("%s = %.6g\n", sym_table[i].name, bits_to_float(vm_vars[i]));
-                        } else {
-                            printf("%s = %d\n", sym_table[i].name, vm_vars[i]);
-                        }
-                    }
+                    vm_dump_globals();
                 }
                 return;
+
+            case OP_DEBUG_STACK: {
+                printf("[DEBUG] stack (%d value%s):", sp + 1, sp == 0 ? "" : "s");
+                for (int i = 0; i <= sp; i++) printf(" %d", vm_stack[i]);
+                printf("\n");
+                break;
+            }
+
+            case OP_DEBUG_SYMS:
+                printf("[DEBUG] globals:\n");
+                vm_dump_globals();
+                break;
 
             case OP_PRINT: {
                 int val = vm_pop(&sp);
