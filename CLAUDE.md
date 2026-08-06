@@ -58,11 +58,13 @@ implement against.
 
 ## Build
 
-All source lives in `src/`; there is no top-level Makefile.
+Source lives under `src/`, split into one directory per binary plus a
+shared `src/common/` (see "Why five binaries" below); a single
+non-recursive Makefile at the repo root builds all of them straight into
+`bin/`.
 
 ```sh
-cd src
-make            # builds pascalc, solvm, solas, desole, test_recovery
+make            # builds bin/pascalc, bin/solvm, bin/solas, bin/desole, bin/test_recovery
 make pascalc    # build just one binary
 make clean      # remove binaries and object files
 ```
@@ -75,13 +77,13 @@ warning-clean**; a new warning after adding a node/opcode means a case
 was missed, not a nuisance to suppress.
 
 `scripts/make.sh` (run from repo root, needs `config.sh` sourced first —
-see below) does the same build and copies the five binaries into `bin/`.
+see below) does the same build.
 
 ### Running a compiled program
 
 ```sh
-./pascalc examples/hello.pas hello.bin
-./solvm hello.bin
+pascalc examples/hello.pas hello.bin   # bin/ is on PATH once config.sh is sourced
+solvm hello.bin
 ```
 
 Every tool accepts an optional `-v` for verbose/debug output (compiler
@@ -124,7 +126,7 @@ this project, in order:
    strings, `for`, arrays, error recovery).
 5. **`-Wall -Wextra` clean build, always.**
 
-`test_recovery` (in `src/`, built by `make`) demonstrates that a fatal
+`test_recovery` (in `src/pascalc/`, built by `make`) demonstrates that a fatal
 compile error doesn't kill the host process — it compiles a broken
 program then two good ones in the same process and confirms the process
 survives and both good compiles still succeed.
@@ -156,8 +158,10 @@ lexer operates on the same in-memory `ASTNode` tree — there's no separate
 IR between AST and bytecode. `solvm` only links `bytecode.c` (load) +
 `vm.c`, never the frontend. `solas`/`desole` only link `bytecode.c`, and
 read/write `code[]`/`sym_table[]`/`string_pool[]` directly without ever
-building an AST. The Makefile's `FRONTEND_OBJS`/`VM_OBJS`/`SHARED_OBJS`
-split enforces this separation at the link level.
+building an AST. The directory split (`src/pascalc/`, `src/solvm/`,
+`src/solas/`, `src/desole/`, `src/common/`) plus the root Makefile's
+`FRONTEND_OBJS`/`VM_OBJS`/`COMMON_OBJS` variables enforces this
+separation at the link level.
 
 ### Global state, not parameters
 
@@ -259,15 +263,17 @@ worth reading before touching this path):
 ### Why five binaries
 
 ```
-pascalc  = pascalc.c + lexer/parser/type_checker/optimizer/codegen/ast_printer.c + bytecode.c + error.c
-solvm    = solvm.c   + vm.c                                                     + bytecode.c + error.c
-solas    = solas.c                                                              + bytecode.c + error.c
-desole   = desole.c                                                             + bytecode.c + error.c
+pascalc  = src/pascalc/{pascalc,lexer,parser,type_checker,optimizer,codegen,ast_printer}.c + src/common/{bytecode,error}.c
+solvm    = src/solvm/{solvm,vm}.c                                                          + src/common/{bytecode,error}.c
+solas    = src/solas/solas.c                                                               + src/common/{bytecode,error}.c
+desole   = src/desole/desole.c                                                             + src/common/{bytecode,error}.c
 ```
 
-`bytecode.c` (the `.bin` format + shared `code[]`/`sym_table[]`/
-`string_pool[]` state) and `error.c` (recoverable-error facility +
-`verbose_mode`) are the only things every binary shares.
+`src/common/bytecode.c` (the `.bin` format + shared `code[]`/
+`sym_table[]`/`string_pool[]` state) and `src/common/error.c`
+(recoverable-error facility + `verbose_mode`) are the only things every
+binary shares — hence the shared `src/common/` directory, separate from
+each binary's own subdirectory.
 
 ### SolVM memory model
 
@@ -298,4 +304,4 @@ opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
 - `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/`, `examples/test/` — `.pas`/`.sasm` sample and test programs, grouped by purpose (`test/` = regression tests, `doc/` = examples referenced from `docs/`, `tech/` = misc technical exercises, `audit/` = audit-driven test programs).
 - `notes/` — the author's own freeform design notes (naming ideas, musings); not authoritative — the actual plan lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 - `chats/` — saved transcripts from other AI assistants used during design.
-- `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `*.c`/`*.h`/`Makefile` → `src/`, `*.sasm` → `examples/asm/`, `doc_*.pas` → `examples/doc/`, `test_*.pas` → `examples/test/`). Not part of the build.
+- `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `Makefile` → root, each `.c`/`.h` → its own `src/{common,pascalc,solvm,solas,desole}/` by filename, `*.sasm` → `examples/asm/`, `doc_*.pas` → `examples/doc/`, `test_*.pas` → `examples/test/`). Not part of the build.

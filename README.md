@@ -93,23 +93,28 @@ make clean      # remove binaries and object files
 ## Project layout
 
 ```
-common.h          Shared types: tokens, opcodes, the AST node, Symbol, global state
-lexer.c/.h        Source text -> tokens
-parser.c/.h       Tokens -> AST (recursive descent)
-type_checker.c/.h Static type checking over the AST
-optimizer.c/.h    Constant folding + dead-code elimination
-codegen.c/.h      AST -> bytecode
-ast_printer.c/.h  AST -> human-readable tree (used by -v)
-bytecode.c/.h     The .bin file format; shared code[]/sym_table[]/string_pool[] state
-vm.c/.h           SolVM: the bytecode interpreter
-error.c/.h        Shared recoverable-error facility + the verbose_mode flag
-compiler.h        Convenience header bundling the whole compiler frontend
+src/common/           Shared by every binary
+  common.h              Types: tokens, opcodes, the AST node, Symbol, global state
+  bytecode.c/.h         The .bin file format; shared code[]/sym_table[]/string_pool[] state
+  error.c/.h            Shared recoverable-error facility + the verbose_mode flag
 
-pascalc.c         Compiler binary entry point
-solvm.c           VM binary entry point
-solas.c           Assembler (source + entry point, single file)
-desole.c          Disassembler (source + entry point, single file)
-test_recovery.c   Demonstrates that a fatal compile error doesn't kill the process
+src/pascalc/          Compiler front end (pascalc binary)
+  lexer.c/.h            Source text -> tokens
+  parser.c/.h           Tokens -> AST (recursive descent)
+  type_checker.c/.h     Static type checking over the AST
+  optimizer.c/.h        Constant folding + dead-code elimination
+  codegen.c/.h          AST -> bytecode
+  ast_printer.c/.h      AST -> human-readable tree (used by -v)
+  compiler.h            Convenience header bundling the whole frontend
+  pascalc.c             Compiler binary entry point
+  test_recovery.c       Demonstrates that a fatal compile error doesn't kill the process
+
+src/solvm/             VM (solvm binary)
+  vm.c/.h               SolVM: the bytecode interpreter
+  solvm.c               VM binary entry point
+
+src/solas/solas.c     Assembler (source + entry point, single file)
+src/desole/desole.c   Disassembler (source + entry point, single file)
 ```
 
 ## Roadmap

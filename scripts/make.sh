@@ -1,3 +1,2 @@
-cd "$BASEDIR/src"
+cd "$BASEDIR"
 make clean && make
-cp pascalc solas solvm desole test_recovery "$BASEDIR/bin"

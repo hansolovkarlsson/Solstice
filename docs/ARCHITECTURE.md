@@ -227,19 +227,21 @@ checklist exists to prevent:
 ## Why five binaries
 
 ```
-pascalc  = pascalc.c   + lexer/parser/type_checker/optimizer/codegen/ast_printer.c + bytecode.c + error.c
-solvm    = solvm.c     + vm.c                                                     + bytecode.c + error.c
-solas    = solas.c                                                                + bytecode.c + error.c
-desole   = desole.c                                                               + bytecode.c + error.c
+pascalc  = src/pascalc/{pascalc,lexer,parser,type_checker,optimizer,codegen,ast_printer}.c + src/common/{bytecode,error}.c
+solvm    = src/solvm/{solvm,vm}.c                                                          + src/common/{bytecode,error}.c
+solas    = src/solas/solas.c                                                               + src/common/{bytecode,error}.c
+desole   = src/desole/desole.c                                                             + src/common/{bytecode,error}.c
 ```
 
-The Makefile's `FRONTEND_OBJS`/`VM_OBJS`/`SHARED_OBJS` split enforces
-this at the link level, not just by convention: `solvm` cannot
-accidentally end up linking any compiler-frontend code, and `pascalc`
-cannot end up linking the VM. `bytecode.c` (the `.bin` format + the
-shared `code[]`/`sym_table[]`/`string_pool[]` state) and `error.c` (the
-recoverable-error facility + `verbose_mode`) are the only things every
-binary shares.
+Source lives in one directory per binary (`src/pascalc/`, `src/solvm/`,
+`src/solas/`, `src/desole/`) plus a shared `src/common/`. The root
+Makefile's `FRONTEND_OBJS`/`VM_OBJS`/`COMMON_OBJS` split enforces the
+separation at the link level, not just by directory convention: `solvm`
+cannot accidentally end up linking any compiler-frontend code, and
+`pascalc` cannot end up linking the VM. `src/common/bytecode.c` (the
+`.bin` format + the shared `code[]`/`sym_table[]`/`string_pool[]` state)
+and `src/common/error.c` (the recoverable-error facility +
+`verbose_mode`) are the only things every binary shares.
 
 ## Testing approach used throughout this project
 
