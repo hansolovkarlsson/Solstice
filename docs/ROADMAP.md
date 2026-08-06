@@ -566,12 +566,70 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
         > 0` node (referencing an ANCESTOR's slot) would coincidentally
         alias one of THIS procedure's own slot indices and corrupt its
         tracking. Fixed by skipping any such node unless `levels_up == 0`.
-- [ ] Functional/procedural parameters — passing a function or procedure
+- [x] Functional/procedural parameters — passing a function or procedure
       as a formal parameter (`function Apply(function f(n: integer):
       integer; v: integer): integer;`), standard ISO 7185 Pascal's inline
       form. Distinct from Procedural types (Phase 2, non-standard): this
       needs no named, storable "pointer to a function" type — just the
-      parameter written out inline, same as any other formal parameter
+      parameter written out inline, same as any other formal parameter.
+      Two deliberate scope cuts, decided up front: only a TOP-LEVEL
+      (non-nested) procedure/function may be passed as the actual
+      argument (a compile-time error otherwise - fully knowable
+      statically), and a procedural/functional parameter's own inline
+      signature is scalar parameters only (by-value/`var`) for now, no
+      arrays/records in it yet.
+
+      One new opcode (`CALL_INDIRECT` - same as `CALL`, but its jump
+      target comes off the stack instead of a compile-time `arg`, since
+      this is the first call in this compiler whose target is only known
+      at runtime) and two new `NodeType`s: `NODE_PROC_REF` (passing a
+      top-level procedure/function BY NAME as an actual argument -
+      `data.var_idx` = its `proc_table[]` index, backpatched via a new
+      `pending_proc_refs[]` list that's the mirror image of
+      `record_call()`'s own `pending_calls[]`, just patching a `PUSH`'s
+      `arg` instead of a `CALL`'s) and `NODE_CALL_INDIRECT` (a call
+      THROUGH an already-received procedural parameter - `op` =
+      `levels_up`, `data.var_idx` = the parameter's own local frame slot,
+      reusing `NODE_LOCAL_VAR`'s exact addressing convention; the
+      statement/expression-context flag `NODE_CALL` keeps in `op` lives
+      on `extra` here instead, as a stashed `NODE_NUMBER` literal, since
+      `op` was needed for `levels_up`).
+
+      Because a "procedure value" is restricted to a TOP-LEVEL target, it
+      fits the exact same one-stack-value-per-parameter convention every
+      other parameter kind already uses (no static link needed - a
+      top-level procedure's own prologue never emits
+      `OP_POP_STATIC_LINK` in the first place) - zero `.bin` format
+      changes, and no closure/capture machinery at all (that's most of
+      what real closures, Phase 2, would need instead). Forwarding an
+      already-received procedural parameter to a further call needs no
+      new opcode or node type either - it's just an ordinary
+      `NODE_LOCAL_VAR` read, exactly like forwarding an already-`var`
+      parameter.
+
+      `parse_var_argument()` was refactored to take an explicit expected
+      type/name instead of a `proc_idx` to look them up from, so its
+      existing resolution logic (with-fields, record fields, statics,
+      `var`-parameter forwarding) is reusable for a `var` argument inside
+      a procedural parameter's OWN inline signature too - that signature
+      has no `proc_table[]` entry of its own to read an expected type
+      from. By-value argument type checking (including int→real
+      widening) for a call through a procedural parameter is done
+      inline, at parse time, rather than deferred to `type_checker.c`
+      the way an ordinary call's arguments are - `type_checker.c`'s
+      `NODE_CALL` case looks expected types up via
+      `proc_table[node->data.var_idx]`, which doesn't exist for an
+      indirect call (the real target is only known at runtime).
+
+      Verified two things that turned out to need NO changes, despite
+      initially looking like they might: `optimizer.c`'s
+      `mark_used_variables()` (DCE) only ever tracks GLOBAL
+      (`sym_table[]`-indexed) variables, never local frame slots, so
+      neither new node type needed anything added there; and the
+      uninitialized-variable warning pass's `check_uninitialized_locals()`
+      only ever scans slots AFTER every parameter's own (starting at
+      `param_slot_count`), so a procedural parameter - like every other
+      parameter kind - is already outside its scope by construction.
 - [x] Uninitialized-variable warning pass — the first non-fatal
       diagnostic this compiler emits (`file:line: Warning: ...`, printed
       to stderr, compilation still succeeds). Deliberately

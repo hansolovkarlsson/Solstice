@@ -317,6 +317,34 @@ static void record_call(int target_proc_idx) {
     emit(OP_CALL, 0); // placeholder, patched once generate_program() finishes
 }
 
+// Same backpatch idea as pending_calls[] above, for NODE_PROC_REF
+// (passing a top-level procedure/function BY NAME as an actual argument
+// for a procedural/functional parameter - see common.h) - the only
+// difference is WHICH instruction gets patched: a PUSH's arg (the
+// procedure's runtime "value" - its entry address, pushed as ordinary
+// data) instead of a CALL's own jump target.
+#define MAX_PENDING_PROC_REFS 100
+
+typedef struct {
+    int push_instr_idx;  // index into code[] of the PUSH instruction
+    int target_proc_idx; // which procedure's entry_address it needs
+} PendingProcRef;
+
+static PendingProcRef pending_proc_refs[MAX_PENDING_PROC_REFS];
+static int pending_proc_ref_count = 0;
+
+static void record_proc_ref(int target_proc_idx) {
+    if (pending_proc_ref_count >= MAX_PENDING_PROC_REFS) {
+        fprintf(stderr, "%s: Compile Error: Too many procedural/functional parameter arguments (limit is %d)\n",
+                get_current_filename(), MAX_PENDING_PROC_REFS);
+        fatal_abort();
+    }
+    pending_proc_refs[pending_proc_ref_count].push_instr_idx = code_idx;
+    pending_proc_refs[pending_proc_ref_count].target_proc_idx = target_proc_idx;
+    pending_proc_ref_count++;
+    emit(OP_PUSH, 0); // placeholder, patched once generate_program() finishes
+}
+
 void generate_code(ASTNode *node) {
     if (!node) return;
 
@@ -962,6 +990,37 @@ void generate_code(ASTNode *node) {
             // already walks it, so this call must not walk it again.
             break;
 
+        case NODE_PROC_REF:
+            // Pushes the target procedure's entry address as ordinary
+            // data - a value, not a jump - so a further OP_CALL_INDIRECT
+            // (inside whichever procedure receives it) can jump there
+            // later. Backpatched exactly like record_call()'s own
+            // pending_calls[], since entry_address isn't known yet if
+            // the target is forward-declared or simply not yet generated.
+            record_proc_ref(node->data.var_idx);
+            break;
+
+        case NODE_CALL_INDIRECT:
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                generate_code(arg);
+            }
+            emit_load_local((int)node->op, node->data.var_idx); // push the target address, on top of the args
+            emit(OP_CALL_INDIRECT, 0);
+            if (node->extra->data.num_value) {
+                // Statement context (mirrors NODE_CALL's own op ==
+                // TOKEN_PROCEDURE case above) - discard an unused
+                // function result, then continue the enclosing statement
+                // chain. expression_type is TYPE_UNKNOWN for a procedure-
+                // parameter call, exactly like an ordinary statement-
+                // context NODE_CALL to a plain procedure never sets it
+                // either - see NODE_CALL_INDIRECT's comment in common.h.
+                if (node->expression_type != TYPE_UNKNOWN) {
+                    emit(OP_POP, 0);
+                }
+                generate_code(node->next);
+            }
+            break;
+
         case NODE_LOCAL_VAR:
             emit_load_local((int)node->op, node->data.var_idx);
             break;
@@ -1223,6 +1282,7 @@ static void generate_block(ASTNode *body) {
 
 void generate_program(ASTNode *main_body) {
     pending_call_count = 0;
+    pending_proc_ref_count = 0;
 
     if (proc_count > 0) {
         int jmp_idx = code_idx;
@@ -1274,6 +1334,9 @@ void generate_program(ASTNode *main_body) {
 
     for (int i = 0; i < pending_call_count; i++) {
         code[pending_calls[i].call_instr_idx].arg = proc_table[pending_calls[i].target_proc_idx].entry_address;
+    }
+    for (int i = 0; i < pending_proc_ref_count; i++) {
+        code[pending_proc_refs[i].push_instr_idx].arg = proc_table[pending_proc_refs[i].target_proc_idx].entry_address;
     }
 }
 

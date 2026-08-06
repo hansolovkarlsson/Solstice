@@ -270,6 +270,7 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"ROT",       OP_ROT,       OPERAND_NONE},
     {"DEBUG_STACK", OP_DEBUG_STACK, OPERAND_NONE},
     {"DEBUG_SYMS",  OP_DEBUG_SYMS,  OPERAND_NONE},
+    {"CALL_INDIRECT", OP_CALL_INDIRECT, OPERAND_NONE}, // pops its jump target off the stack - the one opcode here where the "operand" is implicit, not a label name
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 

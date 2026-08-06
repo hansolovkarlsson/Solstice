@@ -199,6 +199,7 @@ corruption.
 | Opcode | Effect |
 |---|---|
 | `CALL` | Push `{return_addr, current fp, current frame_sp}` onto `vm_call_stack[]` (`return_addr` is `ip` as it already stands, past this instruction); set `ip = arg`. |
+| `CALL_INDIRECT` | Same as `CALL`, except the jump target comes off the stack (pop it) instead of `arg` - for a call whose target was only known at RUNTIME (a procedure passed in as a functional/procedural parameter - see [Functional/procedural parameters](LANGUAGE.md#functionalprocedural-parameters)). No `arg`; no explicit bounds check on the popped address - a bad one is still caught cleanly by the fetch loop's own `ip` bounds check on the next cycle, same as a corrupted `CALL` target would be. |
 | `RET` | Pop `vm_call_stack[]`; restore `ip`, `fp`, and `frame_sp` from the popped record. Restoring `frame_sp` deallocates the entire returning call's frame in one step, whatever its size. A runtime error (not a crash) if the call stack is empty. |
 | `ENTER` | `arg` = number of local slots to reserve. Set `fp = frame_sp + 1`; zero-initialize `arg` slots starting there; advance `frame_sp` past them. Normally the first instruction of a procedure body. |
 | `LOAD_LOCAL` | `arg` = a slot index relative to `fp`. Push `vm_frame_stack[fp + arg]`. |

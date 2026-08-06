@@ -303,6 +303,16 @@ every procedure already shares, rather than being lexically hidden
 outside its own declaring scope, so calling one from outside its
 lexical parent's active scope is a runtime error, not a compile-time
 one, the moment it actually touches an inaccessible enclosing local.
+Also working: functional/procedural parameters (`function Apply(function
+f(n: integer): integer; v: integer): integer;`), standard ISO 7185
+Pascal's inline form — the actual argument must be a top-level
+(non-nested) procedure/function with an exactly matching signature (a
+"procedure value" is just a runtime code address, so it fits the same
+one-stack-value-per-parameter convention every other parameter kind
+uses, needing zero `.bin` format changes and no closure/capture
+machinery), and the parameter's own inline signature is scalar-only
+(by-value/`var`) for now (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#functionalprocedural-parameters)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

@@ -1641,6 +1641,22 @@ void run_vm(void) {
                 ip = instr.arg;
                 break;
 
+            case OP_CALL_INDIRECT: {
+                // Same as OP_CALL, except the jump target was only known
+                // at RUNTIME (a procedure passed in as a procedural/
+                // functional parameter - see NODE_CALL_INDIRECT in
+                // codegen.c), so it comes off the stack instead of a
+                // compile-time-constant arg. No explicit bounds check on
+                // it - same convention OP_CALL itself already relies on:
+                // a bad address is still caught cleanly, as a VM Runtime
+                // Error, by the fetch loop's own ip bounds check on the
+                // very next cycle.
+                int target = vm_pop(&sp);
+                vm_call_push(&call_sp, ip, fp, frame_sp);
+                ip = target;
+                break;
+            }
+
             case OP_RET: {
                 CallRecord cr = vm_call_pop(&call_sp);
                 ip = cr.return_addr;

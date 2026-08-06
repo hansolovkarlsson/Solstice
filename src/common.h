@@ -951,6 +951,19 @@ typedef enum {
                   // current value by name - the same listing OP_HALT
                   // prints under -v, callable mid-program instead of
                   // only at the very end of a run.
+
+    OP_CALL_INDIRECT, // No arg. Pops a code address (a target that was
+                  // only known at RUNTIME, unlike OP_CALL's compile-
+                  // time-constant arg - see NODE_CALL_INDIRECT in
+                  // codegen.c, the call-through-a-procedural-parameter
+                  // case). Pushes {return_addr (ip as it already
+                  // stands), fp, frame_sp} onto vm_call_stack[], exactly
+                  // like OP_CALL; sets ip to the popped address. No
+                  // static-link push/pop around it: the only value ever
+                  // pushed here is a top-level procedure's own
+                  // entry_address (see param_is_proc in ProcSymbol),
+                  // and a top-level procedure's prologue never reads
+                  // vm_static_link[] in the first place.
 } Opcode;
 
 typedef struct {
@@ -1390,7 +1403,7 @@ typedef enum {
                        // time constant: 1 for a scalar target, or the
                        // target record type's field_count), which codegen
                        // passes straight through as OP_NEW's arg.
-    NODE_HEAP_DISPOSE  // 'dispose(p);' - unlike 'new', this only ever
+    NODE_HEAP_DISPOSE, // 'dispose(p);' - unlike 'new', this only ever
                        // READS p (an ordinary expression - p can be
                        // anything pointer-typed, including a heap-
                        // dereferenced chain like 'p^.next', since no
@@ -1406,6 +1419,45 @@ typedef enum {
                        // OP_DISPOSE's arg - the freelist is bucketed by
                        // this size, so a later new() of the SAME element
                        // size can reuse this exact block.
+
+    NODE_PROC_REF, // A top-level (non-nested) procedure/function passed
+                       // BY NAME as the actual argument for a procedural/
+                       // functional parameter (e.g. 'Apply(Square, x)').
+                       // data.var_idx = proc_table[] index - always a
+                       // plain compile-time constant, never packed with
+                       // anything, since the target is guaranteed top-
+                       // level (see param_is_proc in common.h's
+                       // ProcSymbol). No children. codegen.c emits a
+                       // backpatched PUSH of that procedure's
+                       // entry_address (mirroring record_call()'s own
+                       // pending_calls[] backpatch, just patching a PUSH
+                       // instead of a CALL).
+    NODE_CALL_INDIRECT // A call THROUGH an already-received procedural/
+                       // functional parameter (e.g. 'f(x)' where f is
+                       // itself such a parameter). op = levels_up
+                       // (mirrors NODE_LOCAL_VAR's own convention - the
+                       // statement/expression-context flag NODE_CALL
+                       // keeps in op lives elsewhere here, see extra
+                       // below, precisely because op is needed for
+                       // levels_up instead). data.var_idx = f's own
+                       // local frame slot (holding a runtime procedure
+                       // entry address, pushed by NODE_PROC_REF or
+                       // forwarded from an enclosing procedural
+                       // parameter - see parse_proc_argument()). left =
+                       // the argument list, chained via ->next like
+                       // NODE_CALL's. expression_type = the callee's
+                       // return type if it's a function, or TYPE_UNKNOWN
+                       // if it's a procedure - mirrors the fact that an
+                       // ordinary statement-context NODE_CALL for a
+                       // plain procedure never sets expression_type
+                       // either, so TYPE_UNKNOWN is already the de facto
+                       // "no value" convention here, needing no new
+                       // field of its own. extra = a NODE_NUMBER literal
+                       // whose data.num_value is 1 if this call is used
+                       // as a statement (pop an unused function result,
+                       // then continue via ->next, exactly like
+                       // NODE_CALL's own op == TOKEN_PROCEDURE case) or 0
+                       // if used as an expression.
 } NodeType;
 
 typedef struct ASTNode {
@@ -1570,6 +1622,42 @@ typedef struct {
                                     // synchronized stack value or
                                     // widening the calling convention
                                     // itself.
+    int param_is_proc[MAX_PARAMS]; // 1 if this parameter is itself a
+                                    // procedure/function header, written
+                                    // inline ('function f(n: integer):
+                                    // integer' as one formal parameter) -
+                                    // standard ISO 7185 Pascal's
+                                    // functional/procedural parameters.
+                                    // Mutually exclusive with every other
+                                    // param_is_*[] above. The actual
+                                    // argument at a call site must name a
+                                    // TOP-LEVEL (non-nested) procedure/
+                                    // function - passing a nested one is
+                                    // a compile-time error, since a
+                                    // "procedure value" here is just a
+                                    // single runtime int (its entry code
+                                    // address, see OP_CALL_INDIRECT) with
+                                    // no accompanying static link, unlike
+                                    // a real closure (Phase 2). See
+                                    // parse_proc_argument() in parser.c.
+    int param_proc_is_function[MAX_PARAMS]; // only meaningful if the
+                                    // above is set: 1 if this inline
+                                    // header is 'function', 0 if
+                                    // 'procedure'.
+    DataType param_proc_return_type[MAX_PARAMS]; // only meaningful if
+                                    // param_proc_is_function is set.
+    int param_proc_param_count[MAX_PARAMS]; // only meaningful if
+                                    // param_is_proc is set: how many
+                                    // parameters THIS inline header
+                                    // itself declares (its own,
+                                    // completely separate, parameter
+                                    // list - reuses MAX_PARAMS as its cap
+                                    // too). Scalar-only for now (by-value
+                                    // and 'var') - no array/record
+                                    // parameters inside an inline
+                                    // procedural header yet.
+    DataType param_proc_param_types[MAX_PARAMS][MAX_PARAMS];
+    int param_proc_param_is_var[MAX_PARAMS][MAX_PARAMS];
     int is_forward;                // 1 while forward-declared but not yet
                                     // completed; 0 once a real body exists
                                     // (or if it was never forward at all)

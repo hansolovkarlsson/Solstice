@@ -184,6 +184,7 @@ static const char *opcode_name(Opcode op) {
         case OP_ROT:   return "rot";
         case OP_DEBUG_STACK: return "debug_stack";
         case OP_DEBUG_SYMS:  return "debug_syms";
+        case OP_CALL_INDIRECT: return "call_indirect";
         default:       return NULL;
     }
 }

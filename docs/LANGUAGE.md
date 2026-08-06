@@ -2103,6 +2103,67 @@ end;
   earlier; it doesn't remove the requirement that it be declared in some
   form before it's used.
 
+### Functional/procedural parameters
+
+```pascal
+function Square(n: integer): integer;
+begin
+    Square := n * n;
+end;
+
+function Cube(n: integer): integer;
+begin
+    Cube := n * n * n;
+end;
+
+function Apply(function f(n: integer): integer; v: integer): integer;
+begin
+    Apply := f(v);
+end;
+
+begin
+    writeln(Apply(Square, 5));  { 25 }
+    writeln(Apply(Cube, 3));    { 27 }
+end.
+```
+
+A procedure or function may itself be a formal parameter, written out
+inline exactly like a real declaration's own header — standard ISO 7185
+Pascal's functional/procedural parameters. The actual argument at a call
+site is a procedure/function's bare name (`Apply(Square, 5)`, not
+`Apply(Square(5))`); it's called from inside the receiving procedure
+just like any other procedure/function (`f(v)` above).
+
+- **The actual argument must be a top-level (non-nested) procedure/
+  function.** Passing a nested one by name is a compile-time error. A
+  procedural/functional parameter is *not* a closure — it carries no
+  captured environment of its own, just a plain runtime code address
+  (see [docs/BYTECODE.md](BYTECODE.md#memory-model)), which is exactly
+  why only a top-level procedure/function (never needing one) qualifies.
+  An already-received procedural parameter *can* be forwarded straight
+  through to a further call taking the same signature — it's still
+  provably top-level, by construction.
+- **The actual argument's signature must match exactly**: same
+  is_function-ness (a `function` parameter needs a function argument, a
+  `procedure` parameter needs a procedure), same return type if a
+  function, and the same parameter count/types/`var`-ness in order — no
+  implicit widening, matching this compiler's existing `var`-argument
+  rule.
+- **A procedural/functional parameter's own inline signature is scalar
+  parameters only for now** — by-value and `var`, no arrays or records
+  (a documented gap, not a silent one; the same restriction the actual
+  argument's own parameter list must then also satisfy).
+- **No other use is supported**: a procedural/functional parameter can
+  only be called, or forwarded as another procedural/functional
+  argument — no `=`/`<>` comparison, no assignment to a plain variable,
+  no storing in an array/record field, no `write`/`writeln`.
+- **No named, storable procedural type** — the signature is always
+  written out inline at the declaration site, matching standard Pascal.
+  A `type TProc = procedure(x: integer);`-style named type is a
+  possible later, non-standard extension (see
+  [docs/ROADMAP.md](../docs/ROADMAP.md)'s Procedural types item), not
+  this feature.
+
 ## Functions
 
 ```pascal

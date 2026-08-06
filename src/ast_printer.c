@@ -680,6 +680,26 @@ void print_ast(ASTNode *node, int indent) {
                 print_ast(node->next, indent);
             }
             break;
+
+        case NODE_PROC_REF: {
+            ProcSymbol *proc = &proc_table[node->data.var_idx];
+            printf("[Proc Ref] -> %s: %s\n", proc->is_function ? "Function" : "Procedure", proc->name);
+            break;
+        }
+
+        case NODE_CALL_INDIRECT: {
+            printf("[Call Indirect] -> slot %d (levels_up %d)\n", node->data.var_idx, (int)node->op);
+            int arg_num = 1;
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                print_indent(indent + 1);
+                printf("Arg %d:\n", arg_num++);
+                print_ast(arg, indent + 2);
+            }
+            if (node->extra->data.num_value && node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
     }
 }
 

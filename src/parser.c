@@ -132,6 +132,28 @@ typedef struct {
                         // local uses). Mutually exclusive with
                         // is_array/is_array_ref/is_static (only a plain
                         // scalar parameter can be a 'var' parameter).
+    int is_proc_param;    // an inline procedural/functional parameter
+                        // (see param_is_proc in common.h's ProcSymbol) -
+                        // this slot holds a runtime procedure entry
+                        // address, not an ordinary scalar value. Mutually
+                        // exclusive with is_array/is_array_ref/is_static/
+                        // is_var_param. Every read of it must go through
+                        // NODE_CALL_INDIRECT (a call) or be forwarded
+                        // whole, via a plain NODE_LOCAL_VAR read, as
+                        // another procedural argument (see
+                        // parse_proc_argument()) - never any other
+                        // expression context.
+    int proc_param_is_function;   // only meaningful if is_proc_param:
+                        // 1 if this inline signature is 'function', 0
+                        // if 'procedure'.
+    DataType proc_param_return_type; // only meaningful if
+                        // proc_param_is_function.
+    int proc_param_param_count;   // only meaningful if is_proc_param:
+                        // this signature's OWN parameter count (a
+                        // completely separate parameter list from the
+                        // enclosing procedure's).
+    DataType proc_param_param_types[MAX_PARAMS];
+    int proc_param_param_is_var[MAX_PARAMS];
 } LocalSymbol;
 
 // How many procedure/function declarations deep we're currently parsing
@@ -1192,6 +1214,7 @@ static int add_local(const char *name, DataType type) {
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
     current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_proc_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
 
@@ -1207,6 +1230,29 @@ static int add_local_var_param(const char *name, DataType type, int is_subrange,
     current_locals[idx].is_subrange = is_subrange;
     current_locals[idx].subrange_lower = subrange_lower;
     current_locals[idx].subrange_upper = subrange_upper;
+    return idx;
+}
+
+// Registers an inline procedural/functional parameter ('function f(n:
+// integer): integer' or 'procedure f(...)' as one formal parameter).
+// Just an ordinary local slot (like every other parameter) - it holds a
+// runtime procedure entry address, not an ordinary scalar value, so
+// every access must go through NODE_CALL_INDIRECT (a call) or a plain
+// NODE_LOCAL_VAR read (forwarding to a further call) instead of any
+// other expression form. type is TYPE_INTEGER - meaningless beyond
+// "this slot holds one int", mirroring add_local_array_rec()'s own
+// dummy-type comment.
+static int add_local_proc_param(const char *name, int is_function, DataType return_type,
+                                 int param_count, const DataType *param_types, const int *param_is_var) {
+    int idx = add_local(name, TYPE_INTEGER);
+    current_locals[idx].is_proc_param = 1;
+    current_locals[idx].proc_param_is_function = is_function;
+    current_locals[idx].proc_param_return_type = return_type;
+    current_locals[idx].proc_param_param_count = param_count;
+    for (int i = 0; i < param_count; i++) {
+        current_locals[idx].proc_param_param_types[i] = param_types[i];
+        current_locals[idx].proc_param_param_is_var[i] = param_is_var[i];
+    }
     return idx;
 }
 
@@ -1283,6 +1329,7 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
     current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_proc_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
 
@@ -1319,6 +1366,7 @@ static int add_local_array_rec(const char *name, int record_type_idx, int lower,
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
     current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_proc_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
 
@@ -1793,6 +1841,92 @@ static NameGroup parse_name_group(void) {
     return g;
 }
 
+// One inline procedural/functional parameter header - standard ISO 7185
+// Pascal's functional/procedural parameters ('function f(n: integer):
+// integer' or 'procedure f(...)' written out as ONE formal parameter,
+// unlike a NameGroup which can list several names sharing one type).
+typedef struct {
+    char name[MAX_NAME];
+    int is_function;
+    DataType return_type;      // only meaningful if is_function
+    int param_count;           // this header's OWN parameter count - a
+                               // completely separate parameter list from
+                               // the enclosing procedure's
+    DataType param_types[MAX_PARAMS];
+    int param_is_var[MAX_PARAMS];
+} ProcParamHeader;
+
+// Parses one inline procedural/functional parameter header, starting at
+// the 'function'/'procedure' keyword. Scalar-only inline signature for
+// now (by-value and 'var') - no array/record parameters inside it yet
+// (parse_scalar_type() already rejects both with a clear "Unknown type"
+// error, needing no extra guard here), and no subrange types either
+// (there's nowhere to stash per-parameter subrange bounds in the
+// ProcSymbol/LocalSymbol arrays this feature added - a documented,
+// narrow v1 gap, not a silent one).
+static ProcParamHeader parse_proc_param_header(void) {
+    ProcParamHeader h;
+    h.is_function = (token.type == TOKEN_FUNCTION);
+    match(h.is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a parameter name after '%s'", h.is_function ? "function" : "procedure");
+    }
+    strcpy(h.name, token.text);
+    match(TOKEN_IDENTIFIER);
+
+    h.param_count = 0;
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_RPAREN) {
+            while (1) {
+                int is_var = 0;
+                if (token.type == TOKEN_VAR) { is_var = 1; match(TOKEN_VAR); }
+                char names[MAX_GROUP_NAMES][MAX_NAME];
+                int name_count = 0;
+                while (1) {
+                    if (token.type != TOKEN_IDENTIFIER) {
+                        compile_error(token.line, "Expected a parameter name inside '%s's own parameter list", h.name);
+                    }
+                    if (name_count >= MAX_GROUP_NAMES) {
+                        compile_error(token.line, "Too many parameter names in one group (limit is %d)", MAX_GROUP_NAMES);
+                    }
+                    strcpy(names[name_count++], token.text);
+                    match(TOKEN_IDENTIFIER);
+                    if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                    break;
+                }
+                match(TOKEN_COLON);
+                DataType t = parse_scalar_type();
+                if (scalar_type_is_subrange) {
+                    compile_error(token.line, "A subrange type isn't supported inside '%s's own parameter list yet - use its base type 'integer' (see docs/LANGUAGE.md)", h.name);
+                }
+                for (int i = 0; i < name_count; i++) {
+                    if (h.param_count >= MAX_PARAMS) {
+                        compile_error(token.line, "'%s' has too many parameters (limit is %d)", h.name, MAX_PARAMS);
+                    }
+                    h.param_types[h.param_count] = t;
+                    h.param_is_var[h.param_count] = is_var;
+                    h.param_count++;
+                }
+                if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+                break;
+            }
+        }
+        match(TOKEN_RPAREN);
+    }
+
+    if (h.is_function) {
+        match(TOKEN_COLON);
+        h.return_type = parse_scalar_type();
+        if (scalar_type_is_subrange) {
+            compile_error(token.line, "A subrange return type isn't supported for a procedural/functional parameter yet - use its base type 'integer' (see docs/LANGUAGE.md)");
+        }
+    } else {
+        h.return_type = TYPE_UNKNOWN;
+    }
+    return h;
+}
+
 static ASTNode *expression(void);
 static ASTNode *statement(void);
 static ASTNode *statement_list(void);
@@ -2054,23 +2188,28 @@ static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **o
 // Whole records and array elements aren't accepted yet (see
 // param_is_var's comment in common.h) - both rejected here with a clear
 // error, as known gaps rather than a silent wrong answer.
-static ASTNode *parse_var_argument(int proc_idx, int param_index) {
+// expected_type/proc_name/param_index are passed explicitly (rather
+// than a proc_idx to look them up from) so this same resolution logic
+// (with-fields, record fields, statics, forwarding an already-'var'
+// slot, plain locals/globals) is reusable for a call THROUGH a
+// procedural/functional parameter too, which has no proc_table[] entry
+// of its own to look an expected type up from - see
+// parse_indirect_call().
+static ASTNode *parse_var_argument(DataType expected_type, const char *proc_name, int param_index) {
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Parameter %d of '%s' is a 'var' parameter - expects a variable, not an expression",
-                       param_index + 1, proc_table[proc_idx].name);
+                       param_index + 1, proc_name);
     }
     char name[MAX_NAME];
     int line = token.line;
     strcpy(name, token.text);
-
-    DataType expected_type = proc_table[proc_idx].param_types[param_index];
 
     int with_field_idx = find_with_field(name);
     if (with_field_idx != -1) {
         match(TOKEN_IDENTIFIER);
         if (sym_table[with_field_idx].type != expected_type) {
             compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
-                           name, param_index + 1, proc_table[proc_idx].name);
+                           name, param_index + 1, proc_name);
         }
         ASTNode *node = create_node(NODE_VAR_REF);
         node->data.var_idx = with_field_idx;
@@ -2100,7 +2239,7 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
             DataType field_type = rv_is_local ? local_at(resolved_idx, rv_levels_up)->type : sym_table[resolved_idx].type;
             if (field_type != expected_type) {
                 compile_error(line, "'var' argument does not match parameter %d of '%s' (wrong type)",
-                               param_index + 1, proc_table[proc_idx].name);
+                               param_index + 1, proc_name);
             }
             ASTNode *node = create_node(rv_is_local ? NODE_LOCAL_VAR_REF : NODE_VAR_REF);
             node->data.var_idx = resolved_idx;
@@ -2122,7 +2261,7 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
             int static_idx = ls->static_sym_idx;
             if (sym_table[static_idx].type != expected_type) {
                 compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
-                               name, param_index + 1, proc_table[proc_idx].name);
+                               name, param_index + 1, proc_name);
             }
             ASTNode *node = create_node(NODE_VAR_REF);
             node->data.var_idx = static_idx;
@@ -2131,7 +2270,7 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
         }
         if (ls->type != expected_type) {
             compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
-                           name, param_index + 1, proc_table[proc_idx].name);
+                           name, param_index + 1, proc_name);
         }
         if (ls->is_var_param) {
             // Forwarding: this slot already holds a valid reference (from
@@ -2156,11 +2295,115 @@ static ASTNode *parse_var_argument(int proc_idx, int param_index) {
     }
     if (sym_table[global_idx].type != expected_type) {
         compile_error(line, "'var' argument '%s' has the wrong type for parameter %d of '%s'",
-                       name, param_index + 1, proc_table[proc_idx].name);
+                       name, param_index + 1, proc_name);
     }
     ASTNode *node = create_node(NODE_VAR_REF);
     node->data.var_idx = global_idx;
     node->expression_type = expected_type;
+    return node;
+}
+
+// Compares two procedural signatures for exact structural compatibility
+// (same is_function-ness, same return type if a function, same
+// parameter count, and same type/var-ness per position, in order - no
+// implicit widening, matching this codebase's existing 'var' argument
+// rule) - the check every actual argument for a procedural/functional
+// parameter must pass, whether it names a top-level procedure/function
+// directly or forwards an already-received procedural parameter.
+static int proc_signatures_match(int is_function_a, DataType return_type_a, int count_a,
+                                  const DataType *types_a, const int *is_var_a,
+                                  int is_function_b, DataType return_type_b, int count_b,
+                                  const DataType *types_b, const int *is_var_b) {
+    if (is_function_a != is_function_b) return 0;
+    if (is_function_a && return_type_a != return_type_b) return 0;
+    if (count_a != count_b) return 0;
+    for (int i = 0; i < count_a; i++) {
+        if (types_a[i] != types_b[i] || is_var_a[i] != is_var_b[i]) return 0;
+    }
+    return 1;
+}
+
+// A procedural/functional parameter's own inline signature is always
+// scalar-only (see parse_proc_param_header()) - so a top-level
+// procedure/function passed as the actual argument must ALSO have only
+// plain scalar (or 'var' scalar) parameters, never an array/record/
+// procedural one of its own. Without this check, comparing param_types[]
+// directly could wrongly accept e.g. an array parameter whose ELEMENT
+// type happens to equal the expected scalar type.
+static int proc_has_only_scalar_params(int proc_idx) {
+    for (int i = 0; i < proc_table[proc_idx].param_count; i++) {
+        if (proc_table[proc_idx].param_is_array_ref[i] || proc_table[proc_idx].param_is_record[i] ||
+            proc_table[proc_idx].param_is_proc[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Parameter %d of '%s' is a procedural/functional parameter - expects a procedure/function name, not an expression",
+                       param_index + 1, proc_table[proc_idx].name);
+    }
+    char name[MAX_NAME];
+    int line = token.line;
+    strcpy(name, token.text);
+
+    int expected_is_function = proc_table[proc_idx].param_proc_is_function[param_index];
+    DataType expected_return_type = proc_table[proc_idx].param_proc_return_type[param_index];
+    int expected_param_count = proc_table[proc_idx].param_proc_param_count[param_index];
+    DataType *expected_param_types = proc_table[proc_idx].param_proc_param_types[param_index];
+    int *expected_param_is_var = proc_table[proc_idx].param_proc_param_is_var[param_index];
+
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (!ls->is_proc_param) {
+            compile_error(line, "'%s' is not a procedure/function - parameter %d of '%s' expects one",
+                           name, param_index + 1, proc_table[proc_idx].name);
+        }
+        if (!proc_signatures_match(ls->proc_param_is_function, ls->proc_param_return_type, ls->proc_param_param_count,
+                                    ls->proc_param_param_types, ls->proc_param_param_is_var,
+                                    expected_is_function, expected_return_type, expected_param_count,
+                                    expected_param_types, expected_param_is_var)) {
+            compile_error(line, "'%s' does not match the required signature for parameter %d of '%s'",
+                           name, param_index + 1, proc_table[proc_idx].name);
+        }
+        match(TOKEN_IDENTIFIER);
+        // Forwarding: this local already holds a valid top-level entry
+        // address, received from THIS procedure's own caller - pass it
+        // through unchanged, exactly like 'var'-parameter forwarding
+        // (see NODE_LOCAL_VAR's own reuse for that case above).
+        ASTNode *node = create_node(NODE_LOCAL_VAR);
+        node->line = line;
+        node->data.var_idx = local_idx;
+        node->op = (TokenType)levels_up;
+        node->expression_type = TYPE_INTEGER; // meaningless beyond "one int" - see is_proc_param's comment
+        return node;
+    }
+
+    int target_proc_idx = find_proc(name);
+    if (target_proc_idx == -1) {
+        compile_error(line, "Undeclared procedure/function '%s'", name);
+    }
+    if (proc_table[target_proc_idx].lexical_parent_idx != -1) {
+        compile_error(line, "'%s' is a nested procedure/function - only a top-level one can be passed as a procedural/functional parameter (see docs/LANGUAGE.md)", name);
+    }
+    if (!proc_has_only_scalar_params(target_proc_idx) ||
+        !proc_signatures_match(proc_table[target_proc_idx].is_function, proc_table[target_proc_idx].return_type,
+                                proc_table[target_proc_idx].param_count, proc_table[target_proc_idx].param_types,
+                                proc_table[target_proc_idx].param_is_var,
+                                expected_is_function, expected_return_type, expected_param_count,
+                                expected_param_types, expected_param_is_var)) {
+        compile_error(line, "'%s' does not match the required signature for parameter %d of '%s'",
+                       name, param_index + 1, proc_table[proc_idx].name);
+    }
+    match(TOKEN_IDENTIFIER);
+    ASTNode *node = create_node(NODE_PROC_REF);
+    node->line = line;
+    node->data.var_idx = target_proc_idx;
+    node->expression_type = TYPE_INTEGER; // meaningless beyond "one int" - see is_proc_param's comment
     return node;
 }
 
@@ -2180,7 +2423,10 @@ static ASTNode *parse_call_arguments(int proc_idx) {
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_record[arg_count]) {
                     arg = parse_record_argument(proc_idx, arg_count, &this_tail);
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_var[arg_count]) {
-                    arg = parse_var_argument(proc_idx, arg_count);
+                    arg = parse_var_argument(proc_table[proc_idx].param_types[arg_count], proc_table[proc_idx].name, arg_count);
+                    this_tail = arg;
+                } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_proc[arg_count]) {
+                    arg = parse_proc_argument(proc_idx, arg_count);
                     this_tail = arg;
                 } else if (arg_count < proc_table[proc_idx].param_count) {
                     arg = wrap_range_check(expression(), proc_table[proc_idx].param_is_subrange[arg_count],
@@ -2206,6 +2452,90 @@ static ASTNode *parse_call_arguments(int proc_idx) {
                        proc_table[proc_idx].name, proc_table[proc_idx].param_count, arg_count);
     }
     return arg_head;
+}
+
+// A call THROUGH an already-received procedural/functional parameter
+// (e.g. 'f(x)' where f is itself such a parameter) - a small sibling of
+// parse_call_arguments()/NODE_CALL, reading ls's own stored inline
+// signature instead of a proc_table[] entry (there isn't one - the
+// actual callee is only known at runtime). Only two argument kinds are
+// possible here (by-value scalar, 'var' scalar), matching this
+// signature's own scalar-only restriction (see parse_proc_param_header).
+// ls/local_idx/levels_up identify the already-resolved local slot
+// holding the runtime entry address; is_statement mirrors NODE_CALL's
+// own op == TOKEN_PROCEDURE flag (statement context: discard an unused
+// function result, then continue the enclosing statement chain via
+// ->next) - stored on NODE_CALL_INDIRECT's extra instead of op, since op
+// is needed here for levels_up (see NODE_CALL_INDIRECT's comment in
+// common.h).
+static ASTNode *parse_indirect_call(LocalSymbol *ls, int local_idx, int levels_up, int line, int is_statement) {
+    if (!is_statement && !ls->proc_param_is_function) {
+        compile_error(line, "'%s' is a procedure and does not return a value; it cannot be used in an expression", ls->name);
+    }
+    match(TOKEN_IDENTIFIER);
+
+    ASTNode *arg_head = NULL;
+    ASTNode *arg_tail = NULL;
+    int arg_count = 0;
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_RPAREN) {
+            while (1) {
+                ASTNode *arg;
+                if (arg_count < ls->proc_param_param_count && ls->proc_param_param_is_var[arg_count]) {
+                    arg = parse_var_argument(ls->proc_param_param_types[arg_count], ls->name, arg_count);
+                } else if (arg_count < ls->proc_param_param_count) {
+                    arg = expression();
+                    DataType expected = ls->proc_param_param_types[arg_count];
+                    DataType actual = arg->expression_type;
+                    int expected_stringy = (expected == TYPE_STRING || expected == TYPE_CHAR);
+                    int actual_stringy = (actual == TYPE_STRING || actual == TYPE_CHAR);
+                    if (!(expected_stringy && actual_stringy) && expected != actual) {
+                        if (actual == TYPE_INTEGER && expected == TYPE_REAL) {
+                            // Implicit int->real widening, matching an
+                            // ordinary by-value call argument's own rule
+                            // (see try_widen_for_assignment() in
+                            // type_checker.c) - duplicated narrowly here,
+                            // rather than deferred to type_checker.c,
+                            // because NODE_CALL_INDIRECT has no
+                            // proc_table[] entry for it to look expected
+                            // argument types up from at that later stage.
+                            ASTNode *wrapper = create_node(NODE_INT_TO_REAL);
+                            wrapper->left = arg;
+                            wrapper->expression_type = TYPE_REAL;
+                            wrapper->line = arg->line;
+                            arg = wrapper;
+                        } else {
+                            compile_error(token.line, "Argument %d to '%s' has the wrong type", arg_count + 1, ls->name);
+                        }
+                    }
+                } else {
+                    arg = expression(); // too many arguments - the count mismatch error below still fires
+                }
+                arg_count++;
+                if (!arg_head) arg_head = arg; else arg_tail->next = arg;
+                arg_tail = arg;
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
+            }
+        }
+        match(TOKEN_RPAREN);
+    }
+    if (arg_count != ls->proc_param_param_count) {
+        compile_error(line, "'%s' expects %d argument(s), got %d", ls->name, ls->proc_param_param_count, arg_count);
+    }
+
+    ASTNode *node = create_node(NODE_CALL_INDIRECT);
+    node->line = line;
+    node->data.var_idx = local_idx;
+    node->op = (TokenType)levels_up;
+    node->left = arg_head;
+    node->expression_type = ls->proc_param_is_function ? ls->proc_param_return_type : TYPE_UNKNOWN;
+    ASTNode *stmt_flag = create_node(NODE_NUMBER);
+    stmt_flag->data.num_value = is_statement;
+    stmt_flag->expression_type = TYPE_INTEGER;
+    node->extra = stmt_flag;
+    return node;
 }
 
 // One resolved '^' step's outcome - a record field's offset/type/subrange
@@ -2906,6 +3236,9 @@ static ASTNode *factor(void) {
         int local_idx = find_local_outward(token.text, &levels_up);
         if (local_idx != -1) {
             LocalSymbol *ls = local_at(local_idx, levels_up);
+            if (ls->is_proc_param) {
+                return parse_indirect_call(ls, local_idx, levels_up, line, 0);
+            }
             if (ls->is_var_param) {
                 match(TOKEN_IDENTIFIER);
                 if ((ls->type == TYPE_STRING || ls->type == TYPE_CHAR)
@@ -3836,6 +4169,10 @@ static void subroutine_declaration(int is_function_decl) {
                                      proc_table[proc_idx].param_subrange_upper[i]);
             } else if (proc_table[proc_idx].param_is_record[i]) {
                 add_local_record(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_record_type_idx[i]);
+            } else if (proc_table[proc_idx].param_is_proc[i]) {
+                add_local_proc_param(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_proc_is_function[i],
+                                      proc_table[proc_idx].param_proc_return_type[i], proc_table[proc_idx].param_proc_param_count[i],
+                                      proc_table[proc_idx].param_proc_param_types[i], proc_table[proc_idx].param_proc_param_is_var[i]);
             } else if (proc_table[proc_idx].param_is_var[i]) {
                 add_local_var_param(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i],
                                      proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
@@ -3871,11 +4208,54 @@ static void subroutine_declaration(int is_function_decl) {
         int param_record_type_idx[MAX_PARAMS];
         int param_record_field_count[MAX_PARAMS];
         int param_is_var[MAX_PARAMS];
+        int param_is_proc[MAX_PARAMS];
+        int param_proc_is_function[MAX_PARAMS];
+        DataType param_proc_return_type[MAX_PARAMS];
+        int param_proc_param_count[MAX_PARAMS];
+        DataType param_proc_param_types[MAX_PARAMS][MAX_PARAMS];
+        int param_proc_param_is_var[MAX_PARAMS][MAX_PARAMS];
 
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
             if (token.type != TOKEN_RPAREN) {
                 while (1) {
+                    // An inline procedural/functional parameter ('function
+                    // f(...): T' or 'procedure f(...)') is its OWN group,
+                    // parsed entirely differently from a NameGroup (it
+                    // always declares exactly one name, and its own inner
+                    // parameter list is unrelated grammar) - handled here,
+                    // before falling through to the ordinary
+                    // var/NameGroup path below.
+                    if (token.type == TOKEN_FUNCTION || token.type == TOKEN_PROCEDURE) {
+                        if (param_count >= MAX_PARAMS) {
+                            compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
+                        }
+                        ProcParamHeader h = parse_proc_param_header();
+                        add_local_proc_param(h.name, h.is_function, h.return_type, h.param_count, h.param_types, h.param_is_var);
+                        strcpy(param_names[param_count], h.name);
+                        param_types[param_count] = TYPE_INTEGER; // unused - see is_proc_param's comment
+                        param_is_array_ref[param_count] = 0;
+                        param_is_2d[param_count] = 0;
+                        param_is_nd[param_count] = 0;
+                        param_nd_dims[param_count] = 0;
+                        param_is_subrange[param_count] = 0;
+                        param_is_record[param_count] = 0;
+                        param_record_type_idx[param_count] = 0;
+                        param_record_field_count[param_count] = 0;
+                        param_is_var[param_count] = 0;
+                        param_is_proc[param_count] = 1;
+                        param_proc_is_function[param_count] = h.is_function;
+                        param_proc_return_type[param_count] = h.return_type;
+                        param_proc_param_count[param_count] = h.param_count;
+                        for (int i = 0; i < h.param_count; i++) {
+                            param_proc_param_types[param_count][i] = h.param_types[i];
+                            param_proc_param_is_var[param_count][i] = h.param_is_var[i];
+                        }
+                        param_count++;
+                        if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+                        break;
+                    }
+
                     // 'var' is a per-group modifier here (inside the
                     // parameter list), unlike the 'var' KEYWORD that
                     // introduces the whole local-variable SECTION below -
@@ -3937,6 +4317,9 @@ static void subroutine_declaration(int is_function_decl) {
                         param_record_type_idx[param_count] = g.record_type_idx;
                         param_record_field_count[param_count] = g.is_record ? record_types[g.record_type_idx].field_count : 0;
                         param_is_var[param_count] = is_var_group;
+                        param_is_proc[param_count] = 0;
+                        param_proc_is_function[param_count] = 0;
+                        param_proc_param_count[param_count] = 0;
                         param_count++;
                     }
                     if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -3979,6 +4362,14 @@ static void subroutine_declaration(int is_function_decl) {
             proc_table[proc_idx].param_record_type_idx[i] = param_record_type_idx[i];
             proc_table[proc_idx].param_record_field_count[i] = param_record_field_count[i];
             proc_table[proc_idx].param_is_var[i] = param_is_var[i];
+            proc_table[proc_idx].param_is_proc[i] = param_is_proc[i];
+            proc_table[proc_idx].param_proc_is_function[i] = param_proc_is_function[i];
+            proc_table[proc_idx].param_proc_return_type[i] = param_proc_return_type[i];
+            proc_table[proc_idx].param_proc_param_count[i] = param_proc_param_count[i];
+            for (int j = 0; j < param_proc_param_count[i]; j++) {
+                proc_table[proc_idx].param_proc_param_types[i][j] = param_proc_param_types[i][j];
+                proc_table[proc_idx].param_proc_param_is_var[i][j] = param_proc_param_is_var[i][j];
+            }
         }
 
         proc_table[proc_idx].is_function = is_function_decl;
@@ -5619,6 +6010,9 @@ static ASTNode *statement(void) {
         int local_idx = find_local_outward(token.text, &levels_up);
         if (local_idx != -1) {
             LocalSymbol *ls = local_at(local_idx, levels_up);
+            if (ls->is_proc_param) {
+                return parse_indirect_call(ls, local_idx, levels_up, token.line, 1);
+            }
             if (ls->is_var_param) {
                 match(TOKEN_IDENTIFIER);
                 if (is_pointer_type(ls->type) && token.type == TOKEN_CARET) {
