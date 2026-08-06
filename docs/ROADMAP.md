@@ -647,7 +647,7 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       `subroutine_declaration()`, since that's the only point
       `current_locals[]` (a parser-only scratch table) still holds this
       procedure's own local metadata. Found a real, pre-existing latent
-      bug on its first run: `examples/test/test_local_for_recursion.pas`
+      bug on its first run: `examples/test/local/test_local_for_recursion.pas`
       declared `factorialViaLoop` as a `function` that never set its own
       return value (only ever called as a statement, for its side
       effects) - fixed by redeclaring it `procedure` - see

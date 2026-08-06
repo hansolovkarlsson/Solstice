@@ -108,9 +108,14 @@ solvm.sh foo.bin      # solvm foo.bin
 
 There is no formal test framework or test runner script. `examples/test/`
 holds one small `.pas` (or `.sasm`) file per feature/regression, named
-`test_<feature>.pas`; verify a change by compiling and running the
-relevant file(s) and hand-checking output. The approach used throughout
-this project, in order:
+`test_<feature>_<variant>.pas`, grouped into one subdirectory per feature
+prefix (`examples/test/<feature>/test_<feature>_<variant>.pas` —
+e.g. `examples/test/ptr/test_ptr_basic.pas`, `examples/test/goto/
+test_goto_badscope.pas`); a new test for an existing feature goes in its
+existing subdirectory, a genuinely new feature gets a new one named after
+its prefix. Verify a change by compiling and running the relevant
+file(s) and hand-checking output. The approach used throughout this
+project, in order:
 
 1. **Positive case**: write/find a small `.pas` program exercising the
    feature, compile and run it, hand-verify the output (work it out, not
@@ -301,7 +306,7 @@ opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
 
 ## Repo layout beyond `src/`
 
-- `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/`, `examples/test/` — `.pas`/`.sasm` sample and test programs, grouped by purpose (`test/` = regression tests, `doc/` = examples referenced from `docs/`, `tech/` = misc technical exercises, `audit/` = audit-driven test programs).
+- `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/`, `examples/test/` — `.pas`/`.sasm` sample and test programs, grouped by purpose (`test/` = regression tests, further split into one subdirectory per feature prefix since it's by far the largest — see [Testing](#testing) above; `doc/` = examples referenced from `docs/`; `tech/` = misc technical exercises; `audit/` = audit-driven test programs).
 - `notes/` — the author's own freeform design notes (naming ideas, musings); not authoritative — the actual plan lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 - `chats/` — saved transcripts from other AI assistants used during design.
 - `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `Makefile` → root, each `.c`/`.h` → its own `src/{common,pascalc,solvm,solas,desole}/` by filename, `*.sasm` → `examples/asm/`, `doc_*.pas` → `examples/doc/`, `test_*.pas` → `examples/test/`). Not part of the build.
