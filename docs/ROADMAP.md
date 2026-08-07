@@ -501,9 +501,13 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       to read. Confirmed the fix doesn't affect that case (a standalone
       `readln(s)` reading an intentional blank line still reads it as
       empty, not skipped).
-- [ ] `program` heading parameters (`program Foo(input, output);`) — pure
-      syntax at the moment (`program Name;` only); lowest priority here,
-      since in virtually every real implementation this list is a no-op
+- [x] `program` heading parameters — `program Foo(input, output);` now
+      parses (previously `program Name;` only). Pure syntax: the
+      parenthesized identifier list is consumed and discarded, no
+      validation and nothing stored, since this VM has no OS-level
+      file-parameter binding for it to mean anything - any identifiers
+      are accepted, not just `input`/`output`. See
+      docs/LANGUAGE.md#program-structure.
 
 ### Language — procedures/functions & diagnostics
 

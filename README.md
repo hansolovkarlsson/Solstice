@@ -324,7 +324,11 @@ needed) — stays pure parse-time flattening, recursively, so no new
 opcodes; a record type used as a nested field can't itself have an array
 field, and a record type with a nested-record field can't be an array's
 element type, a pointer's target type, or a `with` target (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#nested-records)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#nested-records)). Also working:
+`program` heading parameters (`program Foo(input, output);`) — pure
+syntax, accepted and discarded, since this VM has no OS-level
+file-parameter binding for the list to mean anything (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#program-structure)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

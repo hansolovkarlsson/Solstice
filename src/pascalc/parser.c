@@ -4136,6 +4136,19 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
+    if (token.type == TOKEN_LPAREN) {
+        // Standard Pascal's optional program-parameter list (traditionally
+        // file/device names like input/output). No file-parameter binding
+        // exists in this VM, so the list is accepted and discarded - pure
+        // syntax, any identifier accepted, nothing stored or validated.
+        match(TOKEN_LPAREN);
+        match(TOKEN_IDENTIFIER);
+        while (token.type == TOKEN_COMMA) {
+            match(TOKEN_COMMA);
+            match(TOKEN_IDENTIFIER);
+        }
+        match(TOKEN_RPAREN);
+    }
     match(TOKEN_SEMI);
 
     if (token.type == TOKEN_LABEL) {

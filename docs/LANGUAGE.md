@@ -28,6 +28,13 @@ end.
 
 - The program name is required but otherwise unused (no significance
   beyond documentation).
+- The heading may optionally include a parenthesized list of
+  identifiers, e.g. `program Name(input, output);` — standard Pascal's
+  program-parameter list, traditionally naming the files/devices the
+  program uses. This VM has no OS-level file-parameter binding, so the
+  list is accepted purely as syntax and has no effect: any identifiers
+  are allowed (not just `input`/`output`), and they're neither
+  validated nor stored anywhere.
 - The `const` section is optional, and comes before `type`/`var` — see
   [Constants](#constants).
 - The `type` section is optional, and declares record types, type
