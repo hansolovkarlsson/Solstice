@@ -1491,8 +1491,9 @@ type
 ```
 
 - A field's type can be `integer`, `real`, `boolean`, `string`, `char`,
-  or a 1D array of any of those — anything a plain variable can be,
-  except another record (no nesting yet - see below).
+  a 1D array of any of those, or another already-declared record type
+  (see "Nested records" below) — anything a plain variable can be,
+  except `array of RecordType`.
 - Multiple field names sharing one type can be comma-separated, same as
   `var` (`x, y: integer;`).
 - There's no type aliasing (`type TAge = integer;`) — `type` only
@@ -1600,6 +1601,11 @@ there's no restriction here beyond what already applies to
   instead (`with a do with b do ...`) for the same effect.
 - The `with`-target must be a plain record variable; it can't be an
   expression.
+- The `with`-target's record type can't have a nested-record field (see
+  [Nested records](#nested-records)) — a bare identifier binds straight
+  to a field's own storage, which isn't meaningful for a field that's a
+  whole nested record; access it with `recordVar.field.subfield`
+  instead.
 
 ### Record parameters and local records
 
@@ -1684,6 +1690,62 @@ runtime "which record" to select), but `people[i].age`'s `i` is a runtime
 value, so the compiler can no longer resolve which storage location to
 touch until the program actually runs.
 
+### Nested records
+
+```pascal
+type
+    TPoint = record
+        x, y: integer;
+    end;
+    TRect = record
+        topleft, bottomright: TPoint;
+    end;
+var
+    r: TRect;
+begin
+    r.topleft.x := 0;
+    r.topleft.y := 0;
+    r.bottomright.x := 3;
+    r.bottomright.y := 4;
+    writeln(r.topleft.x, ' ', r.bottomright.y);   { 0 4 }
+end.
+```
+
+A field's type can be another already-declared record type, and `.field`
+chains drill in as far as needed (`r.topleft.x`, or three or more levels
+deep). Whole-record assignment (`:=`), comparison (`=`/`<>`), and
+by-value parameters/local variables all work the same way they do for a
+plain record — a nested field is just more fields, copied/compared/
+passed leaf by leaf.
+
+Under the hood this stays pure parse-time flattening, recursively: a
+nested field's own fields become more hidden globals (or frame slots),
+mangled `outer__inner__leaf`, exactly as if every leaf had been declared
+as its own separate field of the outer record — no new runtime
+mechanism, no new bytecode. A record type can only nest an
+already-declared type (record types can't forward-reference each other),
+which is also what rules out self-reference (`TNode = record next:
+TNode; end;` is a compile error — `TNode` isn't declared yet at the
+point its own body would need to name it) and mutual recursion.
+
+**What's not supported for a nested field:**
+
+- **A record type with an array-typed field can't be used as a nested
+  field's type** — and, transitively, nothing nested inside *that* type
+  can have an array field either (since it could itself only be declared
+  by nesting an already-array-field-free type). A record type with an
+  array field still works as a plain variable, a parameter's argument,
+  etc. — just not as another record's nested field.
+- **`array of RecordType` isn't a valid field type** — a field can be a
+  single nested record, or a 1D array of scalars, but not a 1D array of
+  records.
+- **A record type with a nested-record field can't be an array's element
+  type** (see "Records as array elements" above), **a pointer's target
+  type** (see "Pointers" below), or a `with` target (see "The `with`
+  statement" above) — each of those mechanisms addresses a record's
+  fields by a fixed per-field slot/offset, which doesn't generalize to a
+  nested field's "N slots instead of 1" without a larger rethink.
+
 ### What's not supported yet
 
 - **2D or N-D arrays of records** — only a 1D array of records is
@@ -1709,7 +1771,9 @@ touch until the program actually runs.
 - **`with` on a local or parameter record** — `with` still only accepts a
   global record variable; access a local/parameter record's fields with
   `recordVar.field` directly.
-- **Nested records** — a field can't itself be a record type.
+- **Nested records inside an array element type, a pointer target, or a
+  `with` target** — see "Nested records" above for the full list of
+  nesting-specific restrictions.
 
 ## Pointers
 
@@ -1813,6 +1877,9 @@ you're done with a block, the same discipline `malloc`/`free` demands.
   dereferenced** (`arr[i].next^`) — same workaround as above.
 - **Whole-record assignment/comparison through a dereference**
   (`q^ := p^;`, `p^ = q^`) — assign/compare field by field instead.
+- **A pointer targeting a record type that has a nested-record field**
+  (see [Nested records](#nested-records)) — a compile error; pointers to
+  a record work only when every field is a scalar or array.
 
 ## Procedures
 
@@ -2346,11 +2413,13 @@ file.pas:1: Warning: function 'Average' never assigns a value to its own name - 
   dereference gaps — see [Pointers](#pointers) above (pointer to a
   scalar or record, including the self-referential linked-list/tree
   pattern, `new`/`dispose`/`nil`, all work)
-- 2D/N-D arrays of records, array-of-record parameters, nested records,
-  and an array-typed field in a record parameter/local record — see
-  [Records as array elements](#records-as-array-elements) and
-  [Records](#records) above (1D arrays of records, plain record
-  variables, record parameters/locals, and record comparison all work)
+- 2D/N-D arrays of records, array-of-record parameters, an array-typed
+  field in a record parameter/local record, and a nested-record field
+  used as an array's element type or a pointer's target type — see
+  [Records as array elements](#records-as-array-elements),
+  [Nested records](#nested-records), and [Records](#records) above (1D
+  arrays of records, plain record variables (including nested-record
+  fields), record parameters/locals, and record comparison all work)
 - Units/modules/`uses`
 
 See the project README's Status section and

@@ -251,12 +251,20 @@ static int find_const(const char *name) {
 
 typedef struct {
     char name[MAX_NAME];
-    DataType type;
+    DataType type;         // meaningless if is_record
     int is_array;
     int array_lower, array_upper; // only meaningful if is_array
     int is_subrange;      // see the Symbol comment in common.h - propagated
     int subrange_lower;   // to the field's mangled global Symbol by
     int subrange_upper;   // add_record_var()
+    int is_record;        // field's type is itself a record type (nested
+                           // records) - mutually exclusive with is_array.
+                           // The nested type is guaranteed to have no
+                           // array-typed field anywhere in it (enforced
+                           // where a nested field is declared - see
+                           // parse_type_section()), so a nested field's
+                           // own leaves are always scalar.
+    int record_type_idx;  // record_types[] index; only meaningful if is_record
 } RecordField;
 
 typedef struct {
@@ -597,6 +605,52 @@ static int find_record_field(int record_type_idx, const char *field_name) {
         if (strcmp(rt->fields[i].name, field_name) == 0) return i;
     }
     return -1;
+}
+
+// How many leaf (scalar/array) storage slots record_type_idx flattens
+// into - 1 per ordinary field, or the nested type's own leaf count for a
+// record-typed field (recursively). A nested field's own type is
+// guaranteed array-field-free (see record_type_has_array_field() and
+// where it's enforced in parse_type_section()), so this never needs to
+// special-case arrays below the top level - every leaf a nested field
+// contributes is a plain scalar.
+static int record_type_leaf_count(int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    int total = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        total += rt->fields[i].is_record
+            ? record_type_leaf_count(rt->fields[i].record_type_idx)
+            : 1;
+    }
+    return total;
+}
+
+// True if record_type_idx has an array-typed field at its own top
+// level. A type can only ever nest an already-fully-declared type (see
+// the self-reference/cycle note above record_type_count), so any type
+// that itself passed this check when IT nested something is guaranteed
+// array-field-free all the way down - callers never need to recurse
+// through nested fields to check transitively, only the immediate
+// target type.
+static int record_type_has_array_field(int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        if (rt->fields[i].is_array) return 1;
+    }
+    return 0;
+}
+
+// True if record_type_idx has a nested-record field at its own top
+// level - same declaration-order induction argument as
+// record_type_has_array_field() above. Used by the array-element-type,
+// pointer-target, and with-target restriction checks, none of which
+// generalize to a nested field's "N slots instead of 1" shape.
+static int record_type_has_nested_field(int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        if (rt->fields[i].is_record) return 1;
+    }
+    return 0;
 }
 
 // 'with recordVar do statement;' - a stack (nesting: 'with a do with b
@@ -943,6 +997,10 @@ static void add_array_var_rec(const char *name, int record_type_idx, int lower, 
             compile_error(token.line, "Array-of-record element type '%s' has an array field '%s' - arrays of records with an array field aren't supported yet",
                           rt->name, rt->fields[i].name);
         }
+        if (rt->fields[i].is_record) {
+            compile_error(token.line, "Array-of-record element type '%s' has a nested-record field '%s' - arrays of records with a nested-record field aren't supported yet",
+                          rt->name, rt->fields[i].name);
+        }
     }
     int size = (upper - lower + 1) * rt->field_count;
     if (array_mem_count + size > MAX_ARRAY_MEM) {
@@ -965,12 +1023,52 @@ static void add_array_var_rec(const char *name, int record_type_idx, int lower, 
     sym_count++;
 }
 
+// Recursively creates one hidden global symbol per LEAF field of
+// record_type_idx, mangled under "prefix__" - used by add_record_var()
+// below for a nested-record field's own subtree. The nested type is
+// guaranteed to have no array-typed field anywhere in it (enforced when
+// the nested field was declared - see parse_type_section()), so only
+// the is_record/scalar branches can ever recurse further; an is_array
+// field can still appear at THIS level (an ordinary array field of the
+// nested type's own top level is fine - only a type used AS a nested
+// field is restricted, not what a global record's own fields may be).
+static void add_record_var_fields(const char *prefix, int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (strlen(prefix) + 2 + strlen(f->name) >= MAX_NAME) {
+            compile_error(token.line, "Record variable/field name '%s.%s' too long (limit is %d characters combined)",
+                          prefix, f->name, MAX_NAME - 3);
+        }
+        char mangled[2 * MAX_NAME];
+        snprintf(mangled, sizeof(mangled), "%s__%s", prefix, f->name);
+        if (f->is_record) {
+            add_record_var_fields(mangled, f->record_type_idx);
+            continue;
+        }
+        if (f->is_array) {
+            add_array_var(mangled, f->type, f->array_lower, f->array_upper);
+        } else {
+            add_var(mangled, f->type);
+        }
+        sym_table[sym_count - 1].is_subrange = f->is_subrange;
+        sym_table[sym_count - 1].subrange_lower = f->subrange_lower;
+        sym_table[sym_count - 1].subrange_upper = f->subrange_upper;
+    }
+}
+
 // Declares a GLOBAL record variable of the given record type: creates one
 // ordinary hidden global symbol per field (mangled "name__fieldname"),
 // via add_var()/add_array_var() exactly as if the user had declared each
 // field as its own separate global variable. See the comment above
 // RecordTypeDef for why this makes field access, type checking, codegen,
-// and DCE all work for free, with zero new runtime machinery.
+// and DCE all work for free, with zero new runtime machinery. A nested-
+// record field instead expands, via add_record_var_fields() above, into
+// N contiguous leaf symbols - field_sym_idx[i] holds the FIRST of those
+// (or the field's own single symbol, for a scalar/array field - same
+// convention, unified), and every other leaf lives at a
+// record_type_leaf_count()-computed offset from it (see
+// resolve_record_field_leaf()).
 static void add_record_var(const char *name, int record_type_idx) {
     if (find_var_soft(name) != -1 || find_record_var(name) != -1) {
         compile_error(token.line, "Duplicate variable declaration '%s'", name);
@@ -1002,15 +1100,20 @@ static void add_record_var(const char *name, int record_type_idx) {
         }
         char mangled[2 * MAX_NAME];
         snprintf(mangled, sizeof(mangled), "%s__%s", name, f->name);
-        if (f->is_array) {
-            add_array_var(mangled, f->type, f->array_lower, f->array_upper);
+        int base = sym_count; // first leaf symbol about to be created for field i
+        if (f->is_record) {
+            add_record_var_fields(mangled, f->record_type_idx);
         } else {
-            add_var(mangled, f->type);
+            if (f->is_array) {
+                add_array_var(mangled, f->type, f->array_lower, f->array_upper);
+            } else {
+                add_var(mangled, f->type);
+            }
+            sym_table[sym_count - 1].is_subrange = f->is_subrange;
+            sym_table[sym_count - 1].subrange_lower = f->subrange_lower;
+            sym_table[sym_count - 1].subrange_upper = f->subrange_upper;
         }
-        sym_table[sym_count - 1].is_subrange = f->is_subrange;
-        sym_table[sym_count - 1].subrange_lower = f->subrange_lower;
-        sym_table[sym_count - 1].subrange_upper = f->subrange_upper;
-        rv->field_sym_idx[i] = sym_count - 1; // add_var/add_array_var just incremented sym_count
+        rv->field_sym_idx[i] = base;
     }
     record_var_count++;
 }
@@ -1409,13 +1512,43 @@ static int add_static_local(const char *proc_name, const char *name, DataType ty
     return current_local_count++;
 }
 
+// Recursively creates one frame slot per LEAF field of record_type_idx,
+// mangled under "prefix__" - used by add_local_record() below for a
+// nested-record field's own subtree. The nested type is guaranteed
+// array-field-free (enforced where the nested field was declared - see
+// parse_type_section()), so this never encounters an is_array field and
+// never needs add_local_record()'s own array rejection here.
+static void add_local_record_fields(const char *prefix, int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        char mangled[2 * MAX_NAME];
+        if (strlen(prefix) + 2 + strlen(f->name) >= sizeof(mangled)) {
+            compile_error(token.line, "Record variable/field name '%s.%s' too long", prefix, f->name);
+        }
+        snprintf(mangled, sizeof(mangled), "%s__%s", prefix, f->name);
+        if (f->is_record) {
+            add_local_record_fields(mangled, f->record_type_idx);
+            continue;
+        }
+        int idx = add_local(mangled, f->type);
+        current_locals[idx].is_subrange = f->is_subrange;
+        current_locals[idx].subrange_lower = f->subrange_lower;
+        current_locals[idx].subrange_upper = f->subrange_upper;
+    }
+}
+
 // Registers a record LOCAL or PARAMETER ('var p: TPoint;' inside a
 // procedure body, or 'procedure foo(p: TPoint)') - see the comment
 // above LocalRecordVarDef for why each field gets its own ordinary
 // frame slot (add_local()) instead of a hidden global. Used for BOTH
 // locals and parameters identically; a parameter's fields additionally
 // get populated by copy-in code at each call site (by value) - see
-// parse_call_arguments()'s record-argument handling.
+// parse_call_arguments()'s record-argument handling. A nested-record
+// field instead expands, via add_local_record_fields() above, into N
+// contiguous frame slots - field_local_idx[i] holds the FIRST of those
+// (or the field's own single slot, for a scalar field - same
+// convention, unified).
 static void add_local_record(const char *name, int record_type_idx) {
     int existing_is_local, existing_record_type_idx;
     const int *existing_field_idx;
@@ -1444,11 +1577,16 @@ static void add_local_record(const char *name, int record_type_idx) {
             compile_error(token.line, "Record variable/field name '%s.%s' too long", name, f->name);
         }
         snprintf(mangled, sizeof(mangled), "%s__%s", name, f->name);
-        int idx = add_local(mangled, f->type);
-        current_locals[idx].is_subrange = f->is_subrange;
-        current_locals[idx].subrange_lower = f->subrange_lower;
-        current_locals[idx].subrange_upper = f->subrange_upper;
-        rv->field_local_idx[i] = idx;
+        int base = current_local_count; // first frame slot about to be created for field i
+        if (f->is_record) {
+            add_local_record_fields(mangled, f->record_type_idx);
+        } else {
+            int idx = add_local(mangled, f->type);
+            current_locals[idx].is_subrange = f->is_subrange;
+            current_locals[idx].subrange_lower = f->subrange_lower;
+            current_locals[idx].subrange_upper = f->subrange_upper;
+        }
+        rv->field_local_idx[i] = base;
     }
     local_record_var_count++;
 }
@@ -1471,6 +1609,68 @@ static int intern_string(const char *s) {
 static void match(TokenType type) {
     if (token.type == type) next_token();
     else compile_error(token.line, "Unexpected token '%s'", token.text[0] ? token.text : "EOF");
+}
+
+// Called right after a record variable's name and the FIRST '.' are
+// already consumed, with 'field_idx_array' the caller's
+// RecordVarDef.field_sym_idx/LocalRecordVarDef.field_local_idx (whose
+// values are "first leaf" bases - see add_record_var()/
+// add_local_record()). Resolves the rest of a possibly-multi-level
+// '.field.field...' chain down to a scalar leaf, following into
+// nested-record fields as needed, and returns the leaf's final storage
+// index (a sym_table[] index, or current_locals[] index - same
+// convention field_idx_array itself uses). Below the top level there's
+// no field_idx array to consult directly (only the top-level record
+// variable has one), so descending adds the leaf-counts of every
+// preceding sibling field at that level to the running index instead -
+// valid because add_record_var_fields()/add_local_record_fields() lay
+// out a nested field's leaves contiguously, in declaration order.
+static int resolve_record_field_leaf(int record_type_idx, const int *field_idx_array, const char *rec_name) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a field name after '%s.'", rec_name);
+    }
+    int field_idx = find_record_field(record_type_idx, token.text);
+    if (field_idx == -1) {
+        compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
+    }
+    // Sized for the deepest possible nesting chain (bounded by
+    // MAX_RECORD_TYPES - a type can only nest an already-declared type,
+    // so a chain can never revisit a type and never exceeds that many
+    // segments) - this buffer is only ever used to compose an error
+    // message, snprintf'd defensively regardless.
+    char field_path[MAX_RECORD_TYPES * (MAX_NAME + 1)];
+    snprintf(field_path, sizeof(field_path), "%s", token.text);
+    match(TOKEN_IDENTIFIER);
+
+    int idx = field_idx_array[field_idx];
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    RecordField *f = &rt->fields[field_idx];
+    while (f->is_record) {
+        if (token.type != TOKEN_PERIOD) {
+            compile_error(token.line, "'%s.%s' names a whole record - specify a further field ('%s.%s.fieldname'), compare it with '=' or '<>', or use whole-record assignment",
+                          rec_name, field_path, rec_name, field_path);
+        }
+        match(TOKEN_PERIOD);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a field name after '%s.%s.'", rec_name, field_path);
+        }
+        RecordTypeDef *srt = &record_types[f->record_type_idx];
+        int sub_field_idx = find_record_field(f->record_type_idx, token.text);
+        if (sub_field_idx == -1) {
+            compile_error(token.line, "'%s' is not a field of '%s'", token.text, srt->name);
+        }
+        for (int k = 0; k < sub_field_idx; k++) {
+            idx += srt->fields[k].is_record
+                ? record_type_leaf_count(srt->fields[k].record_type_idx)
+                : 1;
+        }
+        size_t used = strlen(field_path);
+        snprintf(field_path + used, sizeof(field_path) - used, ".%s", token.text);
+        match(TOKEN_IDENTIFIER);
+        rt = srt;
+        f = &srt->fields[sub_field_idx];
+    }
+    return idx;
 }
 
 // Extends try_get_array_bounds() to also accept 'record.arrayField'
@@ -2131,6 +2331,30 @@ static ASTNode *parse_array_ref_argument(int proc_idx, int param_index) {
 // Sets *out_tail to the chain's last node (NULL for a zero-field record
 // type), so the caller can splice the whole chain into its own argument
 // list the same way it splices in a single-node argument.
+//
+// Below the top level of the loop below: walks record_type_idx's own
+// fields via base+offset arithmetic (no field_idx array exists below
+// the top level - only the argument's own top-level record variable has
+// one), recursing into further nested-record fields, appending one
+// range-checked read node per LEAF field to the head/tail chain exactly
+// as the top-level loop does per field.
+static void build_record_arg_values(int record_type_idx, int is_local, int base, int levels_up, ASTNode **head, ASTNode **tail) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    int offset = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_record_arg_values(f->record_type_idx, is_local, base + offset, levels_up, head, tail);
+        } else {
+            ASTNode *value = record_field_read_node(is_local, base + offset, levels_up);
+            value = wrap_range_check(value, f->is_subrange, f->subrange_lower, f->subrange_upper);
+            if (!*head) *head = value; else (*tail)->next = value;
+            *tail = value;
+        }
+        offset += f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
+    }
+}
+
 static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **out_tail) {
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Parameter %d of '%s' expects a record variable", param_index + 1, proc_table[proc_idx].name);
@@ -2156,8 +2380,13 @@ static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **o
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
     for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_record_arg_values(f->record_type_idx, arg_is_local, arg_field_idx[i], arg_levels_up, &head, &tail);
+            continue;
+        }
         ASTNode *value = record_field_read_node(arg_is_local, arg_field_idx[i], arg_levels_up);
-        value = wrap_range_check(value, rt->fields[i].is_subrange, rt->fields[i].subrange_lower, rt->fields[i].subrange_upper);
+        value = wrap_range_check(value, f->is_subrange, f->subrange_lower, f->subrange_upper);
         if (!head) head = value; else tail->next = value;
         tail = value;
     }
@@ -2765,6 +2994,43 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
 // generic recursion fills in every wrapper node normally once parsing
 // finishes, exactly as if a user had written the field-by-field chain
 // by hand.
+// Below the top level of parse_record_comparison()'s loop below: same
+// base+offset walk as build_record_arg_values() uses, but folding an
+// AND-chain of per-leaf equality comparisons instead of appending to a
+// node chain - recurses for a nested-record field, folding its own
+// (recursively built) AND-chain into the running result exactly like a
+// single leaf comparison gets folded in below.
+static ASTNode *build_record_compare(int record_type_idx, int is_local1, int base1, int levels_up1, int is_local2, int base2, int levels_up2) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    ASTNode *result = NULL;
+    int offset = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        ASTNode *piece;
+        if (f->is_record) {
+            piece = build_record_compare(f->record_type_idx, is_local1, base1 + offset, levels_up1, is_local2, base2 + offset, levels_up2);
+        } else {
+            ASTNode *left = record_field_read_node(is_local1, base1 + offset, levels_up1);
+            ASTNode *right = record_field_read_node(is_local2, base2 + offset, levels_up2);
+            piece = create_node(NODE_BINARY_OP);
+            piece->op = TOKEN_EQ;
+            piece->left = left;
+            piece->right = right;
+        }
+        if (!result) {
+            result = piece;
+        } else {
+            ASTNode *and_node = create_node(NODE_BINARY_OP);
+            and_node->op = TOKEN_AND;
+            and_node->left = result;
+            and_node->right = piece;
+            result = and_node;
+        }
+        offset += f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
+    }
+    return result;
+}
+
 static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, const int *field_idx1, int levels_up1, const char *rec_name) {
     TokenType op = token.type; // TOKEN_EQ or TOKEN_NEQ
     match(op);
@@ -2786,16 +3052,22 @@ static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, con
     RecordTypeDef *rt = &record_types[record_type_idx1];
     ASTNode *result = NULL;
     for (int i = 0; i < rt->field_count; i++) {
-        if (rt->fields[i].is_array) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_array) {
             compile_error(token.line, "Cannot compare record '%s': field '%s' is an array, and this compiler doesn't support whole-array comparison",
-                           rec_name, rt->fields[i].name);
+                           rec_name, f->name);
         }
-        ASTNode *left = record_field_read_node(is_local1, field_idx1[i], levels_up1);
-        ASTNode *right = record_field_read_node(is_local2, field_idx2[i], levels_up2);
-        ASTNode *eq = create_node(NODE_BINARY_OP);
-        eq->op = TOKEN_EQ;
-        eq->left = left;
-        eq->right = right;
+        ASTNode *eq;
+        if (f->is_record) {
+            eq = build_record_compare(f->record_type_idx, is_local1, field_idx1[i], levels_up1, is_local2, field_idx2[i], levels_up2);
+        } else {
+            ASTNode *left = record_field_read_node(is_local1, field_idx1[i], levels_up1);
+            ASTNode *right = record_field_read_node(is_local2, field_idx2[i], levels_up2);
+            eq = create_node(NODE_BINARY_OP);
+            eq->op = TOKEN_EQ;
+            eq->left = left;
+            eq->right = right;
+        }
         if (!result) {
             result = eq;
         } else {
@@ -3215,20 +3487,13 @@ static ASTNode *factor(void) {
                                   rec_name, rec_name, rec_name);
                 }
                 match(TOKEN_PERIOD);
-                if (token.type != TOKEN_IDENTIFIER) {
-                    compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-                }
-                int field_idx = find_record_field(rv_record_type_idx, token.text);
-                if (field_idx == -1) {
-                    compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-                }
-                match(TOKEN_IDENTIFIER);
+                int leaf_idx = resolve_record_field_leaf(rv_record_type_idx, rv_field_idx, rec_name);
                 if (rv_is_local) {
-                    ASTNode *node = record_field_read_node(1, rv_field_idx[field_idx], rv_levels_up);
+                    ASTNode *node = record_field_read_node(1, leaf_idx, rv_levels_up);
                     node->line = line;
                     return node;
                 }
-                return parse_global_symbol_reference(rv_field_idx[field_idx], line);
+                return parse_global_symbol_reference(leaf_idx, line);
             }
         }
 
@@ -3590,6 +3855,9 @@ static void parse_type_section(void) {
             strcpy(pt->name, type_name);
             if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
                 int record_idx = find_record_type(token.text);
+                if (record_type_has_nested_field(record_idx)) {
+                    compile_error(token.line, "Pointer target record type '%s' has a nested-record field - pointers to a record with a nested-record field aren't supported yet (see docs/LANGUAGE.md)", token.text);
+                }
                 match(TOKEN_IDENTIFIER);
                 pt->target_is_record = 1;
                 pt->target_record_type_idx = record_idx;
@@ -3766,7 +4034,28 @@ static void parse_type_section(void) {
                 match(TOKEN_OF);
                 is_array = 1;
             }
-            DataType field_type = parse_scalar_type();
+            int is_nested_record = 0;
+            int nested_record_type_idx = -1;
+            DataType field_type = TYPE_UNKNOWN;
+            if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+                // A nested-record field ('topleft: TPoint;'). Only
+                // already-declared record types are ever visible here
+                // (record_type_count isn't incremented until THIS type's
+                // own 'end;' below), so a field can never name its own
+                // type, directly or via a cycle through another type -
+                // no explicit self-reference/cycle check is needed.
+                if (is_array) {
+                    compile_error(token.line, "Array field element type must be scalar, not a record type - 'array of %s' isn't supported as a field type", token.text);
+                }
+                nested_record_type_idx = find_record_type(token.text);
+                if (record_type_has_array_field(nested_record_type_idx)) {
+                    compile_error(token.line, "'%s' can't be used as a nested field because it has an array field - a record type used as a nested field can't contain array fields (see docs/LANGUAGE.md)", token.text);
+                }
+                is_nested_record = 1;
+                match(TOKEN_IDENTIFIER);
+            } else {
+                field_type = parse_scalar_type();
+            }
             match(TOKEN_SEMI);
 
             for (int i = 0; i < fcount; i++) {
@@ -3778,13 +4067,15 @@ static void parse_type_section(void) {
                 }
                 RecordField *f = &rt->fields[rt->field_count];
                 strcpy(f->name, field_names[i]);
+                f->is_record = is_nested_record;
+                f->record_type_idx = nested_record_type_idx;
                 f->type = field_type;
                 f->is_array = is_array;
                 f->array_lower = lower;
                 f->array_upper = upper;
-                f->is_subrange = scalar_type_is_subrange;
-                f->subrange_lower = scalar_type_subrange_lower;
-                f->subrange_upper = scalar_type_subrange_upper;
+                f->is_subrange = is_nested_record ? 0 : scalar_type_is_subrange;
+                f->subrange_lower = is_nested_record ? 0 : scalar_type_subrange_lower;
+                f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
                 rt->field_count++;
             }
         }
@@ -3803,6 +4094,9 @@ static void parse_type_section(void) {
         int record_idx = find_record_type(pt->pending_target_name);
         if (record_idx == -1) {
             compile_error(pt->pending_line, "Pointer type '%s' targets undeclared type '%s'", pt->name, pt->pending_target_name);
+        }
+        if (record_type_has_nested_field(record_idx)) {
+            compile_error(pt->pending_line, "Pointer target record type '%s' has a nested-record field - pointers to a record with a nested-record field aren't supported yet (see docs/LANGUAGE.md)", pt->pending_target_name);
         }
         pt->target_is_record = 1;
         pt->target_record_type_idx = record_idx;
@@ -4315,7 +4609,7 @@ static void subroutine_declaration(int is_function_decl) {
                         param_subrange_upper[param_count] = g.subrange_upper;
                         param_is_record[param_count] = g.is_record;
                         param_record_type_idx[param_count] = g.record_type_idx;
-                        param_record_field_count[param_count] = g.is_record ? record_types[g.record_type_idx].field_count : 0;
+                        param_record_field_count[param_count] = g.is_record ? record_type_leaf_count(g.record_type_idx) : 0;
                         param_is_var[param_count] = is_var_group;
                         param_is_proc[param_count] = 0;
                         param_proc_is_function[param_count] = 0;
@@ -5607,6 +5901,31 @@ static ASTNode *parse_local_assignment(int local_idx, int levels_up) {
 // returning a multi-node chain directly would have its own internal
 // links silently overwritten - wrapping keeps the chain intact via the
 // compound's ->left while still presenting a single well-behaved node.
+// Below the top level of parse_whole_record_assignment()'s copy loop
+// below: same base+offset walk as build_record_arg_values()/
+// build_record_compare() use, but appending one field-to-field assign
+// node per LEAF field to the head/tail chain, recursing for a further
+// nested-record field. src and dest are guaranteed the same record
+// type throughout (checked once, at the top level, before any of this
+// runs), so a single recursive walk drives both sides' offsets in
+// lockstep.
+static void build_record_copy(int record_type_idx, int dest_is_local, int dest_base, int dest_levels_up, int src_is_local, int src_base, int src_levels_up, ASTNode **head, ASTNode **tail) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    int offset = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_record_copy(f->record_type_idx, dest_is_local, dest_base + offset, dest_levels_up, src_is_local, src_base + offset, src_levels_up, head, tail);
+        } else {
+            ASTNode *value = record_field_read_node(src_is_local, src_base + offset, src_levels_up);
+            ASTNode *assign = record_field_assign_node(dest_is_local, dest_base + offset, dest_levels_up, value);
+            if (!*head) *head = assign; else (*tail)->next = assign;
+            *tail = assign;
+        }
+        offset += f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
+    }
+}
+
 static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record_type_idx, const int *dest_field_idx, int dest_levels_up, const char *dest_name) {
     match(TOKEN_ASSIGN);
     if (token.type != TOKEN_IDENTIFIER) {
@@ -5681,6 +6000,11 @@ static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
     for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_record_copy(f->record_type_idx, dest_is_local, dest_field_idx[i], dest_levels_up, src_is_local, src_field_idx[i], src_levels_up, &head, &tail);
+            continue;
+        }
         ASTNode *value = record_field_read_node(src_is_local, src_field_idx[i], src_levels_up);
         ASTNode *assign = record_field_assign_node(dest_is_local, dest_field_idx[i], dest_levels_up, value);
         if (!head) head = assign; else tail->next = assign;
@@ -5964,18 +6288,11 @@ static ASTNode *statement(void) {
                 match(TOKEN_IDENTIFIER);
                 if (token.type == TOKEN_PERIOD) {
                     match(TOKEN_PERIOD);
-                    if (token.type != TOKEN_IDENTIFIER) {
-                        compile_error(token.line, "Expected a field name after '%s.'", rec_name);
-                    }
-                    int field_idx = find_record_field(rv_record_type_idx, token.text);
-                    if (field_idx == -1) {
-                        compile_error(token.line, "'%s' is not a field of '%s'", token.text, rec_name);
-                    }
-                    match(TOKEN_IDENTIFIER);
+                    int leaf_idx = resolve_record_field_leaf(rv_record_type_idx, rv_field_idx, rec_name);
                     if (rv_is_local) {
-                        return parse_local_assignment(rv_field_idx[field_idx], rv_levels_up);
+                        return parse_local_assignment(leaf_idx, rv_levels_up);
                     }
-                    return parse_global_assignment(rv_field_idx[field_idx]);
+                    return parse_global_assignment(leaf_idx);
                 }
                 // No '.field' - this is a whole-record assignment: 'p2 := p1;'
                 return parse_whole_record_assignment(rv_is_local, rv_record_type_idx, rv_field_idx, rv_levels_up, rec_name);
@@ -6552,6 +6869,14 @@ static ASTNode *statement(void) {
             }
             if (rv_is_local) {
                 compile_error(token.line, "'with' doesn't support a local record variable or parameter yet - access its fields directly (e.g. '%s.field')", token.text);
+            }
+            if (record_type_has_nested_field(rv_record_type_idx)) {
+                // find_with_field() binds a bare name straight to
+                // field_sym_idx[field_idx] as if it were always a leaf -
+                // a nested-record field's base isn't a valid scalar/
+                // array reference on its own, so 'with' can't accept a
+                // record type that has one yet.
+                compile_error(token.line, "'with' doesn't support a record with a nested-record field yet - access its fields directly (e.g. '%s.field.subfield')", token.text);
             }
         }
         int rv_idx = find_record_var(token.text);

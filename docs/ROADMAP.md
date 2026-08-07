@@ -320,7 +320,33 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       rejected, no `static` record locals, and `with` still only accepts
       a global record variable — see
       [docs/LANGUAGE.md](LANGUAGE.md#record-parameters-and-local-records).
-- [ ] Nested records
+- [x] Nested records — a field's type can now be another already-
+      declared record type, chaining `.field.field...` as deep as
+      needed. Stays pure parse-time flattening, recursively: a nested
+      field's own fields become more hidden globals/frame slots, mangled
+      `outer__inner__leaf`, so no new opcodes and no changes to
+      `type_checker.c`/`optimizer.c`/`ast_printer.c`/`codegen.c`/`vm.c`
+      were needed - every existing per-variable mechanism (DCE, `-v`
+      dump, codegen) already covers a nested leaf the same way it covers
+      a plain field. `RecordVarDef.field_sym_idx[i]`/
+      `LocalRecordVarDef.field_local_idx[i]` were reinterpreted as "the
+      first leaf's index" rather than "the one symbol/local" - unchanged
+      value for a scalar/array field, and exactly the base a nested
+      field's own leaves are laid out contiguously from (a new
+      `record_type_leaf_count()` walks that layout to resolve a `.field`
+      chain or copy/compare/pass a nested field's leaves one by one).
+      Self-reference/cycles need no explicit check: a record type can
+      only nest an already-fully-declared type, so a field can never
+      name its own (or a mutually recursive) type. Known gaps, each an
+      explicit compile-time rejection rather than a silent limitation: a
+      record type used as a nested field can't itself have an array
+      field (transitively, by the same declaration-order argument as
+      self-reference); a record type with a nested-record field can't be
+      an array's element type, a pointer's target type, or a `with`
+      target - each of those addresses a record by a fixed per-field
+      slot/offset that doesn't generalize to "N slots instead of 1"
+      without a larger rethink - see
+      [docs/LANGUAGE.md](LANGUAGE.md#nested-records).
 - [ ] Variant records (`case tag: T of ...` inside a `record`) — a
       record's alternate, overlapping field layouts selected by a tag field
 - [x] 2D array parameters and local 2D arrays (1D already supports both)

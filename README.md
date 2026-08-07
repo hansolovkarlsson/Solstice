@@ -318,6 +318,13 @@ uses, needing zero `.bin` format changes and no closure/capture
 machinery), and the parameter's own inline signature is scalar-only
 (by-value/`var`) for now (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#functionalprocedural-parameters)).
+Also working: nested records (a field's type can be another
+already-declared record type, `.field.field...` chaining as deep as
+needed) — stays pure parse-time flattening, recursively, so no new
+opcodes; a record type used as a nested field can't itself have an array
+field, and a record type with a nested-record field can't be an array's
+element type, a pointer's target type, or a `with` target (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#nested-records)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation
@@ -329,5 +336,5 @@ any label the macro body defines itself — see
 source: `(* ... *)` as an alternate comment style alongside `{ }` and
 `//` (see [docs/LANGUAGE.md](docs/LANGUAGE.md#comments)).
 
-Not yet implemented: dynamic arrays (so no array `copy`/slicing), nested
+Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

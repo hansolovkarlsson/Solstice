@@ -1560,12 +1560,17 @@ typedef struct {
                                     // param_is_record is set - how many
                                     // flattened argument nodes this ONE
                                     // syntactic parameter consumes at a
-                                    // call site. type_checker.c uses
-                                    // this to skip over them (already
-                                    // correctly typed by construction)
-                                    // without needing any visibility
-                                    // into parser.c's record-type
-                                    // tables.
+                                    // call site. This is the record
+                                    // type's RECURSIVELY FLATTENED leaf
+                                    // count (record_type_leaf_count() in
+                                    // parser.c), not its top-level
+                                    // declared field count, whenever a
+                                    // nested-record field is present.
+                                    // type_checker.c uses this to skip
+                                    // over them (already correctly typed
+                                    // by construction) without needing
+                                    // any visibility into parser.c's
+                                    // record-type tables.
     int param_is_var[MAX_PARAMS];  // 1 if this parameter is declared
                                     // 'var name: type' - general by-
                                     // reference passing for a SCALAR
