@@ -444,6 +444,20 @@ static int find_pointer_type(const char *name) {
     return -1;
 }
 
+// True right when a CLASS-typed expression ('t' is a class's own
+// implicit pointer type - see PointerTypeDef.is_class) is immediately
+// followed by '.field' with no explicit '^' - the Delphi/Java-style
+// implicit dereference reference-semantics classes use (see
+// docs/LANGUAGE.md#classes and notes/classes-and-instances-scoping.md),
+// as opposed to a plain 'type PFoo = ^Target;' pointer, which always
+// needs an explicit 'p^.field'. Every call site that already checks
+// "is_pointer_type(t) && token.type == TOKEN_CARET" to decide whether a
+// '^'-dereference chain follows also checks this, to decide whether an
+// IMPLICIT one follows instead.
+static int class_dot_deref_pending(DataType t) {
+    return is_pointer_type(t) && pointer_types[t - TYPE_POINTER_BASE].is_class && token.type == TOKEN_PERIOD;
+}
+
 static int find_record_type(const char *name) {
     for (int i = 0; i < record_type_count; i++) {
         if (strcmp(record_types[i].name, name) == 0) return i;
@@ -2831,7 +2845,10 @@ static HeapDerefStep resolve_heap_deref_step(DataType base_type) {
         }
         int field_idx = find_record_field(pt->target_record_type_idx, token.text);
         if (field_idx == -1) {
-            compile_error(token.line, "'%s' is not a field of '%s'", token.text, record_types[pt->target_record_type_idx].name);
+            // A class's own name (pt->name), not its hidden backing
+            // record's internal "$classN" name - see
+            // parse_class_declaration()'s comment on that mangling.
+            compile_error(token.line, "'%s' is not a field of '%s'", token.text, pt->is_class ? pt->name : record_types[pt->target_record_type_idx].name);
         }
         match(TOKEN_IDENTIFIER);
         RecordField *f = &record_types[pt->target_record_type_idx].fields[field_idx];
@@ -2865,19 +2882,24 @@ static ASTNode *make_heap_field_access(ASTNode *base, HeapDerefStep step, int li
 // Parses a '^' dereference chain following an already-built pointer-
 // typed expression 'base' ('p^', 'p^.field', or a longer chain like
 // 'p^.next^.data') for use as an r-value - the caller has already
-// confirmed token.type == TOKEN_CARET. Loops so an arbitrary-depth chain
-// is handled uniformly: each '^' step wraps the previous one in a
-// NODE_HEAP_FIELD_ACCESS, which becomes 'base' for the next '^' if the
-// field just read is itself pointer-typed and another '^' follows -
-// re-validated via is_pointer_type() on every iteration (not just the
-// first), so 'x^^' where x^ isn't itself a pointer is a clean Compile
-// Error, not an out-of-bounds pointer_types[] read.
+// confirmed token.type == TOKEN_CARET OR class_dot_deref_pending(base's
+// type) (a class variable's IMPLICIT '.field', no '^' - see that
+// function's comment). Loops so an arbitrary-depth chain is handled
+// uniformly: each step wraps the previous one in a NODE_HEAP_FIELD_ACCESS,
+// which becomes 'base' for the next step if the field just read is
+// itself pointer-typed and another '^' follows - re-validated via
+// is_pointer_type() on every iteration (not just the first), so 'x^^'
+// where x^ isn't itself a pointer is a clean Compile Error, not an
+// out-of-bounds pointer_types[] read. A class field is always scalar in
+// v1 (see docs/LANGUAGE.md#classes), so an implicit-dot step can never
+// itself be followed by another implicit-dot step - only an explicit
+// '^' can ever continue a chain past the first step.
 static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
-    while (token.type == TOKEN_CARET) {
+    while (token.type == TOKEN_CARET || class_dot_deref_pending(base->expression_type)) {
         if (!is_pointer_type(base->expression_type)) {
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
-        match(TOKEN_CARET);
+        if (token.type == TOKEN_CARET) match(TOKEN_CARET);
         HeapDerefStep step = resolve_heap_deref_step(base->expression_type);
         base = make_heap_field_access(base, step, line);
     }
@@ -2885,18 +2907,19 @@ static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
 }
 
 // Same chain-walking as parse_heap_deref_read() above, but stops right
-// before consuming the FINAL '^' - a write needs to build a
+// before consuming the FINAL step - a write needs to build a
 // NODE_HEAP_FIELD_ASSIGN for that last step (base + field_offset + value
 // expression), not another NODE_HEAP_FIELD_ACCESS. Assumes the caller has
-// already confirmed token.type == TOKEN_CARET. Returns the base
-// expression the LAST step reads through, and that step's own
-// HeapDerefStep (field offset/type/subrange info) via *out_step.
+// already confirmed the same entry condition parse_heap_deref_read()
+// does. Returns the base expression the LAST step reads through, and
+// that step's own HeapDerefStep (field offset/type/subrange info) via
+// *out_step.
 static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *out_step) {
     for (;;) {
         if (!is_pointer_type(base->expression_type)) {
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
-        match(TOKEN_CARET);
+        if (token.type == TOKEN_CARET) match(TOKEN_CARET);
         HeapDerefStep step = resolve_heap_deref_step(base->expression_type);
         if (token.type == TOKEN_CARET) {
             base = make_heap_field_access(base, step, line);
@@ -3003,7 +3026,7 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
     node->line = line;
     node->data.var_idx = idx;
     node->expression_type = sym_table[idx].type;
-    if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
+    if (is_pointer_type(node->expression_type) && (token.type == TOKEN_CARET || class_dot_deref_pending(node->expression_type))) {
         return parse_heap_deref_read(node, line);
     }
     return node;
@@ -3548,7 +3571,7 @@ static ASTNode *factor(void) {
                 node->data.var_idx = local_idx;
                 node->op = (TokenType)levels_up;
                 node->expression_type = ls->type;
-                if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
+                if (is_pointer_type(node->expression_type) && (token.type == TOKEN_CARET || class_dot_deref_pending(node->expression_type))) {
                     return parse_heap_deref_read(node, line);
                 }
                 return node;
@@ -3648,7 +3671,7 @@ static ASTNode *factor(void) {
             node->data.var_idx = local_idx;
             node->op = (TokenType)levels_up;
             node->expression_type = ls->type;
-            if (is_pointer_type(node->expression_type) && token.type == TOKEN_CARET) {
+            if (is_pointer_type(node->expression_type) && (token.type == TOKEN_CARET || class_dot_deref_pending(node->expression_type))) {
                 return parse_heap_deref_read(node, line);
             }
             return node;
@@ -6111,7 +6134,7 @@ static ASTNode *parse_global_assignment(int idx) {
         stmt->right = expression(); // new character
         return stmt;
     }
-    if (is_pointer_type(sym_table[idx].type) && token.type == TOKEN_CARET) {
+    if (is_pointer_type(sym_table[idx].type) && (token.type == TOKEN_CARET || class_dot_deref_pending(sym_table[idx].type))) {
         int line = token.line;
         ASTNode *base = create_node(NODE_VARIABLE);
         base->line = line;
@@ -6594,7 +6617,7 @@ static ASTNode *statement(void) {
             }
             if (ls->is_var_param) {
                 match(TOKEN_IDENTIFIER);
-                if (is_pointer_type(ls->type) && token.type == TOKEN_CARET) {
+                if (is_pointer_type(ls->type) && (token.type == TOKEN_CARET || class_dot_deref_pending(ls->type))) {
                     int line = token.line;
                     ASTNode *base = create_node(NODE_VAR_PARAM_READ);
                     base->line = line;
@@ -6726,7 +6749,7 @@ static ASTNode *statement(void) {
                 stmt->right = expression(); // new character
                 return stmt;
             }
-            if (is_pointer_type(ls->type) && token.type == TOKEN_CARET) {
+            if (is_pointer_type(ls->type) && (token.type == TOKEN_CARET || class_dot_deref_pending(ls->type))) {
                 int line = token.line;
                 ASTNode *base = create_node(NODE_LOCAL_VAR);
                 base->line = line;

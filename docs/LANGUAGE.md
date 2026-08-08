@@ -1959,8 +1959,9 @@ you're done with a block, the same discipline `malloc`/`free` demands.
 
 ## Classes
 
-**Work in progress** — only declaration parsing exists so far (step 1 of
-the "Classes and instances" items in `docs/ROADMAP.md`'s Phase 2). See
+**Work in progress** — declaration parsing, `new`/`dispose`, and field
+read/write all work (steps 1-3 of the "Classes and instances" items in
+`docs/ROADMAP.md`'s Phase 2); methods aren't callable yet. See
 `notes/classes-and-instances-scoping.md` for the full design rationale.
 
 ```pascal
@@ -1974,6 +1975,8 @@ var
     c: TCircle;
 begin
     new(c);
+    c.radius := 2.0;
+    writeln('radius: ', c.radius);
     dispose(c);
 end.
 ```
@@ -1987,14 +1990,22 @@ is — scalar parameters only, by-value or `var`, no return-type/parameter
 subranges), then registers `TFoo` itself directly as an implicit pointer
 type targeting those fields. This means **every existing pointer
 mechanism already works on a class variable unmodified** — `var c:
-TCircle;`, passing `c` as an ordinary parameter, and `new(c)`/`dispose(c)`
-all work today, exactly as they would for a hand-written
-`type PCircle = ^TCircleRecord;`.
+TCircle;`, passing `c` as an ordinary or `var` parameter, and
+`new(c)`/`dispose(c)` all work today, exactly as they would for a
+hand-written `type PCircle = ^TCircleRecord;`.
+
+`c.field` compiles exactly like `p^.field` already does for a plain
+pointer — the same field-offset resolution and the same
+`OP_LOAD_HEAP_FIELD`/`OP_STORE_HEAP_FIELD` opcodes — just without
+requiring the explicit `^` a plain pointer still needs. This is real
+dereferencing, not sugar over a copy: `c.radius := 2.0;` writes through
+`c`'s heap-allocated instance, `Bump(c)` (a `var TCircle` parameter)
+mutates the caller's own instance, and dereferencing a `nil` or never-`new`'d
+class variable is the same clean `VM Runtime Error` a plain pointer's
+nil-dereference already is.
 
 **Not implemented yet** (later build steps):
 
-- **`c.field` read/write** — a class's fields aren't accessible at all
-  yet; declaring one is all this step supports.
 - **`c.Method(args)` calls** — method headers are parsed and stored, but
   there's no call syntax, no method body, and no implicit `self`
   parameter yet.

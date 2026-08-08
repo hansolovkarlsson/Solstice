@@ -787,9 +787,30 @@ primitives instead of each reinventing them.
       predicted in step 1 (a class variable is an ordinary pointer
       variable under the hood). See
       `examples/test/class/test_class_new_dispose.pas`.
-- [ ] Classes and instances, step 3/5: `f.field` read/write, routed
-      through the existing heap-dereference codegen (compiles like
-      `f^.field` already does)
+- [x] Classes and instances, step 3/5: `f.field` read/write, routed
+      through the existing heap-dereference codegen - `f.field` on a
+      class variable now compiles exactly like `f^.field` already does
+      for a plain pointer, just without requiring the explicit `^`.
+      Mechanically: `resolve_heap_deref_step()` (the function that
+      resolves one `^` step) already expected `.field` right after the
+      `^` it consumed, so a new `class_dot_deref_pending()` predicate
+      (true when the base is a class and the next token is `.`, no `^`
+      needed) was added alongside the existing `is_pointer_type(...) &&
+      token.type == TOKEN_CARET` guard at every one of the 6 call sites
+      that already handle a global/local/`var`-parameter read or write
+      through a pointer - no new call sites, no codegen/VM changes.
+      Since a class's fields are scalar-only (step 1's scoping
+      decision), a class-dot step can never itself continue into another
+      implicit-dot or `^` step, so no chain-depth logic was needed
+      beyond what already existed for `p^.next^.data`-style chains.
+      Along the way, fixed a rough edge this step's own tests surfaced:
+      a "field not found" error on a class (`c.typo`) was naming the
+      class's internal hidden backing-record ("$class0") instead of the
+      class itself - `resolve_heap_deref_step()` now uses `pt->name`
+      for a class specifically, matching the fix already noted as a
+      known gap when step 1 landed. See
+      `examples/test/class/test_class_field_access.pas`,
+      `test_class_field_local_and_var.pas`.
 - [ ] Classes and instances, step 4/5: method bodies — mangled top-level
       procedure names (`TFoo__Method`, the same trick record fields/
       static locals/nested-record leaves already use, needed because
