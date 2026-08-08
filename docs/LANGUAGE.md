@@ -1960,11 +1960,11 @@ you're done with a block, the same discipline `malloc`/`free` demands.
 ## Classes
 
 **v1 complete** — declaration parsing, `new`/`dispose`, field
-read/write, method bodies, and `c.Method(args)` call syntax all work
-(all 5 "Classes and instances" build steps in `docs/ROADMAP.md`'s
-Phase 2). Early/static binding only, as scoped — see "Not implemented
-yet" below and `notes/classes-and-instances-scoping.md` for the full
-design rationale.
+read/write, method bodies, `c.Method(args)` call syntax (all 5 "Classes
+and instances" build steps in `docs/ROADMAP.md`'s Phase 2), and single
+inheritance all work. Early/static binding only, as scoped — see "Not
+implemented yet" below and `notes/classes-and-instances-scoping.md` for
+the full design rationale.
 
 ```pascal
 type
@@ -2063,6 +2063,83 @@ compile-time error, same message an ordinary procedure-used-as-a-value
 already gets. A method call's result can't itself be chained into a
 further `.field`/`^` step yet (a known gap, below).
 
+### Inheritance
+
+```pascal
+type
+    TShape = class
+        name: integer;
+        function Area: real;
+    end;
+    TCircle = class(TShape)
+        radius: real;
+        function Area: real;   { overrides TShape's own }
+    end;
+var
+    c: TCircle;
+    s: TShape;
+
+function TShape.Area;
+begin
+    Area := 0.0;
+end;
+
+function TCircle.Area;
+begin
+    Area := 3.14159 * self.radius * self.radius;
+end;
+
+begin
+    new(c);
+    c.name := 1;             { an inherited field }
+    c.radius := 2.0;
+    writeln(c.Area);         { TCircle's own override }
+
+    s := c;                  { upcast: a subclass instance assigned to
+                                an ancestor-typed variable }
+    writeln(s.name);
+    dispose(c);
+end.
+```
+
+`class TCircle(TShape) ... end;` declares `TCircle` as a subclass of
+`TShape`. Inheritance is fully **flattened at declaration time**, not a
+live relationship resolved later:
+
+- Every field `TShape` has (and, transitively, everything **it**
+  inherits) is copied into `TCircle`'s own field list, in order, before
+  `TCircle`'s own new fields are added — a descendant's fields always
+  start with an exact copy of its ancestor's own layout. A field name
+  can never be overridden, only added; colliding with an inherited name
+  is the same duplicate-field error as colliding with any other field.
+- Every method header `TShape` has is likewise copied into `TCircle`'s
+  own method list. `TCircle` can then either leave it alone (a plain
+  **inherited** method — calling it through a `TCircle` instance
+  dispatches to `TShape`'s own implementation, unchanged) or redeclare
+  it with the identical signature inside its own `class ... end;` body
+  (an **override** — a mismatched signature, or overriding the same
+  method twice, is a compile-time error). A method's body can only be
+  given for a header the class declares itself — writing
+  `function TCircle.Area;` without first redeclaring `Area` in
+  `TCircle`'s own header list (to override it) is rejected, even though
+  `TCircle` inherits `Area` from `TShape`.
+- **A subclass instance can be used anywhere its ancestor is expected**
+  — assigned to an ancestor-typed variable, passed as an ordinary
+  by-value parameter, compared with `=`/`<>` against an ancestor-typed
+  value, or (this is what makes calling an *inherited* method work at
+  all) passed as `self` to a method whose own declared type is an
+  ancestor class. The one exception: a `var` parameter never widens for
+  a class upcast either, matching this compiler's existing "a `var`
+  argument is never implicitly widened" rule for every other type.
+- Both inherited-vs-overridden method dispatch and the upcast
+  compatibility above are resolved **statically**, from the accessing
+  expression's own declared type at compile time — there's no vtable
+  and no runtime type tag, consistent with early/static binding only
+  (see "Not implemented yet" below).
+- Multiple levels of inheritance work the same way, recursively — each
+  class's own field/method lists are already fully flattened by the
+  time a further subclass inherits from it.
+
 **Not implemented yet:**
 
 - **Unqualified field access inside a method body** (`radius := r;`
@@ -2079,9 +2156,10 @@ further `.field`/`^` step yet (a known gap, below).
 - **Array or nested-record (composition) fields** — a class's fields
   must be scalar for now, the same restriction a local/parameter record
   has today.
-- **Inheritance, virtual/dynamic dispatch, constructors, and visibility
-  (`private`/`public`)** — none of these exist even as a plan yet beyond
-  the scoping note; static/early binding only, as scoped.
+- **Virtual/dynamic dispatch, constructors, multiple inheritance, and
+  visibility (`private`/`public`)** — none of these exist even as a plan
+  yet beyond the scoping note; single inheritance with early/static
+  binding only, as scoped.
 
 ## Procedures
 

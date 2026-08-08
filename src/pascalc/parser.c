@@ -406,6 +406,29 @@ typedef struct {
                                // declaration needs them to register as
                                // named locals (see
                                // parse_class_method_body()).
+    char mangled_name[MAX_NAME]; // unused by a functional/procedural
+                               // parameter (also unused for the DECLARING
+                               // class - always 'DeclaringClass__Name');
+                               // for a class method, this is the mangled
+                               // proc_table[] name that ACTUALLY
+                               // implements it - which, for an INHERITED,
+                               // not-overridden method, is the ANCESTOR
+                               // class's own mangled name, not the
+                               // accessing class's (see
+                               // parse_class_declaration()'s inheritance
+                               // comment). Computed once, at whichever
+                               // class's own 'class ... end;' first
+                               // declares or overrides this method, and
+                               // copied unchanged into every descendant
+                               // that inherits it without overriding.
+    int is_inherited;          // unused by a functional/procedural
+                               // parameter; for a class method, 1 if
+                               // this entry was copied from a parent
+                               // class and NOT subsequently overridden
+                               // by the class it currently lives on -
+                               // parse_class_method_body() rejects
+                               // giving a body to a purely-inherited
+                               // entry (redeclare it to override first).
 } ProcParamHeader;
 
 #define MAX_POINTER_DECLS MAX_POINTER_TYPES
@@ -445,6 +468,25 @@ typedef struct {
     ProcParamHeader methods[MAX_CLASS_METHODS]; // only meaningful if is_class -
                                   // headers only; see the comment above
                                   // MAX_CLASS_METHODS
+    int parent_class_ptr_idx;    // only meaningful if is_class - this
+                                  // class's OWN parent's pointer_types[]
+                                  // index ('class TFoo(TBase) ... end;'),
+                                  // or -1 for no parent. Inheritance is
+                                  // fully FLATTENED at declaration time
+                                  // (see parse_class_declaration()): a
+                                  // subclass's hidden record already
+                                  // contains a copy of every ancestor
+                                  // field, in the same order/offsets, and
+                                  // 'methods' already contains a copy of
+                                  // every ancestor method header (see
+                                  // ProcParamHeader.mangled_name/
+                                  // is_inherited) - so nothing downstream
+                                  // ever needs to walk this chain at
+                                  // runtime, or even at compile time,
+                                  // EXCEPT class_type_is_subtype_of()
+                                  // (type_checker.c's assignment/
+                                  // parameter-passing compatibility
+                                  // check - see docs/LANGUAGE.md#classes).
 } PointerTypeDef;
 static PointerTypeDef pointer_types[MAX_POINTER_DECLS];
 static int pointer_type_count = 0;
@@ -454,6 +496,30 @@ static int find_pointer_type(const char *name) {
         if (strcmp(pointer_types[i].name, name) == 0) return i;
     }
     return -1;
+}
+
+// Exported (see parser.h) for type_checker.c's assignment/parameter-
+// passing compatibility check (try_widen_for_assignment()): true if
+// 'sub' is 'target' itself, or a (transitively) inherited subclass of
+// it - both must be class pointer types (see PointerTypeDef.is_class);
+// anything else, including two unrelated plain 'type PFoo = ^Target;'
+// pointer types, returns 0. pointer_types[] itself stays parser.c-local
+// (see its own comment) - this is the one narrow query exposed instead
+// of the whole array/struct. A subclass instance's pointer value is
+// representationally identical to its ancestor's (same int, and the
+// ancestor's own fields are always a prefix of the subclass's own
+// layout - see parse_class_declaration()'s inheritance comment), so
+// nothing needs converting when this returns true; the caller can just
+// accept the value as-is.
+int class_type_is_subtype_of(DataType sub, DataType target) {
+    if (!is_pointer_type(sub) || !is_pointer_type(target)) return 0;
+    int idx = sub - TYPE_POINTER_BASE;
+    int target_idx = target - TYPE_POINTER_BASE;
+    while (idx != -1) {
+        if (idx == target_idx) return 1;
+        idx = pointer_types[idx].is_class ? pointer_types[idx].parent_class_ptr_idx : -1;
+    }
+    return 0;
 }
 
 // True right when a CLASS-typed expression ('t' is a class's own
@@ -2039,6 +2105,13 @@ static NameGroup parse_name_group(void) {
     g.is_array = 0;
     g.is_2d = 0;
     g.is_nd = 0;
+    g.nd_dims = 0; // defensive reset - only the is_nd (3+D array) branch
+                   // below ever sets this otherwise, but subroutine_
+                   // declaration()'s param-copy loop reads g.nd_dims
+                   // UNCONDITIONALLY (not gated on is_nd), so it must
+                   // never be left as uninitialized stack garbage for a
+                   // scalar/1D/2D parameter - a real, pre-existing bug
+                   // this surfaced, not specific to any one feature.
     g.is_record = 0;
     g.record_type_idx = 0;
     g.is_array_of_record = 0;
@@ -2938,9 +3011,12 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base) {
             }
             match(TOKEN_IDENTIFIER);
             ProcParamHeader *h = &pt->methods[method_idx];
-            char mangled_name[MAX_NAME];
-            snprintf(mangled_name, MAX_NAME, "%s__%s", pt->name, name);
-            int mangled_idx = find_proc(mangled_name);
+            // h->mangled_name - NOT "pt->name__name" - is what actually
+            // implements this: for an inherited, not-overridden method
+            // that's the ANCESTOR class's own mangled name, copied
+            // through unchanged by parse_class_declaration(); for an
+            // overridden or newly-declared one, it's pt's own.
+            int mangled_idx = find_proc(h->mangled_name);
             if (mangled_idx == -1) {
                 compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, name);
             }
@@ -4185,42 +4261,103 @@ static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx) {
     }
 }
 
-// Parses a class type declaration: 'class <fields> <method headers>
-// end;' - already past 'type TFoo =', with token positioned at the
-// 'class' keyword itself. Registers TWO things, per the design decision
-// in notes/classes-and-instances-scoping.md (reference semantics): a
-// hidden RecordTypeDef for the fields, and class_name itself as
-// pointer_types[]'s own entry (is_class = 1, target_is_record = 1,
-// targeting that hidden record type) - so every existing pointer-typed
-// variable/parameter/field/new/dispose mechanism already works for a
-// class variable completely unmodified (see PointerTypeDef.name's
-// comment). The hidden record type is deliberately named "$classN" -
-// '$' can't start (or appear in) a legal Pascal identifier, so this can
-// never collide with a user-written name, and deliberately ISN'T
-// class_name itself, so find_record_type(class_name) still returns -1
-// and a class can't be accidentally (mis)used as if it were an ordinary
-// nested-record field naming it directly (composition isn't supported
-// yet - see the scoping note). Known small rough edge: a field-list
-// error inside a class (duplicate/too-many field name) will name this
-// internal "$classN" record, not the class itself, since
+// True if two class method headers have the same signature (is_function/
+// return_type/param_count/param_types[i]/param_is_var[i]) - used to
+// require an override to actually be signature-compatible with what it
+// overrides (see parse_class_declaration()'s inheritance handling).
+// Deliberately ignores .name/.param_names[]/.mangled_name/.is_inherited -
+// none of those are part of a signature.
+static int proc_param_headers_match(ProcParamHeader *a, ProcParamHeader *b) {
+    if (a->is_function != b->is_function) return 0;
+    if (a->is_function && a->return_type != b->return_type) return 0;
+    if (a->param_count != b->param_count) return 0;
+    for (int i = 0; i < a->param_count; i++) {
+        if (a->param_types[i] != b->param_types[i]) return 0;
+        if (a->param_is_var[i] != b->param_is_var[i]) return 0;
+    }
+    return 1;
+}
+
+// Parses a class type declaration: 'class [(ParentName)] <fields>
+// <method headers> end;' - already past 'type TFoo =', with token
+// positioned at the 'class' keyword itself. Registers TWO things, per
+// the design decision in notes/classes-and-instances-scoping.md
+// (reference semantics): a hidden RecordTypeDef for the fields, and
+// class_name itself as pointer_types[]'s own entry (is_class = 1,
+// target_is_record = 1, targeting that hidden record type) - so every
+// existing pointer-typed variable/parameter/field/new/dispose mechanism
+// already works for a class variable completely unmodified (see
+// PointerTypeDef.name's comment). The hidden record type is deliberately
+// named "$classN" - '$' can't start (or appear in) a legal Pascal
+// identifier, so this can never collide with a user-written name, and
+// deliberately ISN'T class_name itself, so find_record_type(class_name)
+// still returns -1 and a class can't be accidentally (mis)used as if it
+// were an ordinary nested-record field naming it directly (composition
+// isn't supported yet - see the scoping note). Known small rough edge:
+// a field-list error inside a class (duplicate/too-many field name)
+// will name this internal "$classN" record, not the class itself, since
 // parse_record_field_group()'s own error messages reference rt->name
 // directly - harmless (still a clean, correct compile error) but worth
 // polishing later.
 //
-// v1 scope (step 1 of the classes-and-instances roadmap items): fields
-// (scalar only - no array or nested-record fields yet, a known gap) and
-// method HEADERS only, parsed via the exact same parse_proc_param_header()
-// functional/procedural parameters already use, and stored on the
-// class's PointerTypeDef entry for a later build step to consume. Since
-// class_name isn't registered as a pointer type until this whole
-// declaration finishes, a method can't reference its own class in its
-// signature yet (e.g. a linked-list-style 'SetNext(n: TFoo)') - the
-// same declare-before-use restriction every other type in this compiler
-// already has. There is no '.field'/'.Method(...)' access yet (steps
-// 3/5) and no method body/dispatch machinery yet (step 4) - a class
-// declaration here compiles to nothing runtime-visible on its own.
+// Inheritance ('class TCircle(TShape) ... end;') is fully FLATTENED
+// here, at declaration time - not resolved later, and not tracked as a
+// live relationship anywhere except parent_class_ptr_idx (kept only for
+// class_type_is_subtype_of()'s assignment/parameter-passing
+// compatibility check, in type_checker.c):
+//   - EVERY ancestor field is copied into this class's OWN rt->fields[],
+//     in order, BEFORE this class's own fields are parsed - so a
+//     subclass's fields always start with an exact copy of its parent's
+//     own layout (which itself already includes ITS parent's, and so
+//     on), keeping every ancestor's own field offsets valid against a
+//     descendant's larger heap block. A field name colliding with an
+//     inherited one is rejected by the ordinary, unchanged
+//     find_record_field() duplicate check inside parse_record_field_group() -
+//     fields can never be overridden, only added.
+//   - EVERY ancestor method header is likewise copied into this class's
+//     OWN pt->methods[], marked is_inherited = 1. If this class then
+//     declares a header with the SAME name, that's an OVERRIDE: it must
+//     have the identical signature (proc_param_headers_match()), and it
+//     REPLACES the inherited entry in place (own mangled_name,
+//     is_inherited = 0) rather than being rejected as a duplicate -
+//     tracked via inherited_method_count, the boundary between "copied
+//     from the parent" and "declared fresh by this class" entries.
+//   - h.mangled_name is stored on EVERY header (not just recomputed at
+//     each call site) precisely so a call through a subclass reaches
+//     the right implementation: resolve_heap_deref_step() just calls
+//     find_proc(h->mangled_name) - for an inherited, not-overridden
+//     method that's the ANCESTOR's own mangled name, copied through
+//     unchanged; for an overridden or newly-declared one, it's this
+//     class's own.
+//
+// v1 scope: fields (scalar only - no array or nested-record fields yet,
+// a known gap) and method HEADERS only, parsed via the exact same
+// parse_proc_param_header() functional/procedural parameters already
+// use, and stored on the class's PointerTypeDef entry for
+// parse_class_method_body() to consume later. Since class_name isn't
+// registered as a pointer type until this whole declaration finishes, a
+// method can't reference its own class in its signature yet (e.g. a
+// linked-list-style 'SetNext(n: TFoo)') - the same declare-before-use
+// restriction every other type in this compiler already has (a parent
+// class, being a SEPARATE, already-fully-declared type, has no such
+// restriction).
 static void parse_class_declaration(const char *class_name, int line) {
     match(TOKEN_CLASS);
+
+    int parent_ptr_idx = -1;
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a parent class name after '('");
+        }
+        parent_ptr_idx = find_pointer_type(token.text);
+        if (parent_ptr_idx == -1 || !pointer_types[parent_ptr_idx].is_class) {
+            compile_error(token.line, "'%s' is not a declared class", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_RPAREN);
+    }
+    PointerTypeDef *parent = parent_ptr_idx == -1 ? NULL : &pointer_types[parent_ptr_idx];
 
     if (record_type_count >= MAX_RECORD_TYPES) {
         compile_error(line, "Too many record types (limit is %d)", MAX_RECORD_TYPES);
@@ -4229,6 +4366,21 @@ static void parse_class_declaration(const char *class_name, int line) {
     RecordTypeDef *rt = &record_types[rt_idx];
     snprintf(rt->name, MAX_NAME, "$class%d", rt_idx);
     rt->field_count = 0;
+
+    if (parent != NULL) {
+        // No overflow check needed here: parent_rt->field_count is
+        // already <= MAX_RECORD_FIELDS by construction (checked when
+        // the parent itself was declared) - if copying it plus this
+        // class's own fields overflows, parse_record_field_group()'s
+        // own existing MAX_RECORD_FIELDS check (using the running
+        // rt->field_count, already seeded with the inherited baseline
+        // by the time it runs) catches it correctly.
+        RecordTypeDef *parent_rt = &record_types[parent->target_record_type_idx];
+        for (int i = 0; i < parent_rt->field_count; i++) {
+            rt->fields[rt->field_count] = parent_rt->fields[i];
+            rt->field_count++;
+        }
+    }
 
     while (token.type == TOKEN_IDENTIFIER) {
         int field_start = rt->field_count;
@@ -4250,9 +4402,30 @@ static void parse_class_declaration(const char *class_name, int line) {
     pt->is_class = 1;
     pt->target_is_record = 1;
     pt->target_record_type_idx = rt_idx;
-    pt->target_elem_size = rt->field_count;
     pt->is_pending = 0;
+    pt->parent_class_ptr_idx = parent_ptr_idx;
     pt->method_count = 0;
+
+    if (parent != NULL) {
+        // Same reasoning as the field copy above: parent->method_count
+        // is already <= MAX_CLASS_METHODS by construction, and the
+        // method-parsing loop below's own existing MAX_CLASS_METHODS
+        // check (against the running, inherited-seeded pt->method_count)
+        // catches any overflow from adding this class's own methods.
+        for (int i = 0; i < parent->method_count; i++) {
+            pt->methods[pt->method_count] = parent->methods[i];
+            pt->methods[pt->method_count].is_inherited = 1;
+            pt->method_count++;
+        }
+    }
+    int inherited_method_count = pt->method_count;
+    // Tracks which INHERITED slots this class has already overridden -
+    // needed so overriding the SAME inherited method twice in one class
+    // body is still caught as a duplicate, not silently accepted as
+    // "overriding the override" (existing_idx alone can't tell those
+    // apart, since replacing an inherited entry in place doesn't move
+    // it past inherited_method_count).
+    int already_overridden[MAX_CLASS_METHODS] = {0};
 
     while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
         int method_line = token.line;
@@ -4261,18 +4434,32 @@ static void parse_class_declaration(const char *class_name, int line) {
         if (find_record_field(rt_idx, h.name) != -1) {
             compile_error(method_line, "'%s' is already a field of class '%s'", h.name, class_name);
         }
+        snprintf(h.mangled_name, MAX_NAME, "%s__%s", class_name, h.name);
+        h.is_inherited = 0;
+
+        int existing_idx = -1;
         for (int i = 0; i < pt->method_count; i++) {
-            if (strcmp(pt->methods[i].name, h.name) == 0) {
-                compile_error(method_line, "Duplicate method '%s' in class '%s'", h.name, class_name);
+            if (strcmp(pt->methods[i].name, h.name) == 0) { existing_idx = i; break; }
+        }
+        if (existing_idx == -1) {
+            if (pt->method_count >= MAX_CLASS_METHODS) {
+                compile_error(method_line, "Class '%s' has too many methods (limit is %d)", class_name, MAX_CLASS_METHODS);
             }
+            pt->methods[pt->method_count] = h;
+            pt->method_count++;
+        } else if (existing_idx < inherited_method_count && !already_overridden[existing_idx]) {
+            // An override - must match the inherited signature exactly.
+            if (!proc_param_headers_match(&pt->methods[existing_idx], &h)) {
+                compile_error(method_line, "'%s.%s' overrides an inherited method with a different signature - an override's parameter/return types must match exactly", class_name, h.name);
+            }
+            pt->methods[existing_idx] = h;
+            already_overridden[existing_idx] = 1;
+        } else {
+            compile_error(method_line, "Duplicate method '%s' in class '%s'", h.name, class_name);
         }
-        if (pt->method_count >= MAX_CLASS_METHODS) {
-            compile_error(method_line, "Class '%s' has too many methods (limit is %d)", class_name, MAX_CLASS_METHODS);
-        }
-        pt->methods[pt->method_count] = h;
-        pt->method_count++;
     }
 
+    pt->target_elem_size = rt->field_count;
     match(TOKEN_END);
     match(TOKEN_SEMI);
     pointer_type_count++;
@@ -4897,6 +5084,10 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
         compile_error(decl_line, "'%s' is not a declared method of class '%s'", method_name, class_name);
     }
     ProcParamHeader *h = &cls->methods[method_idx];
+    if (h->is_inherited) {
+        compile_error(decl_line, "'%s' is inherited by '%s' and hasn't been overridden - redeclare its header inside 'class %s(...) ... end;' first (see docs/LANGUAGE.md#classes)",
+                       method_name, class_name, class_name);
+    }
     if (h->is_function != is_function_decl) {
         compile_error(decl_line, "'%s.%s' was declared as a %s, but its body is written as a %s",
                        class_name, method_name, h->is_function ? "function" : "procedure",
@@ -4904,12 +5095,10 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
     }
     match(TOKEN_SEMI);
 
-    char mangled_name[MAX_NAME];
-    snprintf(mangled_name, MAX_NAME, "%s__%s", class_name, method_name);
-    if (find_proc(mangled_name) != -1) {
+    if (find_proc(h->mangled_name) != -1) {
         compile_error(decl_line, "'%s.%s' already has a body", class_name, method_name);
     }
-    int proc_idx = add_proc(mangled_name);
+    int proc_idx = add_proc(h->mangled_name);
     strcpy(proc_table[proc_idx].unmangled_name, method_name);
     proc_table[proc_idx].is_function = is_function_decl;
     proc_table[proc_idx].return_type = h->return_type;

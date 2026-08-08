@@ -341,8 +341,12 @@ Phase 2 (object-oriented Pascal) has started: classes and instances
 work end-to-end (`type TFoo = class ... end;`, fields, methods, `new`/
 `dispose`, `c.field`, `c.Method(args)`) with reference semantics and
 early/static binding only, built entirely on the existing pointer/heap
-machinery rather than a new addressing model (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#classes)).
+machinery rather than a new addressing model. Single inheritance
+(`class TCircle(TShape) ... end;`) also works — field/method
+inheritance, method overriding, and upcast compatibility (a subclass
+instance usable anywhere its ancestor is expected, including as `self`
+for an inherited method call), all resolved statically at compile time
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#classes)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

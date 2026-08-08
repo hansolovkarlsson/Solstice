@@ -31,7 +31,13 @@ static int is_enum_type(DataType t) {
 // equal already means "the exact same pointer type" (see is_enum_type()'s
 // comment) - this compiler never allows assigning/comparing two
 // DIFFERENT pointer types directly, even if they happen to target the
-// same thing.
+// same thing - EXCEPT two class pointer types in an ancestor/descendant
+// relationship (see class_type_is_subtype_of(), used below in
+// try_widen_for_assignment() and the '='/'<>' pointer-comparison case):
+// an instance of a subclass can be assigned/passed/compared wherever
+// its ancestor class is expected, since a subclass's own fields always
+// start with an exact copy of its ancestor's (see
+// docs/LANGUAGE.md#classes).
 static int is_pointer_type(DataType t) {
     return t >= TYPE_POINTER_BASE && t < TYPE_POINTER_BASE + MAX_POINTER_TYPES;
 }
@@ -58,13 +64,24 @@ static void widen_to_real(ASTNode **child) {
 // Assignment-compatibility check with implicit widening: if *value is
 // integer-typed and target is real, widens *value (mutating it through
 // the pointer) and returns 1 - the caller's own type-mismatch condition
-// should short-circuit past its error in that case. Returns 0 (no
-// widening performed) for every other combination, including real-typed
-// value into an integer target - Pascal requires an explicit trunc()/
-// round() for that narrowing, so this deliberately doesn't paper over it.
+// should short-circuit past its error in that case. Also accepts a class
+// instance assigned/passed where an ANCESTOR class is expected (see
+// class_type_is_subtype_of(), parser.c - exported via parser.h) - no
+// wrapper needed there, since a subclass instance's pointer value is
+// already representationally identical to its ancestor's (see
+// docs/LANGUAGE.md#classes). This is also what makes passing 'self' for
+// an INHERITED method call work: self's parameter is typed as the
+// method's OWN declaring (ancestor) class, and the accessing instance's
+// type is a subclass of that. Returns 0 (no widening/acceptance) for
+// every other combination, including real-typed value into an integer
+// target - Pascal requires an explicit trunc()/round() for that
+// narrowing, so this deliberately doesn't paper over it.
 static int try_widen_for_assignment(ASTNode **value, DataType target) {
     if ((*value)->expression_type == TYPE_INTEGER && target == TYPE_REAL) {
         widen_to_real(value);
+        return 1;
+    }
+    if (class_type_is_subtype_of((*value)->expression_type, target)) {
         return 1;
     }
     return 0;
@@ -203,7 +220,9 @@ void type_check(ASTNode *node) {
                 // equal DataTypes already mean "the same declared type").
                 int compatible = (left_t == right_t)
                                || (is_pointer_type(left_t) && right_t == TYPE_NIL)
-                               || (left_t == TYPE_NIL && is_pointer_type(right_t));
+                               || (left_t == TYPE_NIL && is_pointer_type(right_t))
+                               || class_type_is_subtype_of(left_t, right_t)
+                               || class_type_is_subtype_of(right_t, left_t);
                 if (!compatible) {
                     fprintf(stderr, "%s:%d: Type Error: Cannot compare pointers of different types\n",
                             get_current_filename(), node->line);

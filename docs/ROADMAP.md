@@ -869,6 +869,42 @@ primitives instead of each reinventing them.
       See `examples/test/class/test_class_call_basic.pas`,
       `test_class_call_procedure_statement.pas`,
       `test_class_call_samename.pas`.
+- [x] Classes and instances: single inheritance — `class TCircle(TShape)
+      ... end;` fully FLATTENS inheritance at declaration time, not a
+      live relationship resolved later: every ancestor field is copied
+      into the subclass's own hidden record, in order, before its own
+      fields are parsed (so an ancestor's field offsets stay valid
+      against a descendant's larger heap block - fields can never be
+      overridden, only added), and every ancestor method header is
+      likewise copied into the subclass's own method list, each
+      carrying the mangled name that ACTUALLY implements it. A subclass
+      redeclaring a method with the identical signature overrides it
+      in place (mismatched signatures and duplicate overrides are both
+      rejected); a purely-inherited method dispatches to the ancestor's
+      own implementation, unchanged - both still resolved statically,
+      at compile time, from the accessing expression's own declared
+      type, consistent with early/static binding only. The other real
+      piece: `type_checker.c`'s assignment/parameter-passing/comparison
+      compatibility check (`try_widen_for_assignment()`, and the
+      pointer `=`/`<>` case) now also accepts a subclass instance
+      wherever an ancestor class is expected - via a new, narrowly-
+      exported `class_type_is_subtype_of()` (parser.c keeps
+      `pointer_types[]` itself private) - which is what makes both
+      "assign/pass a `TCircle` where a `TShape` is expected" AND
+      "`self` accepts a subclass instance for an inherited method call"
+      work through the exact same mechanism. `var` parameters
+      deliberately do NOT widen for a class upcast, matching this
+      compiler's existing "a `var` argument never widens" rule.
+      Along the way, fixed a real, pre-existing bug this surfaced (not
+      specific to classes): `parse_name_group()` never initialized
+      `nd_dims`, read as uninitialized stack garbage by
+      `subroutine_declaration()`'s parameter-copy loop for any
+      scalar/1D/2D parameter - harmless by chance until this work
+      shifted stack layouts enough to trip it into a real crash. See
+      `examples/test/class/test_class_inherit_basic.pas`,
+      `test_class_inherit_method.pas`, `test_class_inherit_upcast.pas`,
+      `test_class_inherit_multilevel.pas`, and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
