@@ -337,6 +337,13 @@ place (see [docs/LANGUAGE.md](docs/LANGUAGE.md#variant-records)). This
 was the last item on the Phase 1 (Wirth-compatible Pascal) checklist —
 see [docs/ROADMAP.md](docs/ROADMAP.md).
 
+Phase 2 (object-oriented Pascal) has started: classes and instances
+work end-to-end (`type TFoo = class ... end;`, fields, methods, `new`/
+`dispose`, `c.field`, `c.Method(args)`) with reference semantics and
+early/static binding only, built entirely on the existing pointer/heap
+machinery rather than a new addressing model (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#classes)).
+
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation
 opcodes, `DEBUG_STACK`/`DEBUG_SYMS` VM debug built-ins, a `desole -x`

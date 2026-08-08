@@ -1959,11 +1959,12 @@ you're done with a block, the same discipline `malloc`/`free` demands.
 
 ## Classes
 
-**Work in progress** — declaration parsing, `new`/`dispose`, field
-read/write, and method bodies all work (steps 1-4 of the "Classes and
-instances" items in `docs/ROADMAP.md`'s Phase 2); there's no `c.Method(args)`
-call syntax yet, only step 5 away. See
-`notes/classes-and-instances-scoping.md` for the full design rationale.
+**v1 complete** — declaration parsing, `new`/`dispose`, field
+read/write, method bodies, and `c.Method(args)` call syntax all work
+(all 5 "Classes and instances" build steps in `docs/ROADMAP.md`'s
+Phase 2). Early/static binding only, as scoped — see "Not implemented
+yet" below and `notes/classes-and-instances-scoping.md` for the full
+design rationale.
 
 ```pascal
 type
@@ -1987,9 +1988,8 @@ end;
 
 begin
     new(c);
-    TCircle__SetRadius(c, 2.0);       { no '.Method(...)' sugar yet - call
-                                         the real, mangled name directly }
-    writeln('area: ', TCircle__Area(c));
+    c.SetRadius(2.0);
+    writeln('area: ', c.Area);
     dispose(c);
 end.
 ```
@@ -2045,29 +2045,43 @@ needed because every procedure in this compiler shares one flat,
 whole-program namespace with no per-class scoping or overloading. Two
 different classes can each declare a method with the same name (e.g.
 both `TCircle` and `TSquare` declaring their own `Area`) with no
-collision. You can call a method's real, mangled name directly, passing
-`self` explicitly (`TCircle__SetRadius(c, 2.0)`), which is exactly what
-`c.SetRadius(2.0)` will desugar into once that call syntax lands.
+collision. You can still call a method's real, mangled name directly,
+passing `self` explicitly (`TCircle__SetRadius(c, 2.0)`) — exactly what
+`c.SetRadius(2.0)` itself desugars into.
 
-**Not implemented yet** (later build steps):
+**`c.Method(args)`** resolves `c`, checks the name against the class's
+declared methods (checked after fields — a name can't be both), and
+builds an ordinary call to the mangled procedure with `c` spliced in as
+the hidden first (`self`) argument. The parenthesized argument list is
+optional when the method takes none, matching how an ordinary
+parameterless function/procedure call already works
+(`c.Bump;` as a bare statement, no `()`). A `function` method's call can
+be used as a value anywhere an expression is expected
+(`writeln(c.Area)`); a `procedure` method's call can only be a
+statement, exactly like any other procedure — using one as a value is a
+compile-time error, same message an ordinary procedure-used-as-a-value
+already gets. A method call's result can't itself be chained into a
+further `.field`/`^` step yet (a known gap, below).
 
-- **`c.Method(args)` call syntax** — the last remaining step; until it
-  lands, call a method's real mangled name directly (see above).
+**Not implemented yet:**
+
 - **Unqualified field access inside a method body** (`radius := r;`
   instead of `self.radius := r;`) — always requires `self.` for now.
+- **Chaining off a method call's result** (`c.GetOther().field`) — a
+  method call is always the terminal step of an access chain.
 - **Nested procedure/function declarations inside a method body** — a
   method body doesn't support its own nested subroutines yet, unlike an
   ordinary procedure.
 - **No check that every declared method header actually gets a body** —
-  calling a body-less method's mangled name directly just fails with an
-  ordinary "unknown procedure" error; there's no earlier, clearer check
-  yet (unlike a genuine `forward`-declared procedure, which is checked).
+  calling a body-less method just fails with an ordinary "unknown
+  procedure" error; there's no earlier, clearer check yet (unlike a
+  genuine `forward`-declared procedure, which is checked).
 - **Array or nested-record (composition) fields** — a class's fields
   must be scalar for now, the same restriction a local/parameter record
   has today.
 - **Inheritance, virtual/dynamic dispatch, constructors, and visibility
   (`private`/`public`)** — none of these exist even as a plan yet beyond
-  the scoping note; static/early binding only, to start.
+  the scoping note; static/early binding only, as scoped.
 
 ## Procedures
 

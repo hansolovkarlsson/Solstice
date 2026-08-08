@@ -755,19 +755,20 @@ grow SolVM/`solas` to support OOP constructs generally rather than
 Pascal-specifically, so later front ends can share the same bytecode
 primitives instead of each reinventing them.
 
-- [ ] Classes and instances — reference semantics (Delphi/Java-style: an
-      instance is a heap-allocated record with an implicit pointer type,
-      `var f: TFoo` holds a reference, assignment aliases, `nil` is
-      valid), chosen over value semantics for matching what "objects"
-      usually means and for actually growing SolVM's own OOP primitives,
-      rather than reusing plain records' zero-new-mechanism trick. Early/
-      static binding only to start (`obj.Method()` resolves to one fixed
+- [x] Classes and instances (v1, all 5 steps below complete) —
+      reference semantics (Delphi/Java-style: an instance is a
+      heap-allocated record with an implicit pointer type, `var f: TFoo`
+      holds a reference, assignment aliases, `nil` is valid), chosen
+      over value semantics for matching what "objects" usually means and
+      for actually growing SolVM's own OOP primitives, rather than
+      reusing plain records' zero-new-mechanism trick. Early/static
+      binding only, as scoped (`obj.Method()` resolves to one fixed
       procedure at compile time - no vtable, no runtime method-address
       storage). Full design rationale, prerequisites, and known v1 gaps
       (no inheritance, no virtual dispatch, no constructors, no
-      visibility, scalar fields only) in
-      `notes/classes-and-instances-scoping.md`. Broken into build-order
-      steps below.
+      visibility, scalar fields only, no unqualified `self.` shorthand)
+      in `notes/classes-and-instances-scoping.md` and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [x] Classes and instances, step 1/5: `class TFoo ... end;` declaration
       parsing — fields (reusing the record-field-group parser already
       factored out for variant records, scalar-only for now: array and
@@ -840,9 +841,34 @@ primitives instead of each reinventing them.
       fails with an ordinary "unknown procedure" error). See
       `examples/test/class/test_class_method_basic.pas`,
       `test_class_method_samename.pas`, `test_class_method_varparam.pas`.
-- [ ] Classes and instances, step 5/5: `f.Method(args)` call syntax —
-      resolves `f` to its pointer value, splices it in as the method's
-      first (`self`) argument to an ordinary call
+- [x] Classes and instances, step 5/5: `f.Method(args)` call syntax —
+      `f.Method(args)` now compiles to an ordinary call to the method's
+      mangled procedure, with `f` spliced in as the hidden first
+      (`self`) argument. This closes out all 5 build-order steps for
+      classes and instances, with static/early binding only, as scoped.
+      Mechanically, `resolve_heap_deref_step()` (already shared by
+      every `^`/class-dot read and write site since step 3) now checks
+      a class's own methods whenever a name isn't a field, building a
+      complete `NODE_CALL` (with a new, small
+      `parse_class_method_call_arguments()` for the explicit argument
+      list, self excluded - method parameters are guaranteed scalar, so
+      this never needs the array/record/procedural-argument cases an
+      ordinary call handles) instead of a field-access step. A method
+      call is always the terminal step (never itself an assignment
+      target, and its result can't be chained into a further `^`/`.`
+      yet - a known v1 gap) - `parse_heap_deref_read()` returns it
+      directly as a value (rejecting a procedure-method used as one,
+      matching how any other procedure-used-as-a-value already is), and
+      `parse_heap_deref_write()` signals it back as a complete statement
+      via a new `HeapDerefStep.is_method_call` flag, which all 4 write/
+      statement call sites (the 3 from step 3, plus `new`'s own
+      `^`-chain target parsing, defensively) check before doing
+      anything assignment-shaped. Along the way, fixed the last
+      mangled-name leaks into user-facing errors (argument-count and
+      `var`-argument mismatches now show the method's real short name).
+      See `examples/test/class/test_class_call_basic.pas`,
+      `test_class_call_procedure_statement.pas`,
+      `test_class_call_samename.pas`.
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real

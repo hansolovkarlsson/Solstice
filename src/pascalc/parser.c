@@ -2828,27 +2828,93 @@ static ASTNode *parse_indirect_call(LocalSymbol *ls, int local_idx, int levels_u
     return node;
 }
 
+// Parses a class method call's explicit argument list at the call site
+// ('(args)', or nothing for a zero-argument call - matching how an
+// ordinary parameterless function call already works). 'self' is NOT
+// written here - the caller already has it (the already-resolved
+// instance expression) and splices it in as argument 0 itself, before
+// this function's own returned list. mangled_proc_idx's OWN
+// param_count includes self at slot 0, so every check/lookup here is
+// offset by 1. Method parameters are guaranteed scalar (see
+// ProcParamHeader/parse_proc_param_header()), so this only ever needs
+// the plain-scalar/'var'-scalar cases parse_call_arguments() itself
+// handles - never array/record/procedural arguments.
+static ASTNode *parse_class_method_call_arguments(int mangled_proc_idx) {
+    ASTNode *arg_head = NULL;
+    ASTNode *arg_tail = NULL;
+    int user_param_count = proc_table[mangled_proc_idx].param_count - 1; // excluding self
+    int arg_count = 0;
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_RPAREN) {
+            while (1) {
+                int slot = arg_count + 1; // +1 to skip self at slot 0
+                ASTNode *arg;
+                if (arg_count < user_param_count && proc_table[mangled_proc_idx].param_is_var[slot]) {
+                    arg = parse_var_argument(proc_table[mangled_proc_idx].param_types[slot], proc_table[mangled_proc_idx].unmangled_name, slot);
+                } else if (arg_count < user_param_count) {
+                    arg = wrap_range_check(expression(), proc_table[mangled_proc_idx].param_is_subrange[slot],
+                        proc_table[mangled_proc_idx].param_subrange_lower[slot], proc_table[mangled_proc_idx].param_subrange_upper[slot]);
+                } else {
+                    arg = expression(); // too many arguments - the count mismatch error below still fires
+                }
+                if (!arg_head) arg_head = arg; else arg_tail->next = arg;
+                arg_tail = arg;
+                arg_count++;
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
+            }
+        }
+        match(TOKEN_RPAREN);
+    }
+    if (arg_count != user_param_count) {
+        compile_error(token.line, "'%s' expects %d argument(s), got %d",
+                       proc_table[mangled_proc_idx].unmangled_name, user_param_count, arg_count);
+    }
+    return arg_head;
+}
+
 // One resolved '^' step's outcome - a record field's offset/type/subrange
 // info (0/scalar-target-type/not-subrange for a scalar pointer target's
 // bare '^', which behaves exactly like a 1-field, unnamed record for
-// this purpose).
+// this purpose) - OR, for a class specifically, a method CALL instead
+// (is_method_call/call_node; the other fields are meaningless then).
 typedef struct {
     int field_offset;
     DataType result_type;
     int is_subrange;
     int subrange_lower;
     int subrange_upper;
+    int is_method_call;
+    ASTNode *call_node; // only meaningful if is_method_call - a
+                        // complete NODE_CALL, 'self' already spliced
+                        // in as its first argument. op is left unset -
+                        // the caller sets it to TOKEN_PROCEDURE when
+                        // used as a statement (discard an unused
+                        // function result), matching every other
+                        // call-statement site's own convention.
 } HeapDerefStep;
 
 // Resolves ONE '^' step already matched (the caller has confirmed
-// is_pointer_type(base_type)) - '.field' if the target is a record,
+// is_pointer_type(base's type)) - '.field' if the target is a record,
 // nothing more if it's a scalar. Shared by parse_heap_deref_read()/
 // parse_heap_deref_write() below - both walk an arbitrary-depth '^'
 // chain ('p^.next^.next^.data'), differing only in whether the FINAL
 // step becomes a read (NODE_HEAP_FIELD_ACCESS) or is left for the caller
 // to build into a write (NODE_HEAP_FIELD_ASSIGN).
-static HeapDerefStep resolve_heap_deref_step(DataType base_type) {
+//
+// For a CLASS specifically (pt->is_class), a name that isn't a field is
+// also checked against the class's own methods before giving up - see
+// docs/LANGUAGE.md#classes. A method call is always the step's LAST
+// possible outcome: it's never itself an assignment target, and its
+// result can't be chained into a further '^'/'.' step in v1 (a known
+// gap) - both parse_heap_deref_read()/parse_heap_deref_write() below
+// return as soon as is_method_call comes back set, never looping again.
+static HeapDerefStep resolve_heap_deref_step(ASTNode *base) {
     HeapDerefStep step;
+    step.is_method_call = 0;
+    step.call_node = NULL;
+    DataType base_type = base->expression_type;
     PointerTypeDef *pt = &pointer_types[base_type - TYPE_POINTER_BASE];
     if (pt->target_is_record) {
         if (token.type != TOKEN_PERIOD) {
@@ -2859,6 +2925,37 @@ static HeapDerefStep resolve_heap_deref_step(DataType base_type) {
             compile_error(token.line, "Expected a field name after '^.'");
         }
         int field_idx = find_record_field(pt->target_record_type_idx, token.text);
+        if (field_idx == -1 && pt->is_class) {
+            char name[MAX_NAME];
+            strcpy(name, token.text);
+            int name_line = token.line;
+            int method_idx = -1;
+            for (int i = 0; i < pt->method_count; i++) {
+                if (strcmp(pt->methods[i].name, name) == 0) { method_idx = i; break; }
+            }
+            if (method_idx == -1) {
+                compile_error(name_line, "'%s' is not a field or method of class '%s'", name, pt->name);
+            }
+            match(TOKEN_IDENTIFIER);
+            ProcParamHeader *h = &pt->methods[method_idx];
+            char mangled_name[MAX_NAME];
+            snprintf(mangled_name, MAX_NAME, "%s__%s", pt->name, name);
+            int mangled_idx = find_proc(mangled_name);
+            if (mangled_idx == -1) {
+                compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, name);
+            }
+            ASTNode *call = create_node(NODE_CALL);
+            call->line = name_line;
+            call->data.var_idx = mangled_idx;
+            call->expression_type = h->is_function ? h->return_type : TYPE_UNKNOWN;
+            ASTNode *args = parse_class_method_call_arguments(mangled_idx);
+            base->next = args; // splice self ('base') in as argument 0
+            call->left = base;
+            step.is_method_call = 1;
+            step.call_node = call;
+            step.result_type = call->expression_type;
+            return step;
+        }
         if (field_idx == -1) {
             // A class's own name (pt->name), not its hidden backing
             // record's internal "$classN" name - see
@@ -2898,44 +2995,70 @@ static ASTNode *make_heap_field_access(ASTNode *base, HeapDerefStep step, int li
 // typed expression 'base' ('p^', 'p^.field', or a longer chain like
 // 'p^.next^.data') for use as an r-value - the caller has already
 // confirmed token.type == TOKEN_CARET OR class_dot_deref_pending(base's
-// type) (a class variable's IMPLICIT '.field', no '^' - see that
-// function's comment). Loops so an arbitrary-depth chain is handled
-// uniformly: each step wraps the previous one in a NODE_HEAP_FIELD_ACCESS,
-// which becomes 'base' for the next step if the field just read is
-// itself pointer-typed and another '^' follows - re-validated via
-// is_pointer_type() on every iteration (not just the first), so 'x^^'
-// where x^ isn't itself a pointer is a clean Compile Error, not an
-// out-of-bounds pointer_types[] read. A class field is always scalar in
-// v1 (see docs/LANGUAGE.md#classes), so an implicit-dot step can never
-// itself be followed by another implicit-dot step - only an explicit
-// '^' can ever continue a chain past the first step.
+// type) (a class variable's IMPLICIT '.field'/'.Method(...)', no '^' -
+// see that function's comment). Loops so an arbitrary-depth chain is
+// handled uniformly: each step wraps the previous one in a
+// NODE_HEAP_FIELD_ACCESS, which becomes 'base' for the next step if the
+// field just read is itself pointer-typed and another '^' follows -
+// re-validated via is_pointer_type() on every iteration (not just the
+// first), so 'x^^' where x^ isn't itself a pointer is a clean Compile
+// Error, not an out-of-bounds pointer_types[] read. A class FIELD is
+// always scalar in v1 (see docs/LANGUAGE.md#classes), so a field step
+// can never itself be followed by another implicit-dot step - only an
+// explicit '^' can ever continue a chain past the first step. A method
+// CALL is always the terminal step, full stop (its result can't be
+// chained into a further '^'/'.' at all yet, even an explicit one) -
+// checked here via a function-method returning a value; a procedure-
+// method used in an expression is rejected, matching how any other
+// procedure-used-as-a-value already is.
 static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
     while (token.type == TOKEN_CARET || class_dot_deref_pending(base->expression_type)) {
         if (!is_pointer_type(base->expression_type)) {
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
         if (token.type == TOKEN_CARET) match(TOKEN_CARET);
-        HeapDerefStep step = resolve_heap_deref_step(base->expression_type);
+        HeapDerefStep step = resolve_heap_deref_step(base);
+        if (step.is_method_call) {
+            if (!proc_table[step.call_node->data.var_idx].is_function) {
+                compile_error(line, "'%s' is a procedure and does not return a value; it cannot be used in an expression",
+                               proc_table[step.call_node->data.var_idx].unmangled_name);
+            }
+            return step.call_node;
+        }
         base = make_heap_field_access(base, step, line);
     }
     return base;
 }
 
 // Same chain-walking as parse_heap_deref_read() above, but stops right
-// before consuming the FINAL step - a write needs to build a
+// before consuming the FINAL field step - a write needs to build a
 // NODE_HEAP_FIELD_ASSIGN for that last step (base + field_offset + value
 // expression), not another NODE_HEAP_FIELD_ACCESS. Assumes the caller has
 // already confirmed the same entry condition parse_heap_deref_read()
 // does. Returns the base expression the LAST step reads through, and
 // that step's own HeapDerefStep (field offset/type/subrange info) via
-// *out_step.
+// *out_step - UNLESS the step turns out to be a method CALL rather than
+// a field: a call is never an assignment target ('c.Method() := x'
+// makes no sense), so it's necessarily a complete STATEMENT on its own
+// (e.g. 'c.SetRadius(2.0);', no ':=' anywhere) - out_step->is_method_call
+// is set, out_step->call_node holds that complete statement (op already
+// set to TOKEN_PROCEDURE, discarding an unused function result, exactly
+// like any other call-statement), and the return value is NULL and
+// must not be used. Every caller of this function checks
+// out_step->is_method_call first, before doing anything else with the
+// return value.
 static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *out_step) {
     for (;;) {
         if (!is_pointer_type(base->expression_type)) {
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
         if (token.type == TOKEN_CARET) match(TOKEN_CARET);
-        HeapDerefStep step = resolve_heap_deref_step(base->expression_type);
+        HeapDerefStep step = resolve_heap_deref_step(base);
+        if (step.is_method_call) {
+            step.call_node->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
+            *out_step = step;
+            return NULL;
+        }
         if (token.type == TOKEN_CARET) {
             base = make_heap_field_access(base, step, line);
             continue;
@@ -6031,7 +6154,7 @@ static ASTNode *parse_new_statement(void) {
         }
         HeapDerefStep step;
         base = parse_heap_deref_write(base, line, &step);
-        if (!is_pointer_type(step.result_type)) {
+        if (step.is_method_call || !is_pointer_type(step.result_type)) {
             compile_error(line, "'new' expects a pointer target");
         }
         match(TOKEN_RPAREN);
@@ -6355,6 +6478,7 @@ static ASTNode *parse_global_assignment(int idx) {
         base->expression_type = sym_table[idx].type;
         HeapDerefStep step;
         base = parse_heap_deref_write(base, line, &step);
+        if (step.is_method_call) return step.call_node;
         match(TOKEN_ASSIGN);
         ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
         stmt->left = base;
@@ -6849,6 +6973,7 @@ static ASTNode *statement(void) {
                     base->expression_type = ls->type;
                     HeapDerefStep step;
                     base = parse_heap_deref_write(base, line, &step);
+                    if (step.is_method_call) return step.call_node;
                     match(TOKEN_ASSIGN);
                     ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
                     stmt->left = base;
@@ -6981,6 +7106,7 @@ static ASTNode *statement(void) {
                 base->expression_type = ls->type;
                 HeapDerefStep step;
                 base = parse_heap_deref_write(base, line, &step);
+                if (step.is_method_call) return step.call_node;
                 match(TOKEN_ASSIGN);
                 ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
                 stmt->left = base;
