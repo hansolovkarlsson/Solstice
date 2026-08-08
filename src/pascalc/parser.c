@@ -439,11 +439,11 @@ typedef struct {
 } ProcParamHeader;
 
 #define MAX_POINTER_DECLS MAX_POINTER_TYPES
-// A class's own method-header cap (see PointerTypeDef.methods below) -
-// headers only, per the classes-and-instances scoping note
-// (notes/classes-and-instances-scoping.md): a method's BODY is a
-// separate, later build step, not part of this struct at all yet.
-#define MAX_CLASS_METHODS 16
+// MAX_CLASS_METHODS now lives in common.h - vm.c's vm_vtables[] needs it
+// too (see that array's own comment). Headers only, per the classes-and-
+// instances scoping note (notes/classes-and-instances-scoping.md): a
+// method's BODY is a separate, later build step, not part of this
+// struct at all yet.
 typedef struct {
     char name[MAX_NAME];        // the pointer TYPE's own name, e.g. "PNode" -
                                  // or, for a class, the class's own name
@@ -3184,7 +3184,13 @@ typedef struct {
 // result can't be chained into a further '^'/'.' step in v1 (a known
 // gap) - both parse_heap_deref_read()/parse_heap_deref_write() below
 // return as soon as is_method_call comes back set, never looping again.
-static HeapDerefStep resolve_heap_deref_step(ASTNode *base) {
+// is_statement_context distinguishes the two callers for exactly one
+// purpose: a method call used as an EXPRESSION (parse_heap_deref_read)
+// must be a function, exactly like any other procedure-used-as-a-value
+// rejection elsewhere in this file - a statement-context call
+// (parse_heap_deref_write) has no such restriction (calling a function
+// and discarding its result is fine, same as an ordinary NODE_CALL).
+static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_context) {
     HeapDerefStep step;
     step.is_method_call = 0;
     step.call_node = NULL;
@@ -3213,21 +3219,34 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base) {
             match(TOKEN_IDENTIFIER);
             ProcParamHeader *h = &pt->methods[method_idx];
             // h->mangled_name - NOT "pt->name__name" - is what actually
-            // implements this: for an inherited, not-overridden method
-            // that's the ANCESTOR class's own mangled name, copied
-            // through unchanged by parse_class_declaration(); for an
-            // overridden or newly-declared one, it's pt's own.
+            // implements this call STATICALLY, for a class matching
+            // base's own declared type exactly - but base's RUNTIME
+            // class may be a DESCENDANT that overrides this method, so
+            // the actual call is dispatched dynamically instead (see
+            // NODE_VIRTUAL_CALL in common.h) - h->mangled_name is used
+            // here only to confirm a body exists SOMEWHERE in the
+            // hierarchy (a class declaring a method header but never
+            // giving ANY class a body for it is still a compile error,
+            // just like an ordinary forward-declared procedure).
+            // method_idx itself - NOT anything derived from
+            // h->mangled_name - is the vtable slot: parse_class_declaration()
+            // copies an ancestor's methods[] into every descendant IN
+            // ORDER before appending/overriding, so a given logical
+            // method's index is already the same across the whole
+            // hierarchy, exactly what a stable slot number needs.
             int mangled_idx = find_proc(h->mangled_name);
             if (mangled_idx == -1) {
                 compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, name);
             }
-            ASTNode *call = create_node(NODE_CALL);
+            if (!is_statement_context && !h->is_function) {
+                compile_error(name_line, "'%s' is a procedure and does not return a value; it cannot be used in an expression", name);
+            }
+            ASTNode *call = create_node(NODE_VIRTUAL_CALL);
             call->line = name_line;
-            call->data.var_idx = mangled_idx;
+            call->data.num_value = method_idx;
             call->expression_type = h->is_function ? h->return_type : TYPE_UNKNOWN;
-            ASTNode *args = parse_class_method_call_arguments(mangled_idx);
-            base->next = args; // splice self ('base') in as argument 0
-            call->left = base;
+            call->left = base; // 'self' - kept separate from the argument list, see NODE_VIRTUAL_CALL's own comment
+            call->right = parse_class_method_call_arguments(mangled_idx);
             step.is_method_call = 1;
             step.call_node = call;
             step.result_type = call->expression_type;
@@ -3298,12 +3317,8 @@ static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
         if (token.type == TOKEN_CARET) match(TOKEN_CARET);
-        HeapDerefStep step = resolve_heap_deref_step(base);
+        HeapDerefStep step = resolve_heap_deref_step(base, 0); // expression context - resolve_heap_deref_step() itself rejects a procedure-method here
         if (step.is_method_call) {
-            if (!proc_table[step.call_node->data.var_idx].is_function) {
-                compile_error(line, "'%s' is a procedure and does not return a value; it cannot be used in an expression",
-                               proc_table[step.call_node->data.var_idx].unmangled_name);
-            }
             return step.call_node;
         }
         base = make_heap_field_access(base, step, line);
@@ -3334,7 +3349,7 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
         if (token.type == TOKEN_CARET) match(TOKEN_CARET);
-        HeapDerefStep step = resolve_heap_deref_step(base);
+        HeapDerefStep step = resolve_heap_deref_step(base, 1); // statement context
         if (step.is_method_call) {
             step.call_node->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
             *out_step = step;
@@ -4960,6 +4975,45 @@ static void parse_type_section(void) {
     }
 }
 
+// Builds the vtable-init statement chain (see NODE_VTABLE_INIT_ENTRY in
+// common.h): one entry per method of every class that actually has a
+// body, populating vm_vtables[] before any user code runs. Called once,
+// near the very end of parse_ast(), by which point every class's method
+// headers AND every procedure/function body (including every class
+// method's own) has already been parsed.
+//
+// A method header declared but never given a body ANYWHERE is a known,
+// pre-existing, intentionally lazy gap (see test_class_basic.pas/
+// test_class_samename_methods.pas - a class declaration is valid on its
+// own even if some method is never implemented, as long as nothing ever
+// calls it) - resolve_heap_deref_step()'s own find_proc() check already
+// rejects any call site that WOULD need such a method, so a bodyless
+// header simply gets no vtable slot populated here: its vm_vtables[]
+// entry stays at run_vm()'s -1 reset value, never consulted, because no
+// program that compiles can ever reach an OP_LOAD_VTABLE_SLOT for it.
+static ASTNode *build_vtable_init_chain(void) {
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    for (int c = 0; c < pointer_type_count; c++) {
+        PointerTypeDef *pt = &pointer_types[c];
+        if (!pt->is_class) continue;
+        for (int slot = 0; slot < pt->method_count; slot++) {
+            ProcParamHeader *h = &pt->methods[slot];
+            int mangled_idx = find_proc(h->mangled_name);
+            if (mangled_idx == -1) continue; // no body anywhere - see comment above
+            ASTNode *ref = create_node(NODE_PROC_REF);
+            ref->data.var_idx = mangled_idx;
+            ref->expression_type = TYPE_INTEGER; // meaningless beyond "one int" - see NODE_PROC_REF's own comment
+            ASTNode *entry = create_node(NODE_VTABLE_INIT_ENTRY);
+            entry->left = ref;
+            entry->data.num_value = c * MAX_CLASS_METHODS + slot;
+            if (!head) head = entry; else tail->next = entry;
+            tail = entry;
+        }
+    }
+    return head;
+}
+
 ASTNode *parse_ast(const char *source, const char *filename) {
     current_filename = filename ? filename : "<source>";
     sym_count = 0;
@@ -4982,6 +5036,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     record_var_count = 0;
     record_array_count = 0;
     pointer_type_count = 0;
+    proc_type_count = 0;
     const_def_count = 0;
     type_alias_count = 0;
     enum_type_count = 0;
@@ -5135,9 +5190,21 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     memcpy(declared_labels, main_labels, sizeof(DeclaredLabel) * main_label_count);
     declared_label_count = main_label_count;
 
+    ASTNode *vtable_init = build_vtable_init_chain();
     ASTNode *root = compound_statement();
     check_all_labels_defined();
     match(TOKEN_PERIOD);
+    if (vtable_init) {
+        // Prepend to the main body's own statement chain, guaranteeing
+        // it runs before any user code - generate_program() (codegen.c)
+        // emits every procedure/method BEFORE the main body, so every
+        // entry_address this chain's NODE_PROC_REFs need is already
+        // resolved (or backpatchable) regardless.
+        ASTNode *tail = vtable_init;
+        while (tail->next) tail = tail->next;
+        tail->next = root->left;
+        root->left = vtable_init;
+    }
     return root;
 }
 

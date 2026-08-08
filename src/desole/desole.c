@@ -174,6 +174,8 @@ static const char *opcode_name(Opcode op) {
         case OP_LOAD_HEAP_FIELD:       return "load_heap_field";
         case OP_STORE_HEAP_FIELD:      return "store_heap_field";
         case OP_STORE_HEAP_FIELD_CHAR: return "store_heap_field_char";
+        case OP_LOAD_VTABLE_SLOT:  return "load_vtable_slot";
+        case OP_STORE_VTABLE_SLOT: return "store_vtable_slot";
         case OP_PUSH_STATIC_LINK:   return "push_static_link";
         case OP_POP_STATIC_LINK:    return "pop_static_link";
         case OP_LOAD_ENCLOSING:     return "load_enclosing";
@@ -264,6 +266,7 @@ static int is_immediate(Opcode op) {
         || op == OP_READ_FILE_LOCAL_INT_NOFLUSH || op == OP_READ_FILE_LOCAL_BOOL_NOFLUSH || op == OP_READ_FILE_LOCAL_REAL_NOFLUSH
         || op == OP_NEW || op == OP_DISPOSE // operand = element size, not a symbol reference
         || op == OP_LOAD_HEAP_FIELD || op == OP_STORE_HEAP_FIELD || op == OP_STORE_HEAP_FIELD_CHAR // operand = field offset
+        || op == OP_LOAD_VTABLE_SLOT || op == OP_STORE_VTABLE_SLOT // operand = method slot / precomputed flat vm_vtables[] index
         || op == OP_PUSH_STATIC_LINK // operand = hop count
         || op == OP_LOAD_ENCLOSING || op == OP_STORE_ENCLOSING || op == OP_PUSH_ENCLOSING_REF; // operand = packed (levels_up, slot)
 }

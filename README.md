@@ -339,23 +339,23 @@ see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Phase 2 (object-oriented Pascal) has started: classes and instances
 work end-to-end (`type TFoo = class ... end;`, fields, methods, `new`/
-`dispose`, `c.field`, `c.Method(args)`) with reference semantics and
-early/static binding only, built entirely on the existing pointer/heap
-machinery rather than a new addressing model. Single inheritance
-(`class TCircle(TShape) ... end;`) also works — field/method
-inheritance, method overriding, and upcast compatibility (a subclass
-instance usable anywhere its ancestor is expected, including as `self`
-for an inherited method call), all resolved statically at compile time
+`dispose`, `c.field`, `c.Method(args)`) with reference semantics, built
+entirely on the existing pointer/heap machinery rather than a new
+addressing model. Single inheritance (`class TCircle(TShape) ... end;`)
+also works — field/method inheritance, method overriding, and upcast
+compatibility (a subclass instance usable anywhere its ancestor is
+expected, including as `self` for an inherited method call). Every
+method call is dynamically dispatched (Java-style, no `virtual`/
+`override` keyword needed) through the calling instance's own hidden
+runtime type tag and a per-class vtable, rather than the accessing
+expression's static type — the actual polymorphism payoff: a
+subclass-overridden method called through an ancestor-typed reference
+correctly runs the subclass's own implementation
 (see [docs/LANGUAGE.md](docs/LANGUAGE.md#classes)). Also working: NAMED
 procedural types (`type TProc = procedure(x: integer);`) — a variable,
 local, or `var` parameter that holds a reference to a top-level
 procedure/function (or `nil`), assignable, comparable, and callable
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)). Every class
-instance also now carries a hidden runtime type tag identifying its own
-class, written by `new()` — internal, write-only bookkeeping for now
-(nothing reads it back yet). With both of those in place, virtual/
-dynamic dispatch itself — still early/static-only today — is the next
-planned step (see [docs/ROADMAP.md](docs/ROADMAP.md)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

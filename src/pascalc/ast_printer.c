@@ -701,6 +701,32 @@ void print_ast(ASTNode *node, int indent) {
             break;
         }
 
+        case NODE_VIRTUAL_CALL: {
+            printf("[Virtual Call] -> slot %d\n", node->data.num_value);
+            print_indent(indent + 1);
+            printf("Self:\n");
+            print_ast(node->left, indent + 2);
+            int arg_num = 1;
+            for (ASTNode *arg = node->right; arg; arg = arg->next) {
+                print_indent(indent + 1);
+                printf("Arg %d:\n", arg_num++);
+                print_ast(arg, indent + 2);
+            }
+            if (node->op == TOKEN_PROCEDURE && node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
+
+        case NODE_VTABLE_INIT_ENTRY: {
+            printf("[Vtable Init Entry] -> vm_vtables[%d]\n", node->data.num_value);
+            print_ast(node->left, indent + 1);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
+
         case NODE_PROCVAR_CALL: {
             printf("[Procvar Call]\n");
             print_indent(indent + 1);

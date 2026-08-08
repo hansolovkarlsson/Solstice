@@ -101,6 +101,18 @@ static int vm_heap_count;
 static int vm_heap_freelist[MAX_RECORD_FIELDS + 1]; // index 0 unused (no
                                              // allocation is ever 0 ints)
 
+// Virtual/dynamic method dispatch (OP_LOAD_VTABLE_SLOT/OP_STORE_VTABLE_SLOT
+// in common.h) - one flat array, one row of MAX_CLASS_METHODS entries per
+// class, indexed class_id * MAX_CLASS_METHODS + slot. Populated once, at
+// program startup, by the vtable-init code parser.c's
+// build_vtable_init_chain() prepends to the main body (OP_STORE_VTABLE_SLOT);
+// read thereafter by every virtual call site (OP_LOAD_VTABLE_SLOT). Reset
+// to -1 per slot below - never actually read at -1 in practice (every
+// class's every method slot is unconditionally initialized by the
+// vtable-init code before any user code runs), but matches this VM's
+// general convention of leaving no region uninitialized garbage.
+static int vm_vtables[MAX_POINTER_TYPES * MAX_CLASS_METHODS];
+
 // A file variable's real runtime state (see TYPE_FILE in common.h) -
 // indexed by the SAME sym_table[] index the variable itself has (safe
 // only because a file variable is always global - one fixed index for
@@ -693,6 +705,7 @@ void run_vm(void) {
     memset(vm_heap_mem, 0, sizeof(vm_heap_mem));
     vm_heap_count = 0;
     for (int i = 0; i < MAX_RECORD_FIELDS + 1; i++) vm_heap_freelist[i] = -1;
+    for (int i = 0; i < MAX_POINTER_TYPES * MAX_CLASS_METHODS; i++) vm_vtables[i] = -1;
     for (int i = 0; i < MAX_FRAME_STACK; i++) vm_static_link[i] = -1; // -1, not 0 -
                                              // 0 is a valid fp value, so this can't
                                              // just be memset to zero like the plain
@@ -971,6 +984,23 @@ void run_vm(void) {
                 }
                 vm_check_char(val, "pointer dereference");
                 vm_heap_mem[offset] = val;
+                break;
+            }
+
+            case OP_LOAD_VTABLE_SLOT: {
+                int class_id = vm_pop(&sp);
+                int flat_index = class_id * MAX_CLASS_METHODS + instr.arg;
+                if (flat_index < 0 || flat_index >= MAX_POINTER_TYPES * MAX_CLASS_METHODS) {
+                    fprintf(stderr, "VM Runtime Error: Invalid class tag %d\n", class_id);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_vtables[flat_index]);
+                break;
+            }
+
+            case OP_STORE_VTABLE_SLOT: {
+                int target = vm_pop(&sp);
+                vm_vtables[instr.arg] = target;
                 break;
             }
 

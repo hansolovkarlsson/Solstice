@@ -936,15 +936,60 @@ primitives instead of each reinventing them.
       and didn't exist. See
       `examples/test/class/test_class_tag_basic.pas`,
       `test_class_tag_inherit.pas`, `test_class_bad_tag_chain_new.pas`.
-- [ ] Virtual/dynamic dispatch — both prerequisites are done (procedural
-      types, and the runtime type tag just above), so this is now
-      buildable: a vtable per class (nearly free to construct, since
-      `PointerTypeDef.methods[]` already has every method's fully-
-      resolved, inheritance-aware mangled name), an instance's tag used
-      to find its OWN vtable at a method-call site instead of the
-      accessing expression's static type, and the call itself routed
-      through `OP_CALL_INDIRECT` - already exactly the right primitive,
-      already proven out by procedural types
+- [x] Virtual/dynamic dispatch — every class method is now dynamically
+      dispatched by default (Java-style: no `virtual`/`override`
+      keyword, since a single-inheritance override always has an
+      identical, already-checked signature, leaving nothing ambiguous to
+      resolve). A flat `vm_vtables[]` array in `vm.c`
+      (`MAX_POINTER_TYPES * MAX_CLASS_METHODS` ints, `MAX_CLASS_METHODS`
+      moved from `parser.c` to `common.h` alongside `MAX_RECORD_FIELDS`
+      for the same reason - `vm.c` needs it to size the array), indexed
+      `class_id * MAX_CLASS_METHODS + slot`, populated once at program
+      startup by a `NODE_VTABLE_INIT_ENTRY` chain
+      (`build_vtable_init_chain()` in `parser.c`) prepended to the main
+      body ahead of any user code. A method's slot number is simply its
+      index within its declaring class's own `PointerTypeDef.methods[]`
+      - free to reuse as-is, since the existing inheritance-flattening
+      (copying a parent's `methods[]` into a child in order, overriding
+      IN PLACE rather than appending) already guarantees that index is
+      stable across an entire ancestor/descendant hierarchy. A call site
+      (`NODE_VIRTUAL_CALL`, replacing the old static `NODE_CALL` for
+      this syntax) reads the calling instance's own runtime type tag
+      (`OP_LOAD_HEAP_FIELD 0`), looks up that class's vtable row
+      (`OP_LOAD_VTABLE_SLOT <slot>`, a new opcode - pops a class_id,
+      pushes `vm_vtables[class_id * MAX_CLASS_METHODS + slot]`), and
+      calls through the resolved address via the already-existing
+      `OP_CALL_INDIRECT` - exactly the primitive procedural types
+      already proved out, needing no changes of its own. The one new
+      wrinkle `OP_CALL_INDIRECT` didn't already cover: it needs the
+      callee address on TOP of the stack, but `self` must stay the
+      BOTTOM-most pushed value (the callee's own reverse-order parameter
+      unpacking consumes it last) - solved with a small `OP_DUP`/`OP_SWAP`
+      shuffle (push self, `DUP` it to compute the target address without
+      disturbing the original, then swap the target back on top after
+      each argument push) rather than needing any new scratch storage.
+      Along the way: found and fixed a real state-leak bug, unrelated to
+      vtables but caught while working nearby - `proc_type_count`
+      (procedural types, the previous step) was never reset in
+      `parse_ast()`, silently accumulating across multiple compiles in
+      the same host process; and updated `solas`/`desole` with the two
+      new opcodes' mnemonics, confirmed via a full disassemble/
+      reassemble/re-run round-trip (`CLAUDE.md`'s testing checklist
+      catches real bugs here - `desole` was initially missing both from
+      its `is_immediate()` operand table too, silently dropping their
+      operand on disassembly). A method header declared but never given
+      a body anywhere stays legal on its own (`test_class_basic.pas`)
+      - it just gets no vtable entry; the pre-existing call-site check
+      already prevents that entry from ever being read. Verified with a
+      full `examples/` regression diff (compiled/run through both the
+      pre-vtable and post-vtable binaries, output identical everywhere
+      except the new vtable-specific tests) and a proactive
+      AddressSanitizer/UBSan sweep (clean - surfaced two unrelated,
+      pre-existing latent bugs elsewhere in the codebase instead,
+      logged separately, out of scope here). See
+      `examples/test/class/test_class_virtual_basic.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes)'s "Virtual dispatch"
+      subsection.
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
@@ -1064,3 +1109,23 @@ Things worth remembering that aren't attached to a phase yet:
 - Database support — lightweight, ISAM-style file access, eventually SQL
 - Network protocol support
 - "AI stuff maybe" — genuinely open-ended, no concrete idea yet
+
+### Known issues (found via AddressSanitizer, not yet fixed)
+
+Surfaced by a proactive ASan/UBSan sweep during the virtual dispatch
+work above, but both are pre-existing and unrelated to it (confirmed
+present in the commit right before that work started too) - logged here
+rather than fixed in passing, since neither is in scope for whatever
+feature happens to notice them next:
+
+- `find_any_record_var()` (`parser.c`) reads `with_stack`/
+  `scope_record_var_count` at index `-1` for a plain identifier
+  reference at the TOP level (main program body, outside any procedure,
+  where `nesting_depth == -1` by design - see `parse_ast()`'s own reset
+  comment). A global-buffer-overflow read one int before `with_stack`'s
+  own storage - functionally harmless so far only because whatever
+  happens to sit there in practice reads as zero, but relies on memory
+  layout, not on anything guaranteed.
+- `OP_SHL`'s implementation (`vm.c`) computes `a << b` directly on a
+  signed `int`; `b == 31` triggers signed left-shift overflow (classic C
+  UB) whenever the shifted-in bit would be the sign bit.

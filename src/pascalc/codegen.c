@@ -1041,6 +1041,45 @@ void generate_code(ASTNode *node) {
             }
             break;
 
+        case NODE_VIRTUAL_CALL:
+            // 'self' must end up as the BOTTOM-most pushed value (the
+            // callee's own reverse-order STORE_LOCAL parameter-unpacking
+            // consumes it last), but OP_CALL_INDIRECT needs the target
+            // address on TOP. Resolved by computing the target right
+            // after pushing self (leaving [self, target]), then, for each
+            // arg, pushing it and swapping it past the target - which
+            // keeps the target on top after every arg without ever
+            // disturbing self underneath. E.g. two args:
+            // [self, target] -(push arg1)-> [self, target, arg1]
+            //                 -(SWAP)------> [self, arg1, target]
+            //                 -(push arg2)-> [self, arg1, target, arg2]
+            //                 -(SWAP)------> [self, arg1, arg2, target]
+            generate_code(node->left);       // [self]
+            emit(OP_DUP, 0);                 // [self, self]
+            emit(OP_LOAD_HEAP_FIELD, 0);     // [self, tag] - offset 0 is always the hidden runtime type tag
+            emit(OP_LOAD_VTABLE_SLOT, node->data.num_value); // [self, target]
+            for (ASTNode *arg = node->right; arg; arg = arg->next) {
+                generate_code(arg);
+                emit(OP_SWAP, 0);
+            }
+            emit(OP_CALL_INDIRECT, 0);
+            if (node->op == TOKEN_PROCEDURE) {
+                // Statement context: continue the enclosing statement
+                // chain, discarding an unused function result first -
+                // mirrors NODE_CALL's own op == TOKEN_PROCEDURE case.
+                if (node->expression_type != TYPE_UNKNOWN) {
+                    emit(OP_POP, 0);
+                }
+                generate_code(node->next);
+            }
+            break;
+
+        case NODE_VTABLE_INIT_ENTRY:
+            generate_code(node->left); // a NODE_PROC_REF: pushes the implementing procedure's entry address
+            emit(OP_STORE_VTABLE_SLOT, node->data.num_value);
+            generate_code(node->next);
+            break;
+
         case NODE_LOCAL_VAR:
             emit_load_local((int)node->op, node->data.var_idx);
             break;

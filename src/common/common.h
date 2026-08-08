@@ -48,6 +48,12 @@
                            // in vm.c) needs the same bound: a pointer's
                            // target, if a record, needs one allocation
                            // "size class" per possible field count.
+#define MAX_CLASS_METHODS 16 // moved here from parser.c (where
+                           // PointerTypeDef still lives) because vm.c's
+                           // vm_vtables[] needs the same bound: it's a
+                           // flat array indexed class_id * MAX_CLASS_METHODS
+                           // + slot, one row of MAX_CLASS_METHODS entries
+                           // per class - see vm_vtables[]'s own comment.
 #define MAX_HEAP_MEM 4096  // total ints reserved across every live
                            // new()'d block combined - the fixed-size pool
                            // vm_heap_mem[] (vm.c) allocates from, sized
@@ -903,6 +909,35 @@ typedef enum {
                   // char-check on at runtime the way OP_STORE does via
                   // sym_table[]).
 
+    OP_LOAD_VTABLE_SLOT, // Virtual/dynamic method dispatch (NODE_VIRTUAL_CALL
+                  // in codegen.c). arg = the method's SLOT number - its
+                  // index within the class's own PointerTypeDef.methods[]
+                  // at compile time, which parser.c's inheritance
+                  // flattening already guarantees is the SAME index for a
+                  // given logical method across an entire ancestor/
+                  // descendant hierarchy (an override replaces its
+                  // inherited entry in place, never appends). Pops a
+                  // runtime class_id (an instance's own hidden type tag,
+                  // read via OP_LOAD_HEAP_FIELD 0 - see NODE_HEAP_ALLOC's
+                  // tag-write comment); pushes
+                  // vm_vtables[class_id * MAX_CLASS_METHODS + arg] - the
+                  // actual implementing procedure's entry address, ready
+                  // for OP_CALL_INDIRECT. No bounds check on class_id -
+                  // it's always a value THIS compiler itself wrote via
+                  // OP_NEW's tag-write, never user data.
+    OP_STORE_VTABLE_SLOT, // Populates one vm_vtables[] slot at program
+                  // startup (NODE_VTABLE_INIT_ENTRY in codegen.c, emitted
+                  // once per class method, ahead of any user code - see
+                  // parser.c's build_vtable_init_chain()). arg = the
+                  // FULLY PRECOMPUTED flat index (class_id *
+                  // MAX_CLASS_METHODS + slot) - unlike
+                  // OP_LOAD_VTABLE_SLOT's arg, both halves are already
+                  // known at compile time here, so there's no separate
+                  // runtime class_id to pop. Pops a procedure entry
+                  // address (pushed by a NODE_PROC_REF, same as any other
+                  // procedure-value use); stores it into
+                  // vm_vtables[arg].
+
     // Nested procedure/function declarations - lexical access to an
     // enclosing procedure's own locals, at arbitrary nesting depth, via a
     // static-link chain (see vm_static_link[] in vm.c). Distinct from
@@ -1485,7 +1520,7 @@ typedef enum {
                        // then continue via ->next, exactly like
                        // NODE_CALL's own op == TOKEN_PROCEDURE case) or 0
                        // if used as an expression.
-    NODE_PROCVAR_CALL // A call through a NAMED procedural-type value
+    NODE_PROCVAR_CALL, // A call through a NAMED procedural-type value
                        // (e.g. 'p(x)' where p: TProc - a plain global/
                        // local/'var'-parameter variable, NOT the older,
                        // narrower is_proc_param parameter mechanism
@@ -1507,6 +1542,49 @@ typedef enum {
                        // exact same convention (callee's return type or
                        // TYPE_UNKNOWN; extra = a NODE_NUMBER statement-
                        // context flag).
+    NODE_VIRTUAL_CALL, // A class method call ('c.Method(...)' or
+                       // 'c^.Method(...)'), dispatched dynamically through
+                       // c's OWN runtime type tag rather than its static
+                       // type - see OP_LOAD_VTABLE_SLOT. Built by
+                       // resolve_heap_deref_step() exactly where a
+                       // NODE_CALL used to be built for this same syntax,
+                       // back when dispatch was early/static-only. left =
+                       // 'self' (the already-resolved instance expression)
+                       // - kept SEPARATE from the argument list (unlike
+                       // NODE_CALL, which splices self in as argument 0),
+                       // because codegen needs to read self's tag WITHOUT
+                       // disturbing where self itself ends up on the
+                       // stack (see codegen.c's own comment on the
+                       // OP_DUP/OP_SWAP shuffle this requires). right =
+                       // the argument list, chained via ->next, NOT
+                       // including self. data.num_value = the method's
+                       // SLOT number (index within the static type's own
+                       // PointerTypeDef.methods[] - stable across the
+                       // whole hierarchy, see OP_LOAD_VTABLE_SLOT's own
+                       // comment). op = TOKEN_PROCEDURE if used as a
+                       // statement (discard an unused function result,
+                       // then continue via ->next) - exactly mirrors
+                       // NODE_CALL's own op convention; unlike
+                       // NODE_CALL_INDIRECT, no local frame slot is
+                       // involved here, so op didn't need to be freed up
+                       // for anything else. expression_type = the
+                       // resolved method's return type if it's a
+                       // function, or TYPE_UNKNOWN if a procedure - same
+                       // "no value" convention as NODE_CALL_INDIRECT's.
+    NODE_VTABLE_INIT_ENTRY // One entry of the vtable-init chain
+                       // (build_vtable_init_chain() in parser.c) that
+                       // runs once, before any user code, populating
+                       // every class's vtable - see OP_STORE_VTABLE_SLOT.
+                       // left = a NODE_PROC_REF for the method's ACTUAL
+                       // implementing procedure (already resolved via
+                       // find_proc() at parse time, exactly like an
+                       // ordinary method call site resolves it).
+                       // data.num_value = the fully precomputed flat
+                       // vm_vtables[] index (class_id * MAX_CLASS_METHODS
+                       // + slot). Chained via ->next, one entry per
+                       // method of every class, spliced onto the front of
+                       // the main program body's own statement chain so
+                       // it's guaranteed to run first.
 } NodeType;
 
 typedef struct ASTNode {

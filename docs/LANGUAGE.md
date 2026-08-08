@@ -1961,19 +1961,19 @@ you're done with a block, the same discipline `malloc`/`free` demands.
 
 **v1 complete** — declaration parsing, `new`/`dispose`, field
 read/write, method bodies, `c.Method(args)` call syntax (all 5 "Classes
-and instances" build steps in `docs/ROADMAP.md`'s Phase 2), and single
-inheritance all work. Early/static binding only, as scoped — see "Not
-implemented yet" below and `notes/classes-and-instances-scoping.md` for
-the full design rationale.
+and instances" build steps in `docs/ROADMAP.md`'s Phase 2), single
+inheritance, and virtual/dynamic dispatch all work. See "Not implemented
+yet" below and `notes/classes-and-instances-scoping.md` for the full
+design rationale.
 
-Every instance now also carries a hidden runtime type tag (identifying
-its own allocating class) at the start of its heap block, one int
-larger than just its declared fields — entirely internal bookkeeping
-with no Pascal-visible syntax of its own; nothing reads it back yet
-(that's virtual/dynamic dispatch, not built yet either — see
-`docs/ROADMAP.md`). `new()` into a class-typed field reached through an
-explicit `^` isn't supported yet — allocate into a plain class variable
-first, then assign it into the field.
+Every instance also carries a hidden runtime type tag (identifying its
+own allocating class) at the start of its heap block, one int larger
+than just its declared fields — entirely internal bookkeeping with no
+Pascal-visible syntax of its own. This tag is what every method call
+dispatches through (see "Virtual dispatch" below). `new()` into a
+class-typed field reached through an explicit `^` isn't supported yet —
+allocate into a plain class variable first, then assign it into the
+field.
 
 ```pascal
 type
@@ -2060,10 +2060,10 @@ passing `self` explicitly (`TCircle__SetRadius(c, 2.0)`) — exactly what
 
 **`c.Method(args)`** resolves `c`, checks the name against the class's
 declared methods (checked after fields — a name can't be both), and
-builds an ordinary call to the mangled procedure with `c` spliced in as
-the hidden first (`self`) argument. The parenthesized argument list is
-optional when the method takes none, matching how an ordinary
-parameterless function/procedure call already works
+builds a dynamically-dispatched call (see "Virtual dispatch" below) with
+`c` passed as the hidden first (`self`) argument. The parenthesized
+argument list is optional when the method takes none, matching how an
+ordinary parameterless function/procedure call already works
 (`c.Bump;` as a bare statement, no `()`). A `function` method's call can
 be used as a value anywhere an expression is expected
 (`writeln(c.Area)`); a `procedure` method's call can only be a
@@ -2140,14 +2140,76 @@ live relationship resolved later:
   ancestor class. The one exception: a `var` parameter never widens for
   a class upcast either, matching this compiler's existing "a `var`
   argument is never implicitly widened" rule for every other type.
-- Both inherited-vs-overridden method dispatch and the upcast
-  compatibility above are resolved **statically**, from the accessing
-  expression's own declared type at compile time — there's no vtable
-  and no runtime type tag, consistent with early/static binding only
-  (see "Not implemented yet" below).
+- The upcast compatibility above is checked **statically**, from the
+  accessing expression's own declared type at compile time - but the
+  method actually invoked is chosen **dynamically**, from the calling
+  instance's own runtime type tag (see "Virtual dispatch" below), not
+  the accessing expression's declared type.
 - Multiple levels of inheritance work the same way, recursively — each
   class's own field/method lists are already fully flattened by the
   time a further subclass inherits from it.
+
+### Virtual dispatch
+
+```pascal
+type
+    TShape = class
+        function Area: real;
+    end;
+    TCircle = class(TShape)
+        radius: real;
+        function Area: real;   { overrides TShape's own }
+    end;
+var
+    s: TShape;
+    c: TCircle;
+
+function TShape.Area;
+begin
+    Area := 0.0;
+end;
+
+function TCircle.Area;
+begin
+    Area := 3.14159 * self.radius * self.radius;
+end;
+
+begin
+    new(c);
+    c.radius := 2.0;
+    s := c;                    { upcast - s is statically typed TShape }
+    writeln(s.Area);            { prints 12.56636 - TCircle's own Area,
+                                   NOT TShape's, even though s's
+                                   DECLARED type is TShape }
+    dispose(c);
+end.
+```
+
+Every method call dispatches through the calling instance's own hidden
+runtime type tag (see above), not the accessing expression's static
+type — genuine virtual/dynamic dispatch, Java-style: every method is
+implicitly "virtual", with no separate `virtual`/`override` keyword
+needed (there's no ambiguity to resolve, since a class can only inherit
+from one ancestor and an override must match its inherited signature
+exactly). This is what makes the example above print the *circle's*
+area through a *shape*-typed reference: `s.Area` doesn't look at what
+`s` was *declared* as, it looks at what `s` currently *holds*.
+
+Mechanically, each class has its own **vtable** — one slot per method,
+populated once at program startup (before any user code runs) with
+every method's actual entry address. A method's slot number is its
+position within its declaring class's own method list, which inheritance
+flattening (above) already guarantees stays the same across an entire
+ancestor/descendant hierarchy, so a single slot number is valid for
+every class in a hierarchy without any extra bookkeeping. A call site
+reads the calling instance's own tag, looks up that class's own vtable
+row at the resolved slot, and calls through the address found there.
+
+A method header declared but never given a body anywhere is still legal
+on its own (see `test_class_basic.pas`) — it simply gets no vtable
+entry; the existing compile-time check at any actual call site (`'X.Y'
+doesn't have a body yet`) already prevents that entry from ever being
+read.
 
 **Not implemented yet:**
 
@@ -2158,20 +2220,12 @@ live relationship resolved later:
 - **Nested procedure/function declarations inside a method body** — a
   method body doesn't support its own nested subroutines yet, unlike an
   ordinary procedure.
-- **No check that every declared method header actually gets a body** —
-  calling a body-less method just fails with an ordinary "unknown
-  procedure" error; there's no earlier, clearer check yet (unlike a
-  genuine `forward`-declared procedure, which is checked).
 - **Array or nested-record (composition) fields** — a class's fields
   must be scalar for now, the same restriction a local/parameter record
   has today.
 - **`new()` into a class-typed field reached through an explicit `^`**
   (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
   into a plain class variable first, then assign it into the field.
-- **Virtual/dynamic dispatch** — both of its prerequisites (procedural
-  types, and the runtime type tag above) are now done, making this the
-  next planned step (see `docs/ROADMAP.md`); until then, dispatch stays
-  early/static only, as originally scoped.
 - **Constructors, multiple inheritance, and visibility
   (`private`/`public`)** — none of these exist even as a plan yet beyond
   the scoping note.
