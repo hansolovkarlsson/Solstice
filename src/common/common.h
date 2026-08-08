@@ -94,7 +94,7 @@ typedef enum {
                       // TOKEN_NUMBER (integer literals)
     TOKEN_REAL_TYPE,  // the 'real' type keyword
     TOKEN_TRUNC, TOKEN_ROUND,
-    TOKEN_TYPE, TOKEN_RECORD,
+    TOKEN_TYPE, TOKEN_RECORD, TOKEN_CLASS,
     TOKEN_CONST,
     TOKEN_WITH,
     TOKEN_ASSERT,

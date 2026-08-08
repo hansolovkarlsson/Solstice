@@ -1957,6 +1957,54 @@ you're done with a block, the same discipline `malloc`/`free` demands.
   (see [Nested records](#nested-records)) — a compile error; pointers to
   a record work only when every field is a scalar or array.
 
+## Classes
+
+**Work in progress** — only declaration parsing exists so far (step 1 of
+the "Classes and instances" items in `docs/ROADMAP.md`'s Phase 2). See
+`notes/classes-and-instances-scoping.md` for the full design rationale.
+
+```pascal
+type
+    TCircle = class
+        radius: real;
+        procedure SetRadius(r: real);
+        function Area: real;
+    end;
+var
+    c: TCircle;
+begin
+    new(c);
+    dispose(c);
+end.
+```
+
+A class declaration is reference-semantics, like Delphi/Java, not the
+value-semantics `object` of old Turbo Pascal: `class TFoo ... end;`
+declares fields (the same syntax and rules an ordinary record's fields
+already use) and method headers (`procedure`/`function`, parsed the same
+way a functional/procedural parameter's own inline signature already
+is — scalar parameters only, by-value or `var`, no return-type/parameter
+subranges), then registers `TFoo` itself directly as an implicit pointer
+type targeting those fields. This means **every existing pointer
+mechanism already works on a class variable unmodified** — `var c:
+TCircle;`, passing `c` as an ordinary parameter, and `new(c)`/`dispose(c)`
+all work today, exactly as they would for a hand-written
+`type PCircle = ^TCircleRecord;`.
+
+**Not implemented yet** (later build steps):
+
+- **`c.field` read/write** — a class's fields aren't accessible at all
+  yet; declaring one is all this step supports.
+- **`c.Method(args)` calls** — method headers are parsed and stored, but
+  there's no call syntax, no method body, and no implicit `self`
+  parameter yet.
+- **Array or nested-record (composition) fields** — a class's fields
+  must be scalar for now, the same restriction a local/parameter record
+  has today.
+- **Inheritance, virtual/dynamic dispatch, constructors, and visibility
+  (`private`/`public`)** — none of these exist even as a plan yet beyond
+  the scoping note; static/early binding only, to start.
+
 ## Procedures
 
 ```pascal

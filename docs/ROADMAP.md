@@ -768,14 +768,25 @@ primitives instead of each reinventing them.
       visibility, scalar fields only) in
       `notes/classes-and-instances-scoping.md`. Broken into build-order
       steps below.
-- [ ] Classes and instances, step 1/5: `class TFoo ... end;` declaration
+- [x] Classes and instances, step 1/5: `class TFoo ... end;` declaration
       parsing — fields (reusing the record-field-group parser already
-      factored out for variant records) plus an implicit pointer-type
-      synonym for the class name, method headers parsed but not yet
-      callable
-- [ ] Classes and instances, step 2/5: `new(f)`/`dispose(f)` on a
-      class-typed variable — should already work once step 1 makes the
-      class name resolve to a pointer type; needs only a test to confirm
+      factored out for variant records, scalar-only for now: array and
+      nested-record/composition fields are a compile error) plus an
+      implicit pointer-type synonym for the class name registered
+      directly into `pointer_types[]` under `TFoo`'s own name (so
+      `parse_scalar_type()` needed zero changes - it already resolves
+      any pointer type by name), and method headers (reusing
+      `parse_proc_param_header()`, the same scalar-only inline-signature
+      parser functional/procedural parameters already use) parsed and
+      stored per-class but not yet callable - no `.field`/`.Method(...)`
+      access, no method body/dispatch, no `self`. See
+      [docs/LANGUAGE.md](LANGUAGE.md#classes) and
+      `notes/classes-and-instances-scoping.md`.
+- [x] Classes and instances, step 2/5: `new(f)`/`dispose(f)` on a
+      class-typed variable — confirmed working unmodified, exactly as
+      predicted in step 1 (a class variable is an ordinary pointer
+      variable under the hood). See
+      `examples/test/class/test_class_new_dispose.pas`.
 - [ ] Classes and instances, step 3/5: `f.field` read/write, routed
       through the existing heap-dereference codegen (compiles like
       `f^.field` already does)

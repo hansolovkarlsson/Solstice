@@ -156,6 +156,7 @@ void next_token(void) {
         else if (strcasecmp(token.text, "round") == 0) token.type = TOKEN_ROUND;
         else if (strcasecmp(token.text, "type") == 0) token.type = TOKEN_TYPE;
         else if (strcasecmp(token.text, "record") == 0) token.type = TOKEN_RECORD;
+        else if (strcasecmp(token.text, "class") == 0) token.type = TOKEN_CLASS;
         else if (strcasecmp(token.text, "const") == 0) token.type = TOKEN_CONST;
         else if (strcasecmp(token.text, "with") == 0) token.type = TOKEN_WITH;
         else if (strcasecmp(token.text, "assert") == 0) token.type = TOKEN_ASSERT;

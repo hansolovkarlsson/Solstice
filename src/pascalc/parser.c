@@ -375,9 +375,41 @@ static int is_pointer_type(DataType t) {
 // alias/enum/subrange is never deferred this way: parse_scalar_type()
 // already requires those to be declared before use, exactly like every
 // other reference to one, so there's nothing to defer.
-#define MAX_POINTER_DECLS MAX_POINTER_TYPES
+// One inline procedural/functional parameter header - standard ISO 7185
+// Pascal's functional/procedural parameters ('function f(n: integer):
+// integer' or 'procedure f(...)' written out as ONE formal parameter,
+// unlike a NameGroup which can list several names sharing one type).
+// Declared up here (rather than next to parse_proc_param_header(),
+// which actually parses one) so a class's method headers - see
+// PointerTypeDef.methods below - can reuse this exact shape too: a
+// class method header is parsed by the very same
+// parse_proc_param_header(), since "one procedure/function signature,
+// no body, scalar params only" is exactly what both need.
 typedef struct {
-    char name[MAX_NAME];        // the pointer TYPE's own name, e.g. "PNode"
+    char name[MAX_NAME];
+    int is_function;
+    DataType return_type;      // only meaningful if is_function
+    int param_count;           // this header's OWN parameter count - a
+                               // completely separate parameter list from
+                               // the enclosing procedure's
+    DataType param_types[MAX_PARAMS];
+    int param_is_var[MAX_PARAMS];
+} ProcParamHeader;
+
+#define MAX_POINTER_DECLS MAX_POINTER_TYPES
+// A class's own method-header cap (see PointerTypeDef.methods below) -
+// headers only, per the classes-and-instances scoping note
+// (notes/classes-and-instances-scoping.md): a method's BODY is a
+// separate, later build step, not part of this struct at all yet.
+#define MAX_CLASS_METHODS 16
+typedef struct {
+    char name[MAX_NAME];        // the pointer TYPE's own name, e.g. "PNode" -
+                                 // or, for a class, the class's own name
+                                 // (see is_class below): 'class TFoo ... end;'
+                                 // registers TFoo directly as a pointer type,
+                                 // so every existing pointer-typed variable/
+                                 // parameter/field mechanism already works
+                                 // for a class variable unmodified.
     int target_is_record;
     int target_record_type_idx; // only meaningful if target_is_record
     DataType target_type;       // only meaningful if !target_is_record
@@ -390,6 +422,17 @@ typedef struct {
     int is_pending;
     char pending_target_name[MAX_NAME];
     int pending_line;
+    int is_class;                // 1 if this pointer type is a class's
+                                  // own implicit pointer type (see
+                                  // parse_class_declaration()) - always
+                                  // has target_is_record = 1 and
+                                  // is_pending = 0; never forward-referenced,
+                                  // since a class is only ever registered
+                                  // once its own 'end;' is fully parsed.
+    int method_count;            // only meaningful if is_class
+    ProcParamHeader methods[MAX_CLASS_METHODS]; // only meaningful if is_class -
+                                  // headers only; see the comment above
+                                  // MAX_CLASS_METHODS
 } PointerTypeDef;
 static PointerTypeDef pointer_types[MAX_POINTER_DECLS];
 static int pointer_type_count = 0;
@@ -2041,21 +2084,6 @@ static NameGroup parse_name_group(void) {
     return g;
 }
 
-// One inline procedural/functional parameter header - standard ISO 7185
-// Pascal's functional/procedural parameters ('function f(n: integer):
-// integer' or 'procedure f(...)' written out as ONE formal parameter,
-// unlike a NameGroup which can list several names sharing one type).
-typedef struct {
-    char name[MAX_NAME];
-    int is_function;
-    DataType return_type;      // only meaningful if is_function
-    int param_count;           // this header's OWN parameter count - a
-                               // completely separate parameter list from
-                               // the enclosing procedure's
-    DataType param_types[MAX_PARAMS];
-    int param_is_var[MAX_PARAMS];
-} ProcParamHeader;
-
 // Parses one inline procedural/functional parameter header, starting at
 // the 'function'/'procedure' keyword. Scalar-only inline signature for
 // now (by-value and 'var') - no array/record parameters inside it yet
@@ -2135,6 +2163,7 @@ static void subroutine_declaration(int is_function_decl);
 static ASTNode *parse_case_label_value(void);
 static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx);
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
+static void parse_class_declaration(const char *class_name, int line);
 
 // Parses 'idx1, idx2, ..., idxN]' (already past the opening '[') for an
 // N-dimensional (N=dims, always 3 or more - 1D/2D have their own
@@ -3995,6 +4024,99 @@ static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx) {
     }
 }
 
+// Parses a class type declaration: 'class <fields> <method headers>
+// end;' - already past 'type TFoo =', with token positioned at the
+// 'class' keyword itself. Registers TWO things, per the design decision
+// in notes/classes-and-instances-scoping.md (reference semantics): a
+// hidden RecordTypeDef for the fields, and class_name itself as
+// pointer_types[]'s own entry (is_class = 1, target_is_record = 1,
+// targeting that hidden record type) - so every existing pointer-typed
+// variable/parameter/field/new/dispose mechanism already works for a
+// class variable completely unmodified (see PointerTypeDef.name's
+// comment). The hidden record type is deliberately named "$classN" -
+// '$' can't start (or appear in) a legal Pascal identifier, so this can
+// never collide with a user-written name, and deliberately ISN'T
+// class_name itself, so find_record_type(class_name) still returns -1
+// and a class can't be accidentally (mis)used as if it were an ordinary
+// nested-record field naming it directly (composition isn't supported
+// yet - see the scoping note). Known small rough edge: a field-list
+// error inside a class (duplicate/too-many field name) will name this
+// internal "$classN" record, not the class itself, since
+// parse_record_field_group()'s own error messages reference rt->name
+// directly - harmless (still a clean, correct compile error) but worth
+// polishing later.
+//
+// v1 scope (step 1 of the classes-and-instances roadmap items): fields
+// (scalar only - no array or nested-record fields yet, a known gap) and
+// method HEADERS only, parsed via the exact same parse_proc_param_header()
+// functional/procedural parameters already use, and stored on the
+// class's PointerTypeDef entry for a later build step to consume. Since
+// class_name isn't registered as a pointer type until this whole
+// declaration finishes, a method can't reference its own class in its
+// signature yet (e.g. a linked-list-style 'SetNext(n: TFoo)') - the
+// same declare-before-use restriction every other type in this compiler
+// already has. There is no '.field'/'.Method(...)' access yet (steps
+// 3/5) and no method body/dispatch machinery yet (step 4) - a class
+// declaration here compiles to nothing runtime-visible on its own.
+static void parse_class_declaration(const char *class_name, int line) {
+    match(TOKEN_CLASS);
+
+    if (record_type_count >= MAX_RECORD_TYPES) {
+        compile_error(line, "Too many record types (limit is %d)", MAX_RECORD_TYPES);
+    }
+    int rt_idx = record_type_count;
+    RecordTypeDef *rt = &record_types[rt_idx];
+    snprintf(rt->name, MAX_NAME, "$class%d", rt_idx);
+    rt->field_count = 0;
+
+    while (token.type == TOKEN_IDENTIFIER) {
+        int field_start = rt->field_count;
+        parse_record_field_group(rt, rt_idx);
+        match(TOKEN_SEMI);
+        for (int i = field_start; i < rt->field_count; i++) {
+            if (rt->fields[i].is_array || rt->fields[i].is_record) {
+                compile_error(line, "Class '%s' field '%s' - only scalar field types are supported in a class yet (see notes/classes-and-instances-scoping.md)", class_name, rt->fields[i].name);
+            }
+        }
+    }
+    record_type_count++;
+
+    if (pointer_type_count >= MAX_POINTER_TYPES) {
+        compile_error(line, "Too many pointer type declarations (limit is %d)", MAX_POINTER_TYPES);
+    }
+    PointerTypeDef *pt = &pointer_types[pointer_type_count];
+    strcpy(pt->name, class_name);
+    pt->is_class = 1;
+    pt->target_is_record = 1;
+    pt->target_record_type_idx = rt_idx;
+    pt->target_elem_size = rt->field_count;
+    pt->is_pending = 0;
+    pt->method_count = 0;
+
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+        int method_line = token.line;
+        ProcParamHeader h = parse_proc_param_header();
+        match(TOKEN_SEMI);
+        if (find_record_field(rt_idx, h.name) != -1) {
+            compile_error(method_line, "'%s' is already a field of class '%s'", h.name, class_name);
+        }
+        for (int i = 0; i < pt->method_count; i++) {
+            if (strcmp(pt->methods[i].name, h.name) == 0) {
+                compile_error(method_line, "Duplicate method '%s' in class '%s'", h.name, class_name);
+            }
+        }
+        if (pt->method_count >= MAX_CLASS_METHODS) {
+            compile_error(method_line, "Class '%s' has too many methods (limit is %d)", class_name, MAX_CLASS_METHODS);
+        }
+        pt->methods[pt->method_count] = h;
+        pt->method_count++;
+    }
+
+    match(TOKEN_END);
+    match(TOKEN_SEMI);
+    pointer_type_count++;
+}
+
 static void parse_type_section(void) {
     match(TOKEN_TYPE);
     while (token.type == TOKEN_IDENTIFIER) {
@@ -4032,6 +4154,14 @@ static void parse_type_section(void) {
             }
             PointerTypeDef *pt = &pointer_types[pointer_type_count];
             strcpy(pt->name, type_name);
+            pt->is_class = 0;      // an ordinary 'type PFoo = ^Target;' -
+            pt->method_count = 0;  // explicit reset: pointer_types[] is a
+                                    // static array reused across compiles
+                                    // in the same process (see
+                                    // ARCHITECTURE.md's "global state, not
+                                    // parameters" note), so a slot a PRIOR
+                                    // compile used for a class must not
+                                    // leak is_class/method_count here.
             if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
                 int record_idx = find_record_type(token.text);
                 if (record_type_has_nested_field(record_idx)) {
@@ -4062,6 +4192,13 @@ static void parse_type_section(void) {
             }
             match(TOKEN_SEMI);
             pointer_type_count++;
+            continue;
+        }
+
+        if (token.type == TOKEN_CLASS) {
+            // 'type TFoo = class ... end;' - see parse_class_declaration()'s
+            // own comment for the full design.
+            parse_class_declaration(type_name, line);
             continue;
         }
 
