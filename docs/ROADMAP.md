@@ -755,8 +755,39 @@ grow SolVM/`solas` to support OOP constructs generally rather than
 Pascal-specifically, so later front ends can share the same bytecode
 primitives instead of each reinventing them.
 
-- [ ] Classes and instances (fields + methods), most likely early/static
-      binding only to start
+- [ ] Classes and instances — reference semantics (Delphi/Java-style: an
+      instance is a heap-allocated record with an implicit pointer type,
+      `var f: TFoo` holds a reference, assignment aliases, `nil` is
+      valid), chosen over value semantics for matching what "objects"
+      usually means and for actually growing SolVM's own OOP primitives,
+      rather than reusing plain records' zero-new-mechanism trick. Early/
+      static binding only to start (`obj.Method()` resolves to one fixed
+      procedure at compile time - no vtable, no runtime method-address
+      storage). Full design rationale, prerequisites, and known v1 gaps
+      (no inheritance, no virtual dispatch, no constructors, no
+      visibility, scalar fields only) in
+      `notes/classes-and-instances-scoping.md`. Broken into build-order
+      steps below.
+- [ ] Classes and instances, step 1/5: `class TFoo ... end;` declaration
+      parsing — fields (reusing the record-field-group parser already
+      factored out for variant records) plus an implicit pointer-type
+      synonym for the class name, method headers parsed but not yet
+      callable
+- [ ] Classes and instances, step 2/5: `new(f)`/`dispose(f)` on a
+      class-typed variable — should already work once step 1 makes the
+      class name resolve to a pointer type; needs only a test to confirm
+- [ ] Classes and instances, step 3/5: `f.field` read/write, routed
+      through the existing heap-dereference codegen (compiles like
+      `f^.field` already does)
+- [ ] Classes and instances, step 4/5: method bodies — mangled top-level
+      procedure names (`TFoo__Method`, the same trick record fields/
+      static locals/nested-record leaves already use, needed because
+      procedures share one flat whole-program namespace with no
+      per-scope overloading today) plus an implicit `self` first
+      parameter
+- [ ] Classes and instances, step 5/5: `f.Method(args)` call syntax —
+      resolves `f` to its pointer value, splices it in as the method's
+      first (`self`) argument to an ordinary call
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
