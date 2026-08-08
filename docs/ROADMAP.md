@@ -905,6 +905,46 @@ primitives instead of each reinventing them.
       `test_class_inherit_method.pas`, `test_class_inherit_upcast.pas`,
       `test_class_inherit_multilevel.pas`, and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
+- [x] Classes and instances: runtime type tag — every class instance now
+      reserves heap offset 0 for a hidden tag (the allocating class's
+      own `pointer_types[]` index), written by `new()` right after
+      allocation; every ordinary field's own heap offset shifts by 1 to
+      make room (`resolve_heap_deref_step()`'s one +1, gated on
+      `pt->is_class` - a plain `type PFoo = ^Target;` pointer is
+      unaffected). `target_elem_size` for a class is `field_count + 1`
+      accordingly, so allocation size and `dispose()`'s matching
+      freelist bucket both already account for it with no separate
+      change needed there. Write-only for now - nothing reads the tag
+      back yet; that's virtual/dynamic dispatch itself, the next step,
+      now that both prerequisites (this, and procedural types just
+      above) are done. Verified directly via `desole` disassembly
+      (`new 2` / `push <class id>` / `store_heap_field 0` immediately
+      after each `new`, every ordinary field's `store_heap_field`/
+      `load_heap_field` shifted to start at 1, a subclass correctly
+      tagged with ITS OWN class id rather than its parent's).
+      Along the way, found and fixed a real heap-use-after-free (not
+      specific to the tag): the `^`-chain branch of `new()` (`new(head^.
+      next)`) tried to reuse its already-built `base` expression a
+      second time to build the tag-write's read, but `free_ast()`
+      visits a subtree through every parent that points at it, so a
+      shared node got freed twice - confirmed with AddressSanitizer.
+      Fixed by rejecting `new()` into a class-typed field reached
+      through `^` with an explicit compile error (allocate into a plain
+      class variable first, then assign it into the field) rather than
+      leaving a silent "sometimes untagged" gap - a real utility to
+      deep-copy an AST subtree would be needed to support it properly,
+      and didn't exist. See
+      `examples/test/class/test_class_tag_basic.pas`,
+      `test_class_tag_inherit.pas`, `test_class_bad_tag_chain_new.pas`.
+- [ ] Virtual/dynamic dispatch — both prerequisites are done (procedural
+      types, and the runtime type tag just above), so this is now
+      buildable: a vtable per class (nearly free to construct, since
+      `PointerTypeDef.methods[]` already has every method's fully-
+      resolved, inheritance-aware mangled name), an instance's tag used
+      to find its OWN vtable at a method-call site instead of the
+      accessing expression's static type, and the call itself routed
+      through `OP_CALL_INDIRECT` - already exactly the right primitive,
+      already proven out by procedural types
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real

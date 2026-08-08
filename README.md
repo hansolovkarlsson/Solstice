@@ -350,9 +350,12 @@ for an inherited method call), all resolved statically at compile time
 procedural types (`type TProc = procedure(x: integer);`) — a variable,
 local, or `var` parameter that holds a reference to a top-level
 procedure/function (or `nil`), assignable, comparable, and callable
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)) — the first
-of two prerequisites (a runtime type tag on instances is the other) for
-eventual virtual/dynamic dispatch.
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)). Every class
+instance also now carries a hidden runtime type tag identifying its own
+class, written by `new()` — internal, write-only bookkeeping for now
+(nothing reads it back yet). With both of those in place, virtual/
+dynamic dispatch itself — still early/static-only today — is the next
+planned step (see [docs/ROADMAP.md](docs/ROADMAP.md)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

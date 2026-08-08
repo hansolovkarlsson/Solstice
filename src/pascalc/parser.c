@@ -3241,7 +3241,11 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base) {
         }
         match(TOKEN_IDENTIFIER);
         RecordField *f = &record_types[pt->target_record_type_idx].fields[field_idx];
-        step.field_offset = field_idx;
+        // +1 for a class: heap offset 0 is the hidden runtime type tag
+        // (see parse_class_declaration()'s target_elem_size comment and
+        // new()'s tag-write) - a plain 'type PFoo = ^Target;' pointer
+        // has no such slot, so field_idx IS the heap offset there.
+        step.field_offset = pt->is_class ? field_idx + 1 : field_idx;
         step.result_type = f->type;
         step.is_subrange = f->is_subrange;
         step.subrange_lower = f->subrange_lower;
@@ -4676,7 +4680,15 @@ static void parse_class_declaration(const char *class_name, int line) {
         }
     }
 
-    pt->target_elem_size = rt->field_count;
+    // +1 for the hidden runtime type tag every class instance carries at
+    // heap offset 0 (see resolve_heap_deref_step()'s own +1 shift for
+    // every ordinary field's offset, and new()'s tag-write) - not a
+    // user-visible field, not part of rt->fields[]/find_record_field()
+    // at all, so nothing about field lookup/inheritance/duplicate
+    // checking above needed to change for it. Only a class gets this
+    // slot - an ordinary 'type PFoo = ^Target;' pointer's own
+    // target_elem_size (set elsewhere in this file) is unaffected.
+    pt->target_elem_size = rt->field_count + 1;
     match(TOKEN_END);
     match(TOKEN_SEMI);
     pointer_type_count++;
@@ -6476,6 +6488,46 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     return write_node;
 }
 
+// Builds a '<target>^[0] := class_ptr_idx;' statement
+// (NODE_HEAP_FIELD_ASSIGN) writing a freshly-allocated class instance's
+// hidden runtime type tag at heap offset 0 - see
+// parse_class_declaration()'s target_elem_size comment and
+// resolve_heap_deref_step()'s +1 field-offset shift. This is pure
+// write-only infrastructure for now: nothing reads it back yet (that's
+// a later step - virtual/dynamic dispatch). 'target_read' must be a
+// FRESH read expression (a new node, not one already spliced in
+// elsewhere in the AST) evaluating to the just-allocated pointer value;
+// this function takes ownership of it as the new statement's own left
+// child.
+static ASTNode *build_class_tag_write(ASTNode *target_read, int class_ptr_idx, int line) {
+    ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+    stmt->line = line;
+    stmt->left = target_read;
+    ASTNode *tag_value = create_node(NODE_NUMBER);
+    tag_value->data.num_value = class_ptr_idx;
+    tag_value->expression_type = TYPE_INTEGER;
+    stmt->right = tag_value;
+    ASTNode *offset_lit = create_node(NODE_NUMBER);
+    offset_lit->data.num_value = 0;
+    offset_lit->expression_type = TYPE_INTEGER;
+    stmt->extra = offset_lit;
+    stmt->expression_type = TYPE_INTEGER;
+    return stmt;
+}
+
+// Wraps 'first' and 'second' (first->next left NULL) in a NODE_COMPOUND
+// so a caller that must return exactly ONE ASTNode for what's
+// syntactically one statement (see NODE_COMPOUND's own comment in
+// common.h) can chain two statements together - used below when new()
+// on a class-typed target needs both the ordinary allocation-assignment
+// AND the tag-write from build_class_tag_write() above.
+static ASTNode *chain_two_statements(ASTNode *first, ASTNode *second) {
+    first->next = second;
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = first;
+    return compound;
+}
+
 // 'new(X)' - X resolves exactly the same variety parse_inc_dec() above
 // already resolves for a plain integer target (a with-field, a record
 // field - global or local, a static local, or a plain local/parameter/
@@ -6592,6 +6644,23 @@ static ASTNode *parse_new_statement(void) {
         if (step.is_method_call || !is_pointer_type(step.result_type)) {
             compile_error(line, "'new' expects a pointer target");
         }
+        if (pointer_types[step.result_type - TYPE_POINTER_BASE].is_class) {
+            // Tagging a class instance needs a FRESH read of wherever it
+            // just landed (see build_class_tag_write()'s own comment) -
+            // for the plain-variable case below, that's cheap (build a
+            // brand new NODE_VARIABLE/NODE_LOCAL_VAR/NODE_VAR_PARAM_READ),
+            // but here 'base' can be an arbitrary '^'-chain expression
+            // (e.g. 'head^.next'), and reusing that SAME already-built
+            // node a second time - rather than deep-copying it, which
+            // this compiler has no utility for - caused a real
+            // heap-use-after-free (free_ast() visits a shared subtree
+            // through both parents, freeing it twice) found while
+            // building this. Rejected explicitly rather than left as a
+            // silent "sometimes untagged" gap, since an untagged
+            // instance would be a real, hard-to-diagnose bug once
+            // virtual dispatch consumes the tag later.
+            compile_error(line, "'new' into a class-typed field reached through '^' isn't supported yet - allocate into a plain class variable first, then assign it into the field");
+        }
         match(TOKEN_RPAREN);
         ASTNode *value_node = create_node(NODE_HEAP_ALLOC);
         value_node->expression_type = step.result_type;
@@ -6628,6 +6697,30 @@ static ASTNode *parse_new_statement(void) {
         write_node->data.var_idx = global_idx;
     }
     write_node->left = value_node;
+    if (pointer_types[target_type - TYPE_POINTER_BASE].is_class) {
+        // A fresh read of the SAME target, to get the just-allocated
+        // offset back for tagging - see build_class_tag_write()'s own
+        // comment. Mirrors the '^'-chain branch's own base-building
+        // above exactly, just for a plain named target instead.
+        ASTNode *fresh_read;
+        if (is_var_param) {
+            fresh_read = create_node(NODE_VAR_PARAM_READ);
+            fresh_read->data.var_idx = local_idx;
+            fresh_read->op = (TokenType)levels_up;
+            fresh_read->expression_type = target_type;
+        } else if (is_local) {
+            fresh_read = create_node(NODE_LOCAL_VAR);
+            fresh_read->data.var_idx = local_idx;
+            fresh_read->op = (TokenType)levels_up;
+            fresh_read->expression_type = target_type;
+        } else {
+            fresh_read = create_node(NODE_VARIABLE);
+            fresh_read->data.var_idx = global_idx;
+            fresh_read->expression_type = target_type;
+        }
+        ASTNode *tag_write = build_class_tag_write(fresh_read, target_type - TYPE_POINTER_BASE, line);
+        return chain_two_statements(write_node, tag_write);
+    }
     return write_node;
 }
 

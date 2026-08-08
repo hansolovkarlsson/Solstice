@@ -1966,6 +1966,15 @@ inheritance all work. Early/static binding only, as scoped — see "Not
 implemented yet" below and `notes/classes-and-instances-scoping.md` for
 the full design rationale.
 
+Every instance now also carries a hidden runtime type tag (identifying
+its own allocating class) at the start of its heap block, one int
+larger than just its declared fields — entirely internal bookkeeping
+with no Pascal-visible syntax of its own; nothing reads it back yet
+(that's virtual/dynamic dispatch, not built yet either — see
+`docs/ROADMAP.md`). `new()` into a class-typed field reached through an
+explicit `^` isn't supported yet — allocate into a plain class variable
+first, then assign it into the field.
+
 ```pascal
 type
     TCircle = class
@@ -2156,10 +2165,16 @@ live relationship resolved later:
 - **Array or nested-record (composition) fields** — a class's fields
   must be scalar for now, the same restriction a local/parameter record
   has today.
-- **Virtual/dynamic dispatch, constructors, multiple inheritance, and
-  visibility (`private`/`public`)** — none of these exist even as a plan
-  yet beyond the scoping note; single inheritance with early/static
-  binding only, as scoped.
+- **`new()` into a class-typed field reached through an explicit `^`**
+  (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
+  into a plain class variable first, then assign it into the field.
+- **Virtual/dynamic dispatch** — both of its prerequisites (procedural
+  types, and the runtime type tag above) are now done, making this the
+  next planned step (see `docs/ROADMAP.md`); until then, dispatch stays
+  early/static only, as originally scoped.
+- **Constructors, multiple inheritance, and visibility
+  (`private`/`public`)** — none of these exist even as a plan yet beyond
+  the scoping note.
 
 ## Procedures
 
