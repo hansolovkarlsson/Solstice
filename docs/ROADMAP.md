@@ -757,8 +757,10 @@ primitives instead of each reinventing them.
 
 - [ ] Classes and instances (fields + methods), most likely early/static
       binding only to start
-- [ ] Possibly add C-style `enum`/`union` concepts alongside Pascal's own
-      enumerated types
+- [ ] Possibly add a C-style `union` concept — true overlapping storage
+      between fields, which variant records deliberately did NOT
+      provide (see docs/LANGUAGE.md#variant-records); would need a real
+      addressing/memory model for records that doesn't exist yet
 - [ ] Units/modules and an `uses`-style include/import mechanism
 - [ ] Possibly a linker for separately-compiled object-style units (`.obj`)
 
