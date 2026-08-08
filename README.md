@@ -346,7 +346,13 @@ machinery rather than a new addressing model. Single inheritance
 inheritance, method overriding, and upcast compatibility (a subclass
 instance usable anywhere its ancestor is expected, including as `self`
 for an inherited method call), all resolved statically at compile time
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#classes)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#classes)). Also working: NAMED
+procedural types (`type TProc = procedure(x: integer);`) — a variable,
+local, or `var` parameter that holds a reference to a top-level
+procedure/function (or `nil`), assignable, comparable, and callable
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)) — the first
+of two prerequisites (a runtime type tag on instances is the other) for
+eventual virtual/dynamic dispatch.
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

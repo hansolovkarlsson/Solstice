@@ -700,6 +700,23 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
         }
+
+        case NODE_PROCVAR_CALL: {
+            printf("[Procvar Call]\n");
+            print_indent(indent + 1);
+            printf("Callee:\n");
+            print_ast(node->right, indent + 2);
+            int arg_num = 1;
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                print_indent(indent + 1);
+                printf("Arg %d:\n", arg_num++);
+                print_ast(arg, indent + 2);
+            }
+            if (node->extra->data.num_value && node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+        }
     }
 }
 

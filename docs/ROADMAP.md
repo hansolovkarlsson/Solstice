@@ -944,13 +944,35 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] Procedural types / function pointers — a variable, parameter, or
-      field that holds a reference to a procedure or function, matching
-      Turbo Pascal's `type TProc = procedure(x: integer);` (standard
-      Pascal only allows a procedure/function as a formal parameter
-      inline, not as a named, storable type - see Functional/procedural
-      parameters in Phase 1 for that standard form, which needs none of
-      this)
+- [x] Procedural types / function pointers — `type TProc = procedure(x:
+      integer); TFunc = function(x: integer): real;` declares a NAMED
+      procedural type (Turbo Pascal's form; standard Pascal only allows
+      a procedure/function as a formal parameter written inline, never
+      as a named, storable type - see Functional/procedural parameters
+      in Phase 1 for that narrower, older mechanism, which this reuses
+      nothing from at the storage level). Encoded as `TYPE_PROC_BASE +
+      its proc_types[] index`, mirroring `TYPE_POINTER_BASE`/classes
+      exactly - the runtime representation is a plain int (a top-level
+      procedure/function's entry address, or -1 for `nil`), so a
+      variable/local/`var`-parameter of this type reuses every existing
+      scalar mechanism completely unmodified; only assignment and
+      calling through it needed dedicated parsing. Supports `nil`
+      (assignable and `=`/`<>`-comparable, exactly like a pointer) and
+      copying between two variables of the same procedural type. A new
+      `NODE_PROCVAR_CALL` node (deliberately separate from the older
+      `NODE_CALL_INDIRECT`, whose shape is hardcoded to "the callee
+      always lives in a local frame slot" - doesn't fit a plain global)
+      handles the call; a bare reference used as a whole STATEMENT
+      defaults to calling it (matching how any other zero-argument
+      call already works bare), but in expression/read context (`p =
+      nil`, `p2 := p1`, an argument) it's just the value unless
+      immediately followed by `(` - avoiding the ambiguity a
+      "bare reference always calls" rule would create for comparisons
+      and copies. Record/class fields of this type, passing one as an
+      argument to another procedure, and function return values of
+      this type are all explicit v1 gaps (the last one is its own
+      separate, harder roadmap item just below, which needs this one
+      first). See [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
 - [ ] Functions/procedures as return values — a function returning a
       reference to another function/procedure; needs procedural types
       above (standard Pascal restricts a function's return type to a

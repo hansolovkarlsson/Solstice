@@ -1021,6 +1021,26 @@ void generate_code(ASTNode *node) {
             }
             break;
 
+        case NODE_PROCVAR_CALL:
+            // Same shape as NODE_CALL_INDIRECT just above, except the
+            // callee's address comes from an arbitrary already-built
+            // expression (node->right - a NODE_VARIABLE/NODE_LOCAL_VAR/
+            // NODE_VAR_PARAM_READ reading a NAMED procedural-type
+            // value) instead of always a local frame slot - see
+            // NODE_PROCVAR_CALL's own comment in common.h.
+            for (ASTNode *arg = node->left; arg; arg = arg->next) {
+                generate_code(arg);
+            }
+            generate_code(node->right); // push the target address, on top of the args
+            emit(OP_CALL_INDIRECT, 0);
+            if (node->extra->data.num_value) {
+                if (node->expression_type != TYPE_UNKNOWN) {
+                    emit(OP_POP, 0);
+                }
+                generate_code(node->next);
+            }
+            break;
+
         case NODE_LOCAL_VAR:
             emit_load_local((int)node->op, node->data.var_idx);
             break;

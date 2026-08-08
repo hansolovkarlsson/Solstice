@@ -357,6 +357,13 @@ static int is_pointer_type(DataType t) {
     return t >= TYPE_POINTER_BASE && t < TYPE_POINTER_BASE + MAX_POINTER_TYPES;
 }
 
+// Same bounded-range idea, for a specific NAMED procedural type ('type
+// TProc = procedure(...);', encoded as TYPE_PROC_BASE + its
+// proc_types[] index - see the comment in common.h).
+static int is_proc_type(DataType t) {
+    return t >= TYPE_PROC_BASE && t < TYPE_PROC_BASE + MAX_PROC_TYPES;
+}
+
 // One declared pointer type ('type PFoo = ^Target;'). target_type is any
 // DataType parse_scalar_type() can already resolve (a scalar, an alias,
 // an enum, a subrange) - OR the pointer targets a RECORD type instead,
@@ -520,6 +527,27 @@ int class_type_is_subtype_of(DataType sub, DataType target) {
         idx = pointer_types[idx].is_class ? pointer_types[idx].parent_class_ptr_idx : -1;
     }
     return 0;
+}
+
+// One declared NAMED procedural type ('type TProc = procedure(x:
+// integer); TFunc = function: real;' - see parse_type_section()'s own
+// TOKEN_PROCEDURE/TOKEN_FUNCTION branch). Reuses ProcParamHeader's exact
+// shape (defined above, alongside PointerTypeDef.methods for the same
+// reason) purely for its signature fields (is_function/return_type/
+// param_count/param_types[]/param_is_var[]) - .name/.param_names[]/
+// .mangled_name/.is_inherited are all meaningless here and left unset.
+typedef struct {
+    char name[MAX_NAME]; // the procedural TYPE's own name, e.g. "TProc"
+    ProcParamHeader sig;
+} ProcTypeDef;
+static ProcTypeDef proc_types[MAX_PROC_TYPES];
+static int proc_type_count = 0;
+
+static int find_proc_type(const char *name) {
+    for (int i = 0; i < proc_type_count; i++) {
+        if (strcmp(proc_types[i].name, name) == 0) return i;
+    }
+    return -1;
 }
 
 // True right when a CLASS-typed expression ('t' is a class's own
@@ -2050,8 +2078,13 @@ static DataType parse_scalar_type(void) {
             match(TOKEN_IDENTIFIER);
             return (DataType)(TYPE_POINTER_BASE + pointer_type_idx);
         }
+        int proc_type_idx = find_proc_type(token.text);
+        if (proc_type_idx != -1) {
+            match(TOKEN_IDENTIFIER);
+            return (DataType)(TYPE_PROC_BASE + proc_type_idx);
+        }
     }
-    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', 'set of ...', a declared type alias, an enumerated type, a subrange type, or a pointer type)");
+    compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', 'set of ...', a declared type alias, an enumerated type, a subrange type, a pointer type, or a procedural type)");
     return TYPE_UNKNOWN;
 }
 
@@ -2184,25 +2217,25 @@ static NameGroup parse_name_group(void) {
     return g;
 }
 
-// Parses one inline procedural/functional parameter header, starting at
-// the 'function'/'procedure' keyword. Scalar-only inline signature for
-// now (by-value and 'var') - no array/record parameters inside it yet
-// (parse_scalar_type() already rejects both with a clear "Unknown type"
-// error, needing no extra guard here), and no subrange types either
-// (there's nowhere to stash per-parameter subrange bounds in the
-// ProcSymbol/LocalSymbol arrays this feature added - a documented,
-// narrow v1 gap, not a silent one).
-static ProcParamHeader parse_proc_param_header(void) {
-    ProcParamHeader h;
-    h.is_function = (token.type == TOKEN_FUNCTION);
-    match(h.is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
-    if (token.type != TOKEN_IDENTIFIER) {
-        compile_error(token.line, "Expected a parameter name after '%s'", h.is_function ? "function" : "procedure");
-    }
-    strcpy(h.name, token.text);
-    match(TOKEN_IDENTIFIER);
-
-    h.param_count = 0;
+// Parses the '(params) [: returntype]' TAIL of a procedure/function
+// signature - h->is_function must already be set (by whichever caller
+// consumed the leading 'function'/'procedure' keyword and, if it has
+// one of its own, a name); h->name is left untouched here. Shared by
+// parse_proc_param_header() below (a functional/procedural PARAMETER's
+// own inline header, e.g. 'function f(n: integer): integer' as ONE
+// formal parameter - has a name of its own, 'f') and
+// parse_type_section()'s TOKEN_PROCEDURE/TOKEN_FUNCTION branch (a NAMED
+// procedural TYPE, e.g. 'type TProc = procedure(x: integer);' - has no
+// name of its own; the type's own name, already consumed before '=',
+// is unrelated to any parameter name here). Scalar-only signature for
+// now (by-value and 'var') - no array/record parameters (parse_scalar_
+// type() already rejects both with a clear "Unknown type" error,
+// needing no extra guard here), and no subrange types either (there's
+// nowhere to stash per-parameter subrange bounds in the ProcSymbol/
+// LocalSymbol arrays this feature added - a documented, narrow v1 gap,
+// not a silent one).
+static void parse_proc_signature_tail(ProcParamHeader *h) {
+    h->param_count = 0;
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
@@ -2213,7 +2246,7 @@ static ProcParamHeader parse_proc_param_header(void) {
                 int name_count = 0;
                 while (1) {
                     if (token.type != TOKEN_IDENTIFIER) {
-                        compile_error(token.line, "Expected a parameter name inside '%s's own parameter list", h.name);
+                        compile_error(token.line, "Expected a parameter name");
                     }
                     if (name_count >= MAX_GROUP_NAMES) {
                         compile_error(token.line, "Too many parameter names in one group (limit is %d)", MAX_GROUP_NAMES);
@@ -2226,16 +2259,16 @@ static ProcParamHeader parse_proc_param_header(void) {
                 match(TOKEN_COLON);
                 DataType t = parse_scalar_type();
                 if (scalar_type_is_subrange) {
-                    compile_error(token.line, "A subrange type isn't supported inside '%s's own parameter list yet - use its base type 'integer' (see docs/LANGUAGE.md)", h.name);
+                    compile_error(token.line, "A subrange type isn't supported inside a procedure/function signature yet - use its base type 'integer' (see docs/LANGUAGE.md)");
                 }
                 for (int i = 0; i < name_count; i++) {
-                    if (h.param_count >= MAX_PARAMS) {
-                        compile_error(token.line, "'%s' has too many parameters (limit is %d)", h.name, MAX_PARAMS);
+                    if (h->param_count >= MAX_PARAMS) {
+                        compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
                     }
-                    h.param_types[h.param_count] = t;
-                    h.param_is_var[h.param_count] = is_var;
-                    strcpy(h.param_names[h.param_count], names[i]);
-                    h.param_count++;
+                    h->param_types[h->param_count] = t;
+                    h->param_is_var[h->param_count] = is_var;
+                    strcpy(h->param_names[h->param_count], names[i]);
+                    h->param_count++;
                 }
                 if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
                 break;
@@ -2244,15 +2277,32 @@ static ProcParamHeader parse_proc_param_header(void) {
         match(TOKEN_RPAREN);
     }
 
-    if (h.is_function) {
+    if (h->is_function) {
         match(TOKEN_COLON);
-        h.return_type = parse_scalar_type();
+        h->return_type = parse_scalar_type();
         if (scalar_type_is_subrange) {
-            compile_error(token.line, "A subrange return type isn't supported for a procedural/functional parameter yet - use its base type 'integer' (see docs/LANGUAGE.md)");
+            compile_error(token.line, "A subrange return type isn't supported here yet - use its base type 'integer' (see docs/LANGUAGE.md)");
         }
     } else {
-        h.return_type = TYPE_UNKNOWN;
+        h->return_type = TYPE_UNKNOWN;
     }
+}
+
+// Parses one inline procedural/functional parameter header, starting at
+// the 'function'/'procedure' keyword (e.g. 'function f(n: integer):
+// integer' as ONE formal parameter, unlike a NameGroup which can list
+// several names sharing one type) - see parse_proc_signature_tail()
+// above for everything after the header's own name.
+static ProcParamHeader parse_proc_param_header(void) {
+    ProcParamHeader h;
+    h.is_function = (token.type == TOKEN_FUNCTION);
+    match(h.is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a parameter name after '%s'", h.is_function ? "function" : "procedure");
+    }
+    strcpy(h.name, token.text);
+    match(TOKEN_IDENTIFIER);
+    parse_proc_signature_tail(&h);
     return h;
 }
 
@@ -2770,6 +2820,84 @@ static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
     return node;
 }
 
+// Parses the RHS of an assignment INTO a NAMED procedural-type target
+// (proc_type_idx into proc_types[]) - 'nil', a top-level (non-nested)
+// procedure/function name matching the target's exact signature, or an
+// existing variable/local/'var'-parameter ALREADY of the same
+// procedural type (a plain copy of its already-held address, never a
+// call - see docs/LANGUAGE.md#classes: a procedural-type value can only
+// ever be read bare in exactly this one context, or forwarded as a
+// matching call argument in a future step; everywhere else, a bare
+// reference to one calls it). Mirrors parse_proc_argument()'s exact
+// same two non-nil cases - duplicated rather than shared, since that
+// one is keyed by a PARAMETER's own inline signature storage
+// (proc_table[].param_proc_*), not proc_types[].
+static ASTNode *parse_proc_value(int proc_type_idx, int line) {
+    ProcParamHeader *sig = &proc_types[proc_type_idx].sig;
+    if (token.type == TOKEN_NIL) {
+        match(TOKEN_NIL);
+        ASTNode *node = create_node(NODE_NUMBER);
+        node->line = line;
+        node->data.num_value = -1;
+        node->expression_type = TYPE_NIL;
+        return node;
+    }
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected 'nil', a procedure/function name, or a variable of the same procedural type");
+    }
+    char name[MAX_NAME];
+    int name_line = token.line;
+    strcpy(name, token.text);
+
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->type != (DataType)(TYPE_PROC_BASE + proc_type_idx)) {
+            compile_error(name_line, "'%s' is not a procedure/function or a variable of this procedural type", name);
+        }
+        match(TOKEN_IDENTIFIER);
+        ASTNode *node = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+        node->line = name_line;
+        node->data.var_idx = local_idx;
+        node->op = (TokenType)levels_up;
+        node->expression_type = ls->type;
+        return node;
+    }
+
+    int global_idx = find_var_soft(name);
+    if (global_idx != -1 && sym_table[global_idx].type == (DataType)(TYPE_PROC_BASE + proc_type_idx)) {
+        match(TOKEN_IDENTIFIER);
+        ASTNode *node = create_node(NODE_VARIABLE);
+        node->line = name_line;
+        node->data.var_idx = global_idx;
+        node->expression_type = sym_table[global_idx].type;
+        return node;
+    }
+
+    int target_proc_idx = find_proc(name);
+    if (target_proc_idx == -1) {
+        compile_error(name_line, "Undeclared procedure/function '%s'", name);
+    }
+    if (proc_table[target_proc_idx].lexical_parent_idx != -1) {
+        compile_error(name_line, "'%s' is a nested procedure/function - only a top-level one can be assigned to a procedural type (see docs/LANGUAGE.md)", name);
+    }
+    if (!proc_has_only_scalar_params(target_proc_idx) ||
+        !proc_signatures_match(proc_table[target_proc_idx].is_function, proc_table[target_proc_idx].return_type,
+                                proc_table[target_proc_idx].param_count, proc_table[target_proc_idx].param_types,
+                                proc_table[target_proc_idx].param_is_var,
+                                sig->is_function, sig->return_type, sig->param_count,
+                                sig->param_types, sig->param_is_var)) {
+        compile_error(name_line, "'%s' does not match the required signature for procedural type '%s'", name, proc_types[proc_type_idx].name);
+    }
+    match(TOKEN_IDENTIFIER);
+    ASTNode *node = create_node(NODE_PROC_REF);
+    node->line = name_line;
+    node->data.var_idx = target_proc_idx;
+    node->expression_type = (DataType)(TYPE_PROC_BASE + proc_type_idx);
+    return node;
+}
+
 static ASTNode *parse_call_arguments(int proc_idx) {
     ASTNode *arg_head = NULL;
     ASTNode *arg_tail = NULL;
@@ -2894,6 +3022,79 @@ static ASTNode *parse_indirect_call(LocalSymbol *ls, int local_idx, int levels_u
     node->op = (TokenType)levels_up;
     node->left = arg_head;
     node->expression_type = ls->proc_param_is_function ? ls->proc_param_return_type : TYPE_UNKNOWN;
+    ASTNode *stmt_flag = create_node(NODE_NUMBER);
+    stmt_flag->data.num_value = is_statement;
+    stmt_flag->expression_type = TYPE_INTEGER;
+    node->extra = stmt_flag;
+    return node;
+}
+
+// Parses a call through an already-resolved NAMED procedural-type value
+// ('callee', already built by whichever ordinary read the caller used -
+// NODE_VARIABLE/NODE_LOCAL_VAR/NODE_VAR_PARAM_READ) - '(args)', or
+// nothing for a zero-argument call, matching how an ordinary
+// parameterless function/procedure call already works. Builds
+// NODE_PROCVAR_CALL, NOT NODE_CALL_INDIRECT - see NODE_PROCVAR_CALL's
+// own comment in common.h for why (NODE_CALL_INDIRECT's shape is
+// hardcoded to "the callee's address always lives in a LOCAL frame
+// slot", which a plain GLOBAL procedural-type variable doesn't fit).
+// Mirrors parse_indirect_call()'s own inline argument-parsing exactly,
+// including the int->real widening duplicated here for the same reason
+// it's duplicated there: there's no proc_table[] entry for a
+// procedural-type value's own signature to look up later.
+static ASTNode *build_procvar_call(ASTNode *callee, int proc_type_idx, int line, int is_statement) {
+    ProcParamHeader *sig = &proc_types[proc_type_idx].sig;
+    if (!is_statement && !sig->is_function) {
+        compile_error(line, "'%s' is a procedure and does not return a value; it cannot be used in an expression", proc_types[proc_type_idx].name);
+    }
+    ASTNode *arg_head = NULL;
+    ASTNode *arg_tail = NULL;
+    int arg_count = 0;
+    if (token.type == TOKEN_LPAREN) {
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_RPAREN) {
+            while (1) {
+                ASTNode *arg;
+                if (arg_count < sig->param_count && sig->param_is_var[arg_count]) {
+                    arg = parse_var_argument(sig->param_types[arg_count], proc_types[proc_type_idx].name, arg_count);
+                } else if (arg_count < sig->param_count) {
+                    arg = expression();
+                    DataType expected = sig->param_types[arg_count];
+                    DataType actual = arg->expression_type;
+                    int expected_stringy = (expected == TYPE_STRING || expected == TYPE_CHAR);
+                    int actual_stringy = (actual == TYPE_STRING || actual == TYPE_CHAR);
+                    if (!(expected_stringy && actual_stringy) && expected != actual) {
+                        if (actual == TYPE_INTEGER && expected == TYPE_REAL) {
+                            ASTNode *wrapper = create_node(NODE_INT_TO_REAL);
+                            wrapper->left = arg;
+                            wrapper->expression_type = TYPE_REAL;
+                            wrapper->line = arg->line;
+                            arg = wrapper;
+                        } else {
+                            compile_error(token.line, "Argument %d to '%s' has the wrong type", arg_count + 1, proc_types[proc_type_idx].name);
+                        }
+                    }
+                } else {
+                    arg = expression(); // too many arguments - the count mismatch error below still fires
+                }
+                arg_count++;
+                if (!arg_head) arg_head = arg; else arg_tail->next = arg;
+                arg_tail = arg;
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
+            }
+        }
+        match(TOKEN_RPAREN);
+    }
+    if (arg_count != sig->param_count) {
+        compile_error(line, "'%s' expects %d argument(s), got %d", proc_types[proc_type_idx].name, sig->param_count, arg_count);
+    }
+
+    ASTNode *node = create_node(NODE_PROCVAR_CALL);
+    node->line = line;
+    node->left = arg_head;
+    node->right = callee;
+    node->expression_type = sig->is_function ? sig->return_type : TYPE_UNKNOWN;
     ASTNode *stmt_flag = create_node(NODE_NUMBER);
     stmt_flag->data.num_value = is_statement;
     stmt_flag->expression_type = TYPE_INTEGER;
@@ -3240,6 +3441,16 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
     node->line = line;
     node->data.var_idx = idx;
     node->expression_type = sym_table[idx].type;
+    if (is_proc_type(node->expression_type) && token.type == TOKEN_LPAREN) {
+        // A NAMED procedural-type global followed by '(' is a CALL - see
+        // build_procvar_call()'s own comment. In expression context
+        // (unlike a bare statement - see parse_global_assignment()),
+        // NOT followed by '(' just means "the value itself" (e.g.
+        // 'p1 = nil', 'p2 := p1', passing p1 through as an argument) -
+        // calling a zero-argument procedural-type value in expression
+        // context always needs explicit '()' to disambiguate from that.
+        return build_procvar_call(node, node->expression_type - TYPE_PROC_BASE, line, 0);
+    }
     if (is_pointer_type(node->expression_type) && (token.type == TOKEN_CARET || class_dot_deref_pending(node->expression_type))) {
         return parse_heap_deref_read(node, line);
     }
@@ -3785,6 +3996,9 @@ static ASTNode *factor(void) {
                 node->data.var_idx = local_idx;
                 node->op = (TokenType)levels_up;
                 node->expression_type = ls->type;
+                if (is_proc_type(node->expression_type) && token.type == TOKEN_LPAREN) {
+                    return build_procvar_call(node, node->expression_type - TYPE_PROC_BASE, line, 0);
+                }
                 if (is_pointer_type(node->expression_type) && (token.type == TOKEN_CARET || class_dot_deref_pending(node->expression_type))) {
                     return parse_heap_deref_read(node, line);
                 }
@@ -3885,6 +4099,9 @@ static ASTNode *factor(void) {
             node->data.var_idx = local_idx;
             node->op = (TokenType)levels_up;
             node->expression_type = ls->type;
+            if (is_proc_type(node->expression_type) && token.type == TOKEN_LPAREN) {
+                return build_procvar_call(node, node->expression_type - TYPE_PROC_BASE, line, 0);
+            }
             if (is_pointer_type(node->expression_type) && (token.type == TOKEN_CARET || class_dot_deref_pending(node->expression_type))) {
                 return parse_heap_deref_read(node, line);
             }
@@ -4473,7 +4690,7 @@ static void parse_type_section(void) {
         strcpy(type_name, token.text);
         if (find_record_type(type_name) != -1 || find_type_alias(type_name) != -1
             || find_enum_type(type_name) != -1 || find_subrange_type(type_name) != -1
-            || find_pointer_type(type_name) != -1) {
+            || find_pointer_type(type_name) != -1 || find_proc_type(type_name) != -1) {
             compile_error(line, "Duplicate type declaration '%s'", type_name);
         }
         match(TOKEN_IDENTIFIER);
@@ -4547,6 +4764,35 @@ static void parse_type_section(void) {
             // 'type TFoo = class ... end;' - see parse_class_declaration()'s
             // own comment for the full design.
             parse_class_declaration(type_name, line);
+            continue;
+        }
+
+        if (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+            // A NAMED procedural type ('type TProc = procedure(x:
+            // integer); TFunc = function: real;') - see
+            // parse_proc_signature_tail()'s own comment for why this
+            // reuses that shared helper instead of
+            // parse_proc_param_header() (which expects a PARAMETER's own
+            // name right after the keyword; a procedural type has none
+            // of its own - type_name, already consumed before '=', is
+            // the type's name). See docs/LANGUAGE.md#classes (Procedural
+            // types) for the full design: the runtime representation is
+            // a plain int (a top-level procedure/function's entry
+            // address, or -1 for nil), exactly like a pointer, so a
+            // variable/parameter/`var`-parameter of this type reuses
+            // every existing scalar mechanism unmodified; only
+            // assignment (parse_proc_value()) and calling through it
+            // (build_procvar_call()) need dedicated parsing.
+            if (proc_type_count >= MAX_PROC_TYPES) {
+                compile_error(line, "Too many procedural type declarations (limit is %d)", MAX_PROC_TYPES);
+            }
+            ProcTypeDef *pd = &proc_types[proc_type_count];
+            strcpy(pd->name, type_name);
+            pd->sig.is_function = (token.type == TOKEN_FUNCTION);
+            match(pd->sig.is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
+            parse_proc_signature_tail(&pd->sig);
+            match(TOKEN_SEMI);
+            proc_type_count++;
             continue;
         }
 
@@ -6679,6 +6925,26 @@ static ASTNode *parse_global_assignment(int idx) {
         stmt->expression_type = step.result_type;
         return stmt;
     }
+    if (is_proc_type(sym_table[idx].type)) {
+        // A NAMED procedural-type global. token is already positioned
+        // right after the identifier (see this function's callers) -
+        // ':=' means an assignment (parse_proc_value() handles the
+        // RHS); anything else means this bare reference is a CALL,
+        // exactly like any other zero-arg procedure/function used bare
+        // already is - see build_procvar_call()'s own comment.
+        if (token.type == TOKEN_ASSIGN) {
+            ASTNode *stmt = create_node(NODE_ASSIGN);
+            stmt->data.var_idx = idx;
+            match(TOKEN_ASSIGN);
+            stmt->left = parse_proc_value(sym_table[idx].type - TYPE_PROC_BASE, token.line);
+            return stmt;
+        }
+        ASTNode *base = create_node(NODE_VARIABLE);
+        base->line = token.line;
+        base->data.var_idx = idx;
+        base->expression_type = sym_table[idx].type;
+        return build_procvar_call(base, sym_table[idx].type - TYPE_PROC_BASE, base->line, 1);
+    }
     ASTNode *stmt = create_node(NODE_ASSIGN);
     stmt->data.var_idx = idx;
     match(TOKEN_ASSIGN);
@@ -7153,6 +7419,26 @@ static ASTNode *statement(void) {
             }
             if (ls->is_var_param) {
                 match(TOKEN_IDENTIFIER);
+                if (is_proc_type(ls->type)) {
+                    // A NAMED procedural-type 'var' parameter - see the
+                    // matching global case in parse_global_assignment()
+                    // for why this branches on token.type == TOKEN_ASSIGN.
+                    if (token.type == TOKEN_ASSIGN) {
+                        ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);
+                        stmt->data.var_idx = local_idx;
+                        stmt->op = (TokenType)levels_up;
+                        stmt->expression_type = ls->type;
+                        match(TOKEN_ASSIGN);
+                        stmt->left = parse_proc_value(ls->type - TYPE_PROC_BASE, token.line);
+                        return stmt;
+                    }
+                    ASTNode *base = create_node(NODE_VAR_PARAM_READ);
+                    base->line = token.line;
+                    base->data.var_idx = local_idx;
+                    base->op = (TokenType)levels_up;
+                    base->expression_type = ls->type;
+                    return build_procvar_call(base, ls->type - TYPE_PROC_BASE, base->line, 1);
+                }
                 if (is_pointer_type(ls->type) && (token.type == TOKEN_CARET || class_dot_deref_pending(ls->type))) {
                     int line = token.line;
                     ASTNode *base = create_node(NODE_VAR_PARAM_READ);
@@ -7285,6 +7571,26 @@ static ASTNode *statement(void) {
                 match(TOKEN_ASSIGN);
                 stmt->right = expression(); // new character
                 return stmt;
+            }
+            if (is_proc_type(ls->type)) {
+                // A NAMED procedural-type local - see the matching
+                // global case in parse_global_assignment() for why this
+                // branches on token.type == TOKEN_ASSIGN.
+                if (token.type == TOKEN_ASSIGN) {
+                    ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
+                    stmt->data.var_idx = local_idx;
+                    stmt->op = (TokenType)levels_up;
+                    stmt->expression_type = ls->type;
+                    match(TOKEN_ASSIGN);
+                    stmt->left = parse_proc_value(ls->type - TYPE_PROC_BASE, token.line);
+                    return stmt;
+                }
+                ASTNode *base = create_node(NODE_LOCAL_VAR);
+                base->line = token.line;
+                base->data.var_idx = local_idx;
+                base->op = (TokenType)levels_up;
+                base->expression_type = ls->type;
+                return build_procvar_call(base, ls->type - TYPE_PROC_BASE, base->line, 1);
             }
             if (is_pointer_type(ls->type) && (token.type == TOKEN_CARET || class_dot_deref_pending(ls->type))) {
                 int line = token.line;

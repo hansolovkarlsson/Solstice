@@ -39,6 +39,9 @@
 #define MAX_POINTER_TYPES 20 // how many DISTINCT 'type PFoo = ^Target;'
                            // declarations a program can have - see
                            // TYPE_POINTER_BASE below.
+#define MAX_PROC_TYPES 20  // how many DISTINCT NAMED procedural type
+                           // ('type TProc = procedure(...);') declarations
+                           // a program can have - see TYPE_PROC_BASE below.
 #define MAX_RECORD_FIELDS 16 // moved here from parser.c (where
                            // RecordTypeDef/RecordField still live) because
                            // vm.c's heap allocator (see vm_heap_freelist[]
@@ -258,6 +261,27 @@ typedef enum {
                 // NODE_HEAP_FIELD_ACCESS/ASSIGN/ALLOC below) before
                 // codegen ever runs, exactly like NODE_ARRAY_RECORD_
                 // FIELD_ACCESS/ASSIGN already do for array-of-records.
+    TYPE_PROC_BASE = TYPE_POINTER_BASE + MAX_POINTER_TYPES, // Also not a
+                // real type by itself - a specific NAMED procedural type
+                // ('type TProc = procedure(x: integer);') is encoded as
+                // TYPE_PROC_BASE + its proc_types[] index (parser.c-local -
+                // see ProcTypeDef there), mirroring TYPE_POINTER_BASE's own
+                // encoding exactly. A procedural-type value's runtime
+                // representation is a plain int too: -1 means nil (assigned
+                // via the 'nil' literal, exactly like a pointer), and any
+                // other value is a top-level procedure/function's own
+                // entry_address, pushed the same way NODE_PROC_REF already
+                // does for a functional/procedural PARAMETER's actual
+                // argument (see NODE_PROCVAR_CALL below) - a genuinely
+                // separate, more general mechanism from that one, though:
+                // a functional/procedural parameter's own inline signature
+                // (is_proc_param in parser.c) can only ever live in a
+                // parameter slot, fed by a literal top-level name at the
+                // call site or forwarded from an enclosing one; a NAMED
+                // procedural type is an ordinary DataType, usable for a
+                // plain global/local variable exactly like any scalar -
+                // assignable, copyable, callable through, and comparable
+                // to nil.
 } DataType;
 
 // One declared enumerated type ('type TColor = (Red, Green, Blue);') -
@@ -1422,7 +1446,10 @@ typedef enum {
 
     NODE_PROC_REF, // A top-level (non-nested) procedure/function passed
                        // BY NAME as the actual argument for a procedural/
-                       // functional parameter (e.g. 'Apply(Square, x)').
+                       // functional parameter (e.g. 'Apply(Square, x)'),
+                       // OR assigned to a NAMED procedural-type variable
+                       // (e.g. 'p := Square;' where p: TProc - see
+                       // parse_proc_value()) - the same node either way.
                        // data.var_idx = proc_table[] index - always a
                        // plain compile-time constant, never packed with
                        // anything, since the target is guaranteed top-
@@ -1432,7 +1459,7 @@ typedef enum {
                        // entry_address (mirroring record_call()'s own
                        // pending_calls[] backpatch, just patching a PUSH
                        // instead of a CALL).
-    NODE_CALL_INDIRECT // A call THROUGH an already-received procedural/
+    NODE_CALL_INDIRECT, // A call THROUGH an already-received procedural/
                        // functional parameter (e.g. 'f(x)' where f is
                        // itself such a parameter). op = levels_up
                        // (mirrors NODE_LOCAL_VAR's own convention - the
@@ -1458,6 +1485,28 @@ typedef enum {
                        // then continue via ->next, exactly like
                        // NODE_CALL's own op == TOKEN_PROCEDURE case) or 0
                        // if used as an expression.
+    NODE_PROCVAR_CALL // A call through a NAMED procedural-type value
+                       // (e.g. 'p(x)' where p: TProc - a plain global/
+                       // local/'var'-parameter variable, NOT the older,
+                       // narrower is_proc_param parameter mechanism
+                       // NODE_CALL_INDIRECT above serves). A SEPARATE node
+                       // type from NODE_CALL_INDIRECT, deliberately: that
+                       // one's shape is hardcoded to "the callee's address
+                       // always lives in a LOCAL frame slot" (data.var_idx
+                       // + op == levels_up), which a plain GLOBAL
+                       // procedural-type variable doesn't fit. Here,
+                       // 'right' is instead an arbitrary already-built
+                       // expression (NODE_VARIABLE/NODE_LOCAL_VAR/
+                       // NODE_VAR_PARAM_READ - whichever read already
+                       // applies to p) that evaluates to the callee's
+                       // entry address - reusing existing read machinery
+                       // rather than inventing a THIRD address-encoding
+                       // scheme. left = the argument list, chained via
+                       // ->next like NODE_CALL's/NODE_CALL_INDIRECT's own.
+                       // expression_type/extra follow NODE_CALL_INDIRECT's
+                       // exact same convention (callee's return type or
+                       // TYPE_UNKNOWN; extra = a NODE_NUMBER statement-
+                       // context flag).
 } NodeType;
 
 typedef struct ASTNode {

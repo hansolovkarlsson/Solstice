@@ -2504,12 +2504,83 @@ just like any other procedure/function (`f(v)` above).
   only be called, or forwarded as another procedural/functional
   argument — no `=`/`<>` comparison, no assignment to a plain variable,
   no storing in an array/record field, no `write`/`writeln`.
-- **No named, storable procedural type** — the signature is always
+- **No named, storable procedural type here** — the signature is always
   written out inline at the declaration site, matching standard Pascal.
-  A `type TProc = procedure(x: integer);`-style named type is a
-  possible later, non-standard extension (see
-  [docs/ROADMAP.md](../docs/ROADMAP.md)'s Procedural types item), not
-  this feature.
+  For a `type TProc = procedure(x: integer);`-style named, reusable,
+  storable type — a genuinely different, more general mechanism, not an
+  extension of this one — see "Procedural types" below.
+
+### Procedural types
+
+```pascal
+type
+    TIntProc = procedure(x: integer);
+    TIntFunc = function(x: integer): integer;
+var
+    p: TIntProc;
+    f: TIntFunc;
+
+procedure PrintDouble(x: integer);
+begin
+    writeln(x * 2);
+end;
+
+function Square(x: integer): integer;
+begin
+    Square := x * x;
+end;
+
+begin
+    p := PrintDouble;
+    p(21);                        { 42 }
+
+    f := Square;
+    writeln(f(6));                { 36 }
+
+    p := nil;
+    if p = nil then
+        writeln('p is nil');
+end.
+```
+
+`type TProc = procedure(x: integer); TFunc = function(x: integer):
+real;` declares a NAMED, reusable, storable procedural type — Turbo
+Pascal's non-standard extension, genuinely different from (and sharing
+no storage mechanism with) an inline functional/procedural *parameter*
+above. Once declared, the type name works as an ordinary scalar type
+everywhere one is accepted — `var`/local declarations, `var`
+parameters — since its runtime representation is a plain int (a
+top-level procedure/function's entry address, or `-1` for `nil`,
+exactly like a pointer).
+
+- **Assign a top-level (non-nested) procedure/function by its bare
+  name**, or `nil`, or copy another variable already holding the same
+  procedural type — `p := PrintDouble;`, `p := nil;`, `p2 := p1;`. The
+  actual procedure/function's signature must match the declared
+  procedural type exactly (same rules as a functional/procedural
+  parameter's own signature match, above): same is_function-ness, same
+  return type if a function, same parameter count/types/`var`-ness.
+- **`nil` is supported** — assignable, and comparable with `=`/`<>`
+  against another value of the same procedural type or `nil` itself,
+  exactly like a pointer.
+- **Call it with `(args)`** — `p(21)`, `x := f(6)`. A `function`-typed
+  value's call can be used as an expression; a `procedure`-typed one can
+  only be a statement, same as any ordinary procedure.
+- **A bare reference (no explicit call parentheses) means different
+  things in different contexts**, to avoid an ambiguity a single fixed
+  rule can't resolve: used as a whole **statement**, it's a call
+  (`p;` — matching how any other zero-argument call is already allowed
+  bare); used anywhere a **value** is expected instead — a comparison
+  (`p = nil`), an assignment's RHS (`p2 := p1;`) — it's the stored value
+  itself, never an implicit call. Calling a zero-argument procedural
+  value from inside a larger expression always needs explicit `()` to
+  disambiguate from a value-read.
+- **Not implemented yet**: a record/class field of procedural type;
+  passing a procedural-type value as an argument to another procedure's
+  own parameter; and a function returning a procedural type as its
+  result (this last one needs its own further work — see
+  [docs/ROADMAP.md](../docs/ROADMAP.md)'s "Functions/procedures as
+  return values" item).
 
 ## Functions
 

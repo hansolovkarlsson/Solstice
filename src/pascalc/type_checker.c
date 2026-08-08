@@ -42,6 +42,28 @@ static int is_pointer_type(DataType t) {
     return t >= TYPE_POINTER_BASE && t < TYPE_POINTER_BASE + MAX_POINTER_TYPES;
 }
 
+// Same bounded-range idea, for a specific NAMED procedural type ('type
+// TProc = procedure(...);', encoded as TYPE_PROC_BASE + its
+// proc_types[] index in parser.c) - a procedural-type value behaves
+// like a pointer for comparison purposes too (nil-compatible, '='/'<>'
+// only), so is_proc_type() joins is_pointer_type() at every one of that
+// check's own call sites below.
+static int is_proc_type(DataType t) {
+    return t >= TYPE_PROC_BASE && t < TYPE_PROC_BASE + MAX_PROC_TYPES;
+}
+
+// True if 'value' (an expression's own type) can be nil against 'target'
+// (an assignment/argument's expected type) - target is a pointer OR a
+// procedural type, and value is literally TYPE_NIL. Factored out since
+// this exact "is X a pointer/proc type, AND is the other side TYPE_NIL"
+// pair is checked at every assignment/argument site below (NODE_ASSIGN's
+// two forms, NODE_LOCAL_ASSIGN, NODE_HEAP_FIELD_ASSIGN) - same idea as
+// the '='/'<>' comparison case above, just as a named helper instead of
+// inlined a 5th time.
+static int nil_compatible(DataType target, DataType value) {
+    return (is_pointer_type(target) || is_proc_type(target)) && value == TYPE_NIL;
+}
+
 // Wraps *child in an implicit int->real widening conversion (Pascal's
 // automatic integer-to-real promotion) and updates *child to point at the
 // wrapper. Preserves *child's own ->next (if it has one - e.g. it's a
@@ -117,7 +139,7 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
                 if (!(is_string_type(node->right->expression_type) && is_string_type(sym->type))
-                    && !(is_pointer_type(sym->type) && node->right->expression_type == TYPE_NIL)
+                    && !nil_compatible(sym->type, node->right->expression_type)
                     && node->right->expression_type != sym->type
                     && !try_widen_for_assignment(&node->right, sym->type)) {
                     fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to element of array '%s'\n",
@@ -125,7 +147,7 @@ void type_check(ASTNode *node) {
                     fatal_abort();
                 }
             } else if (!(is_string_type(node->left->expression_type) && is_string_type(sym->type))
-                       && !(is_pointer_type(sym->type) && node->left->expression_type == TYPE_NIL)
+                       && !nil_compatible(sym->type, node->left->expression_type)
                        && node->left->expression_type != sym->type
                        && !try_widen_for_assignment(&node->left, sym->type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to variable '%s'\n",
@@ -208,28 +230,34 @@ void type_check(ASTNode *node) {
                         get_current_filename(), node->line);
                 fatal_abort();
             }
-            if (is_pointer_type(left_t) || is_pointer_type(right_t) || left_t == TYPE_NIL || right_t == TYPE_NIL) {
+            if (is_pointer_type(left_t) || is_pointer_type(right_t) || is_proc_type(left_t) || is_proc_type(right_t)
+                || left_t == TYPE_NIL || right_t == TYPE_NIL) {
                 // Standard Pascal defines only '=' and '<>' for pointers
                 // (no arithmetic, no ordering) - handled entirely here,
                 // bypassing every other branch below, since none of them
-                // know what to do with a pointer/TYPE_NIL operand either.
-                // TYPE_NIL (the literal 'nil') is compatible with ANY
-                // pointer type (or with itself, 'nil = nil') - unlike
-                // every other type pair in this compiler, which requires
-                // an EXACT DataType match (see is_enum_type()'s comment:
-                // equal DataTypes already mean "the same declared type").
+                // know what to do with a pointer/procedural-type/TYPE_NIL
+                // operand either. A NAMED procedural-type value behaves
+                // exactly like a pointer here (see is_proc_type()'s own
+                // comment). TYPE_NIL (the literal 'nil') is compatible
+                // with ANY pointer or procedural type (or with itself,
+                // 'nil = nil') - unlike every other type pair in this
+                // compiler, which requires an EXACT DataType match (see
+                // is_enum_type()'s comment: equal DataTypes already mean
+                // "the same declared type").
                 int compatible = (left_t == right_t)
                                || (is_pointer_type(left_t) && right_t == TYPE_NIL)
                                || (left_t == TYPE_NIL && is_pointer_type(right_t))
+                               || (is_proc_type(left_t) && right_t == TYPE_NIL)
+                               || (left_t == TYPE_NIL && is_proc_type(right_t))
                                || class_type_is_subtype_of(left_t, right_t)
                                || class_type_is_subtype_of(right_t, left_t);
                 if (!compatible) {
-                    fprintf(stderr, "%s:%d: Type Error: Cannot compare pointers of different types\n",
+                    fprintf(stderr, "%s:%d: Type Error: Cannot compare pointers/procedural values of different types\n",
                             get_current_filename(), node->line);
                     fatal_abort();
                 }
                 if (node->op != TOKEN_EQ && node->op != TOKEN_NEQ) {
-                    fprintf(stderr, "%s:%d: Type Error: Only '=' and '<>' are defined for pointers\n",
+                    fprintf(stderr, "%s:%d: Type Error: Only '=' and '<>' are defined for pointers/procedural values\n",
                             get_current_filename(), node->line);
                     fatal_abort();
                 }
@@ -529,7 +557,7 @@ void type_check(ASTNode *node) {
 
         case NODE_LOCAL_ASSIGN:
             if (!(is_string_type(node->left->expression_type) && is_string_type(node->expression_type))
-                && !(is_pointer_type(node->expression_type) && node->left->expression_type == TYPE_NIL)
+                && !nil_compatible(node->expression_type, node->left->expression_type)
                 && node->left->expression_type != node->expression_type
                 && !try_widen_for_assignment(&node->left, node->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to local variable\n",
@@ -727,7 +755,7 @@ void type_check(ASTNode *node) {
 
         case NODE_HEAP_FIELD_ASSIGN:
             if (!(is_string_type(node->right->expression_type) && is_string_type(node->expression_type))
-                && !(is_pointer_type(node->expression_type) && node->right->expression_type == TYPE_NIL)
+                && !nil_compatible(node->expression_type, node->right->expression_type)
                 && node->right->expression_type != node->expression_type
                 && !try_widen_for_assignment(&node->right, node->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to pointer dereference\n",
