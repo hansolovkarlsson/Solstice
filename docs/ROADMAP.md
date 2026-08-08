@@ -347,8 +347,23 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       slot/offset that doesn't generalize to "N slots instead of 1"
       without a larger rethink - see
       [docs/LANGUAGE.md](LANGUAGE.md#nested-records).
-- [ ] Variant records (`case tag: T of ...` inside a `record`) — a
-      record's alternate, overlapping field layouts selected by a tag field
+- [x] Variant records — `case tag: T of label: (fields); ... end` now
+      parses as the last part of a record type. Scoping decision: this
+      compiler's records already have no memory layout of their own (a
+      record variable is N independent hidden globals/locals created at
+      parse time), so building genuine *overlapping* storage between
+      variants would mean inventing a real addressing model from
+      scratch - out of scope here. Instead, the tag field plus every
+      variant's fields are flattened into ordinary, simultaneously-live
+      fields (same storage plain fields already get), with the
+      `case`/label syntax checked and consumed at parse time (ordinal
+      tag type, label type must match, labels pairwise distinct, field
+      names unique across the whole record including across variants) -
+      zero changes needed to type_checker.c/optimizer.c/ast_printer.c/
+      codegen.c/vm.c/solas.c/desole.c, same as nested records. Known
+      gaps, each explicit: no memory overlap/type-punning between
+      variants, no nested `case`, no anonymous/unnamed tag form. See
+      [docs/LANGUAGE.md](LANGUAGE.md#variant-records).
 - [x] 2D array parameters and local 2D arrays (1D already supports both)
       — extends the existing by-reference/local-array machinery: two new
       opcodes (`LOAD_IDX2D_DYN`/`STORE_IDX2D_DYN`, mirroring the 1D

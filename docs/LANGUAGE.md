@@ -1753,6 +1753,75 @@ point its own body would need to name it) and mutual recursion.
   fields by a fixed per-field slot/offset, which doesn't generalize to a
   nested field's "N slots instead of 1" without a larger rethink.
 
+### Variant records
+
+```pascal
+type
+    TKind = (Circle, Rectangle);
+    TShape = record
+        case kind: TKind of
+            Circle: (radius: real);
+            Rectangle: (width, height: real);
+    end;
+var
+    s: TShape;
+begin
+    s.kind := Circle;
+    s.radius := 2.5;
+    writeln('radius: ', s.radius);
+
+    s.kind := Rectangle;
+    s.width := 3.0;
+    s.height := 4.0;
+    writeln('area: ', s.width * s.height);
+end.
+```
+
+A record's `case` — placed last, after any ordinary fields — declares a
+tag field (`kind`, above) and one or more variants, each headed by a
+label list (compile-time ordinal constants — literals, `const`s, or enum
+values, exactly like a `case` *statement*'s labels) and a parenthesized
+field list using the same field syntax ordinary fields use (scalar,
+array, or nested-record). The tag field's type must be ordinal
+(`integer`, `char`, `boolean`, or an already-declared enum type — not a
+subrange), and every label's type must match it exactly. Labels must be
+pairwise distinct across the whole `case`, and field names — the tag's,
+and every variant's — must be unique across the *entire* record, the
+same "no duplicate field name" rule plain fields already follow.
+
+**How this is implemented — and what that means:** unlike real Pascal,
+where a record's variants *overlap* in memory (only one variant's fields
+are "live" per tag value, and the record's total size is capped at the
+largest variant), this compiler's records already have no memory layout
+of their own to overlap — see "How this is implemented" above: a record
+variable is just N independent hidden globals/locals created at parse
+time. Building genuine overlapping storage would mean inventing a real
+addressing model for records from scratch, so variant records here stay
+consistent with that existing design instead: the tag field and *every*
+variant's fields are all ordinary, simultaneously-live fields (as if
+every variant's fields had simply been declared as plain fields of the
+same record) — the `case`/label syntax is checked and consumed at
+compile time, but it doesn't restrict which fields you can read/write
+when, and it doesn't reduce the record's total storage. This still
+compiles and correctly runs the common use of variant records (modeling
+"one of several shapes" of data, switching on the tag), which doesn't
+rely on the underlying storage actually overlapping.
+
+**What's not supported:**
+
+- **No memory overlap or type-punning between variants** — see above;
+  writing one variant's field then reading a *different* variant's field
+  as a reinterpretation of the same bytes (a trick real Pascal
+  implementations sometimes allow, though it's not portable there
+  either) doesn't work here, since each field has its own independent
+  storage.
+- **No nested `case`** — a variant's field list can't itself contain
+  another variant part. Standard Pascal allows nesting; out of scope
+  here.
+- **No anonymous/unnamed tag** (`case TKind of ...` without a field
+  name) — only the named-tag form (`case kind: TKind of ...`) is
+  supported.
+
 ### What's not supported yet
 
 - **2D or N-D arrays of records** — only a 1D array of records is

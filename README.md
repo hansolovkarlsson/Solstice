@@ -328,7 +328,14 @@ element type, a pointer's target type, or a `with` target (see
 `program` heading parameters (`program Foo(input, output);`) — pure
 syntax, accepted and discarded, since this VM has no OS-level
 file-parameter binding for the list to mean anything (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#program-structure)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#program-structure)). Also working:
+variant records (`case tag: T of label: (fields); ... end` as the last
+part of a `record`) — flattened into ordinary, simultaneously-live
+fields rather than real overlapping storage, since this compiler's
+records have no memory layout of their own to overlap in the first
+place (see [docs/LANGUAGE.md](docs/LANGUAGE.md#variant-records)). This
+was the last item on the Phase 1 (Wirth-compatible Pascal) checklist —
+see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

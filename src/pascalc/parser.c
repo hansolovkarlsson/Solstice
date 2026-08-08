@@ -2132,6 +2132,9 @@ static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
 static void subroutine_declaration(int is_function_decl);
+static ASTNode *parse_case_label_value(void);
+static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx);
+static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
 
 // Parses 'idx1, idx2, ..., idxN]' (already past the opening '[') for an
 // N-dimensional (N=dims, always 3 or more - 1D/2D have their own
@@ -3816,6 +3819,182 @@ static void parse_const_section(void) {
     }
 }
 
+// Parses one 'name[, name...] : type' field group (array, nested-record,
+// or scalar) and appends each resulting name as a RecordField to rt.
+// Shared by a record's fixed field list and every variant's own
+// parenthesized field list (parse_record_variant_part(), below) -
+// callers handle their own trailing separator, since the two contexts
+// use different separator rules (a fixed field always needs a trailing
+// ';', a variant's last field group before ')' doesn't).
+static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx) {
+    #define MAX_FIELD_NAMES_PER_LINE 10
+    char field_names[MAX_FIELD_NAMES_PER_LINE][MAX_NAME];
+    int fcount = 0;
+    strcpy(field_names[fcount++], token.text);
+    match(TOKEN_IDENTIFIER);
+    while (token.type == TOKEN_COMMA) {
+        match(TOKEN_COMMA);
+        if (fcount >= MAX_FIELD_NAMES_PER_LINE) {
+            compile_error(token.line, "Too many field names on one line (limit is %d)", MAX_FIELD_NAMES_PER_LINE);
+        }
+        strcpy(field_names[fcount++], token.text);
+        match(TOKEN_IDENTIFIER);
+    }
+    match(TOKEN_COLON);
+
+    int is_array = 0;
+    int lower = 0, upper = 0;
+    if (token.type == TOKEN_ARRAY) {
+        match(TOKEN_ARRAY);
+        match(TOKEN_LBRACKET);
+        lower = parse_int_literal();
+        match(TOKEN_DOTDOT);
+        upper = parse_int_literal();
+        match(TOKEN_RBRACKET);
+        if (upper < lower) {
+            compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+        }
+        match(TOKEN_OF);
+        is_array = 1;
+    }
+    int is_nested_record = 0;
+    int nested_record_type_idx = -1;
+    DataType field_type = TYPE_UNKNOWN;
+    if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+        // A nested-record field ('topleft: TPoint;'). Only
+        // already-declared record types are ever visible here
+        // (record_type_count isn't incremented until THIS type's
+        // own 'end;'), so a field can never name its own
+        // type, directly or via a cycle through another type -
+        // no explicit self-reference/cycle check is needed.
+        if (is_array) {
+            compile_error(token.line, "Array field element type must be scalar, not a record type - 'array of %s' isn't supported as a field type", token.text);
+        }
+        nested_record_type_idx = find_record_type(token.text);
+        if (record_type_has_array_field(nested_record_type_idx)) {
+            compile_error(token.line, "'%s' can't be used as a nested field because it has an array field - a record type used as a nested field can't contain array fields (see docs/LANGUAGE.md)", token.text);
+        }
+        is_nested_record = 1;
+        match(TOKEN_IDENTIFIER);
+    } else {
+        field_type = parse_scalar_type();
+    }
+
+    for (int i = 0; i < fcount; i++) {
+        if (rt->field_count >= MAX_RECORD_FIELDS) {
+            compile_error(token.line, "Too many fields in record '%s' (limit is %d)", rt->name, MAX_RECORD_FIELDS);
+        }
+        if (find_record_field(record_type_idx, field_names[i]) != -1) {
+            compile_error(token.line, "Duplicate field '%s' in record '%s'", field_names[i], rt->name);
+        }
+        RecordField *f = &rt->fields[rt->field_count];
+        strcpy(f->name, field_names[i]);
+        f->is_record = is_nested_record;
+        f->record_type_idx = nested_record_type_idx;
+        f->type = field_type;
+        f->is_array = is_array;
+        f->array_lower = lower;
+        f->array_upper = upper;
+        f->is_subrange = is_nested_record ? 0 : scalar_type_is_subrange;
+        f->subrange_lower = is_nested_record ? 0 : scalar_type_subrange_lower;
+        f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
+        rt->field_count++;
+    }
+}
+
+// Parses a record's optional variant part: 'case tagname: tagtype of
+// label[, label...]: (fieldgroup; ...); ... end' - shares the record's
+// own closing 'end' (there's no separate 'end' for the case).
+//
+// Scoping decision (see docs/LANGUAGE.md#variant-records): this
+// compiler's records already have no real memory layout of their own -
+// a record variable is just N independent hidden globals/locals created
+// at parse time (see the "How this is implemented" note above plain
+// records). Building genuine overlapping storage for variants would
+// mean inventing a real addressing model for records from scratch, well
+// beyond this feature's scope. So here, the tag field plus EVERY
+// variant's fields are appended to rt->fields[] as ordinary
+// non-overlapping fields, exactly like plain fields - only the label
+// list is used for anything case-like (parse-time type/distinctness
+// validation against the tag type). There is no runtime tag dispatch
+// and no storage sharing between variants.
+static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx) {
+    match(TOKEN_CASE);
+    char tag_name[MAX_NAME];
+    strcpy(tag_name, token.text);
+    int tag_line = token.line;
+    match(TOKEN_IDENTIFIER);
+    match(TOKEN_COLON);
+    DataType tag_type = parse_scalar_type();
+    if (tag_type != TYPE_INTEGER && tag_type != TYPE_CHAR && tag_type != TYPE_BOOLEAN
+        && !(tag_type >= TYPE_ENUM_BASE && tag_type < TYPE_POINTER_BASE)) {
+        compile_error(tag_line, "Variant record tag field must be an ordinal type (integer, char, boolean, or enumerated)");
+    }
+    if (scalar_type_is_subrange) {
+        compile_error(tag_line, "Variant record tag field can't be a subrange type");
+    }
+    match(TOKEN_OF);
+
+    // The tag itself becomes an ordinary field, like any other.
+    if (rt->field_count >= MAX_RECORD_FIELDS) {
+        compile_error(tag_line, "Too many fields in record '%s' (limit is %d)", rt->name, MAX_RECORD_FIELDS);
+    }
+    if (find_record_field(record_type_idx, tag_name) != -1) {
+        compile_error(tag_line, "Duplicate field '%s' in record '%s'", tag_name, rt->name);
+    }
+    RecordField *tagf = &rt->fields[rt->field_count];
+    strcpy(tagf->name, tag_name);
+    tagf->type = tag_type;
+    tagf->is_record = 0;
+    tagf->is_array = 0;
+    tagf->is_subrange = 0;
+    rt->field_count++;
+
+    DataType seen_types[MAX_CASE_LABELS];
+    int seen_values[MAX_CASE_LABELS];
+    int seen_count = 0;
+    int variant_count = 0;
+
+    while (token.type != TOKEN_END) {
+        while (1) {
+            int label_line = token.line;
+            ASTNode *label = parse_case_label_value();
+            if (label->expression_type != tag_type) {
+                compile_error(label_line, "Variant label's type doesn't match the tag field '%s''s type", tag_name);
+            }
+            for (int i = 0; i < seen_count; i++) {
+                if (seen_types[i] == label->expression_type && seen_values[i] == label->data.num_value) {
+                    compile_error(label_line, "Duplicate variant label");
+                }
+            }
+            if (seen_count >= MAX_CASE_LABELS) {
+                compile_error(label_line, "Too many variant labels (limit is %d)", MAX_CASE_LABELS);
+            }
+            seen_types[seen_count] = label->expression_type;
+            seen_values[seen_count] = label->data.num_value; // aliases data.var_idx too (same union member) - fine for a char label, which sets var_idx instead
+            seen_count++;
+
+            if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+            break;
+        }
+        match(TOKEN_COLON);
+        match(TOKEN_LPAREN);
+        while (token.type == TOKEN_IDENTIFIER) {
+            parse_record_field_group(rt, record_type_idx);
+            if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+            break;
+        }
+        match(TOKEN_RPAREN);
+        variant_count++;
+
+        if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+        break;
+    }
+    if (variant_count == 0) {
+        compile_error(token.line, "'case' in a variant record must have at least one variant");
+    }
+}
+
 static void parse_type_section(void) {
     match(TOKEN_TYPE);
     while (token.type == TOKEN_IDENTIFIER) {
@@ -4004,80 +4183,13 @@ static void parse_type_section(void) {
         rt->field_count = 0;
 
         while (token.type == TOKEN_IDENTIFIER) {
-            #define MAX_FIELD_NAMES_PER_LINE 10
-            char field_names[MAX_FIELD_NAMES_PER_LINE][MAX_NAME];
-            int fcount = 0;
-            strcpy(field_names[fcount++], token.text);
-            match(TOKEN_IDENTIFIER);
-            while (token.type == TOKEN_COMMA) {
-                match(TOKEN_COMMA);
-                if (fcount >= MAX_FIELD_NAMES_PER_LINE) {
-                    compile_error(token.line, "Too many field names on one line (limit is %d)", MAX_FIELD_NAMES_PER_LINE);
-                }
-                strcpy(field_names[fcount++], token.text);
-                match(TOKEN_IDENTIFIER);
-            }
-            match(TOKEN_COLON);
-
-            int is_array = 0;
-            int lower = 0, upper = 0;
-            if (token.type == TOKEN_ARRAY) {
-                match(TOKEN_ARRAY);
-                match(TOKEN_LBRACKET);
-                lower = parse_int_literal();
-                match(TOKEN_DOTDOT);
-                upper = parse_int_literal();
-                match(TOKEN_RBRACKET);
-                if (upper < lower) {
-                    compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
-                }
-                match(TOKEN_OF);
-                is_array = 1;
-            }
-            int is_nested_record = 0;
-            int nested_record_type_idx = -1;
-            DataType field_type = TYPE_UNKNOWN;
-            if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
-                // A nested-record field ('topleft: TPoint;'). Only
-                // already-declared record types are ever visible here
-                // (record_type_count isn't incremented until THIS type's
-                // own 'end;' below), so a field can never name its own
-                // type, directly or via a cycle through another type -
-                // no explicit self-reference/cycle check is needed.
-                if (is_array) {
-                    compile_error(token.line, "Array field element type must be scalar, not a record type - 'array of %s' isn't supported as a field type", token.text);
-                }
-                nested_record_type_idx = find_record_type(token.text);
-                if (record_type_has_array_field(nested_record_type_idx)) {
-                    compile_error(token.line, "'%s' can't be used as a nested field because it has an array field - a record type used as a nested field can't contain array fields (see docs/LANGUAGE.md)", token.text);
-                }
-                is_nested_record = 1;
-                match(TOKEN_IDENTIFIER);
-            } else {
-                field_type = parse_scalar_type();
-            }
+            parse_record_field_group(rt, record_type_count);
             match(TOKEN_SEMI);
-
-            for (int i = 0; i < fcount; i++) {
-                if (rt->field_count >= MAX_RECORD_FIELDS) {
-                    compile_error(token.line, "Too many fields in record '%s' (limit is %d)", rt->name, MAX_RECORD_FIELDS);
-                }
-                if (find_record_field(record_type_count, field_names[i]) != -1) {
-                    compile_error(token.line, "Duplicate field '%s' in record '%s'", field_names[i], rt->name);
-                }
-                RecordField *f = &rt->fields[rt->field_count];
-                strcpy(f->name, field_names[i]);
-                f->is_record = is_nested_record;
-                f->record_type_idx = nested_record_type_idx;
-                f->type = field_type;
-                f->is_array = is_array;
-                f->array_lower = lower;
-                f->array_upper = upper;
-                f->is_subrange = is_nested_record ? 0 : scalar_type_is_subrange;
-                f->subrange_lower = is_nested_record ? 0 : scalar_type_subrange_lower;
-                f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
-                rt->field_count++;
-            }
+        }
+        if (token.type == TOKEN_CASE) {
+            // Variant part - see parse_record_variant_part()'s comment
+            // for the flatten-not-overlap scoping decision.
+            parse_record_variant_part(rt, record_type_count);
         }
 
         match(TOKEN_END);
