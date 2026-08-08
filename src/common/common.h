@@ -1484,6 +1484,19 @@ typedef struct ASTNode {
 // statement, set once parsing finishes it (NULL while is_forward is set).
 typedef struct {
     char name[MAX_NAME];
+    char unmangled_name[MAX_NAME]; // empty for an ordinary procedure/
+                                    // function - only set for a class
+                                    // method's body (name is the
+                                    // mangled 'ClassName__Method', to
+                                    // avoid colliding with another
+                                    // class's own same-named method in
+                                    // this compiler's one flat
+                                    // proc_table[] namespace), holding
+                                    // the short name the user actually
+                                    // wrote inside the method body -
+                                    // e.g. 'Area := ...;' to set a
+                                    // function method's return value -
+                                    // see parse_class_method_body().
     int entry_address;
     int param_count;                // SYNTACTIC parameter count (how many
                                     // comma-separated parameters were

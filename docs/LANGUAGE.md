@@ -1959,9 +1959,10 @@ you're done with a block, the same discipline `malloc`/`free` demands.
 
 ## Classes
 
-**Work in progress** — declaration parsing, `new`/`dispose`, and field
-read/write all work (steps 1-3 of the "Classes and instances" items in
-`docs/ROADMAP.md`'s Phase 2); methods aren't callable yet. See
+**Work in progress** — declaration parsing, `new`/`dispose`, field
+read/write, and method bodies all work (steps 1-4 of the "Classes and
+instances" items in `docs/ROADMAP.md`'s Phase 2); there's no `c.Method(args)`
+call syntax yet, only step 5 away. See
 `notes/classes-and-instances-scoping.md` for the full design rationale.
 
 ```pascal
@@ -1973,10 +1974,22 @@ type
     end;
 var
     c: TCircle;
+
+procedure TCircle.SetRadius;
+begin
+    self.radius := r;
+end;
+
+function TCircle.Area;
+begin
+    Area := 3.14159 * self.radius * self.radius;
+end;
+
 begin
     new(c);
-    c.radius := 2.0;
-    writeln('radius: ', c.radius);
+    TCircle__SetRadius(c, 2.0);       { no '.Method(...)' sugar yet - call
+                                         the real, mangled name directly }
+    writeln('area: ', TCircle__Area(c));
     dispose(c);
 end.
 ```
@@ -2004,11 +2017,51 @@ mutates the caller's own instance, and dereferencing a `nil` or never-`new`'d
 class variable is the same clean `VM Runtime Error` a plain pointer's
 nil-dereference already is.
 
+A method's **body** is declared separately from its header, after the
+`var` section, using `procedure ClassName.MethodName; ... end;` /
+`function ClassName.MethodName; ... end;` — note the parameter list and
+return type are **not** repeated here (unlike Delphi): they're already
+fully known from the header declared inside `class ... end;`, and
+omitting them here matches this compiler's own existing convention for
+completing a `forward`-declared procedure, rather than importing
+Delphi's own convention. Inside the body:
+
+- **`self`** is an ordinary parameter (always the method's first,
+  hidden one) of the class's own type — read/write its fields via
+  `self.field`, exactly like any other class-typed variable. There's no
+  unqualified `field` shorthand yet (see "Not implemented yet" below).
+- The method's own declared parameters (`r` above) are ordinary named
+  locals, usable directly.
+- A `function` method sets its return value the same way an ordinary
+  function does — assign to the method's own (short, unqualified) name,
+  e.g. `Area := ...;`.
+- A method body may have its own `label`/`var` sections and local
+  variables, exactly like an ordinary procedure/function body.
+
+Under the hood, a method's body is registered as an ordinary top-level
+procedure under a **mangled name** (`TCircle__SetRadius`) — the same
+trick record fields/static locals/nested-record leaves already use,
+needed because every procedure in this compiler shares one flat,
+whole-program namespace with no per-class scoping or overloading. Two
+different classes can each declare a method with the same name (e.g.
+both `TCircle` and `TSquare` declaring their own `Area`) with no
+collision. You can call a method's real, mangled name directly, passing
+`self` explicitly (`TCircle__SetRadius(c, 2.0)`), which is exactly what
+`c.SetRadius(2.0)` will desugar into once that call syntax lands.
+
 **Not implemented yet** (later build steps):
 
-- **`c.Method(args)` calls** — method headers are parsed and stored, but
-  there's no call syntax, no method body, and no implicit `self`
-  parameter yet.
+- **`c.Method(args)` call syntax** — the last remaining step; until it
+  lands, call a method's real mangled name directly (see above).
+- **Unqualified field access inside a method body** (`radius := r;`
+  instead of `self.radius := r;`) — always requires `self.` for now.
+- **Nested procedure/function declarations inside a method body** — a
+  method body doesn't support its own nested subroutines yet, unlike an
+  ordinary procedure.
+- **No check that every declared method header actually gets a body** —
+  calling a body-less method's mangled name directly just fails with an
+  ordinary "unknown procedure" error; there's no earlier, clearer check
+  yet (unlike a genuine `forward`-declared procedure, which is checked).
 - **Array or nested-record (composition) fields** — a class's fields
   must be scalar for now, the same restriction a local/parameter record
   has today.

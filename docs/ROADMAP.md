@@ -811,12 +811,35 @@ primitives instead of each reinventing them.
       known gap when step 1 landed. See
       `examples/test/class/test_class_field_access.pas`,
       `test_class_field_local_and_var.pas`.
-- [ ] Classes and instances, step 4/5: method bodies — mangled top-level
-      procedure names (`TFoo__Method`, the same trick record fields/
-      static locals/nested-record leaves already use, needed because
+- [x] Classes and instances, step 4/5: method bodies — `procedure
+      TFoo.Method; ... end;` / `function TFoo.Method; ... end;`
+      registers the body as an ordinary top-level procedure under a
+      mangled name (`TFoo__Method`, the same trick record fields/static
+      locals/nested-record leaves already use, needed because
       procedures share one flat whole-program namespace with no
-      per-scope overloading today) plus an implicit `self` first
-      parameter
+      per-scope overloading), with an implicit `self: TFoo` parameter
+      always in slot 0 - `self.field` works exactly like any other
+      class-typed variable, reusing step 3 unmodified. Deliberately
+      omits the parameter list/return type at the body site (matching
+      this compiler's own existing `forward`-completion convention,
+      not Delphi's convention of repeating it) - the header, already
+      fully known from the class declaration (step 1), is looked up by
+      class+method name and validated (procedure-vs-function kind must
+      match). `ProcParamHeader` (shared with functional/procedural
+      parameters) gained a `param_names[]` field so a method's params
+      can be registered as named locals - functional/procedural
+      parameters don't use it, but it costs them nothing. Also fixed
+      the "assign to own function name" mechanism (needed for every
+      function method to return a value at all) to match a method's
+      unmangled short name via a new `ProcSymbol.unmangled_name`, not
+      the mangled `proc_table[].name`. Known v1 gaps: no unqualified
+      `field` shorthand (`self.` is always required), no nested
+      procedure/function declarations inside a method body, and no
+      check yet that every method header declared in a class actually
+      gets a body (a call to a body-less method's mangled name just
+      fails with an ordinary "unknown procedure" error). See
+      `examples/test/class/test_class_method_basic.pas`,
+      `test_class_method_samename.pas`, `test_class_method_varparam.pas`.
 - [ ] Classes and instances, step 5/5: `f.Method(args)` call syntax —
       resolves `f` to its pointer value, splices it in as the method's
       first (`self`) argument to an ordinary call

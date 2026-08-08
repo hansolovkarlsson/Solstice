@@ -394,6 +394,18 @@ typedef struct {
                                // the enclosing procedure's
     DataType param_types[MAX_PARAMS];
     int param_is_var[MAX_PARAMS];
+    char param_names[MAX_PARAMS][MAX_NAME]; // unused by a functional/
+                               // procedural parameter itself (only the
+                               // structural signature - count/types/
+                               // var-ness - matters for call-site
+                               // matching there), but populated
+                               // regardless: a class method header (see
+                               // PointerTypeDef.methods) reuses this
+                               // exact struct, and ITS parameter names
+                               // matter - the method's later BODY
+                               // declaration needs them to register as
+                               // named locals (see
+                               // parse_class_method_body()).
 } ProcParamHeader;
 
 #define MAX_POINTER_DECLS MAX_POINTER_TYPES
@@ -1212,6 +1224,7 @@ static int add_proc(const char *name) {
         compile_error(token.line, "Too many procedure declarations (limit is %d)", MAX_PROCEDURES);
     }
     strcpy(proc_table[proc_count].name, name);
+    proc_table[proc_count].unmangled_name[0] = '\0'; // defensive reset (see comment above ProcSymbol) - overwritten by parse_class_method_body() for a method
     proc_table[proc_count].entry_address = -1; // resolved during codegen
     proc_table[proc_count].body = NULL;        // set once the body is parsed
     proc_table[proc_count].is_forward = 0;     // may be set to 1 right after, if this is a forward declaration
@@ -2148,6 +2161,7 @@ static ProcParamHeader parse_proc_param_header(void) {
                     }
                     h.param_types[h.param_count] = t;
                     h.param_is_var[h.param_count] = is_var;
+                    strcpy(h.param_names[h.param_count], names[i]);
                     h.param_count++;
                 }
                 if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -2178,6 +2192,7 @@ static ASTNode *parse_case_label_value(void);
 static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx);
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
 static void parse_class_declaration(const char *class_name, int line);
+static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line);
 
 // Parses 'idx1, idx2, ..., idxN]' (already past the opening '[') for an
 // N-dimensional (N=dims, always 3 or more - 1D/2D have their own
@@ -4683,6 +4698,187 @@ static void check_uninitialized_locals(int proc_idx, ASTNode *body, int decl_lin
     }
 }
 
+// Registers one SCALAR parameter (self, or one of a method's own
+// already-header-declared params - see parse_class_method_body() below)
+// as both a local (add_local()/add_local_var_param()) and a
+// proc_table[proc_idx] entry at 'slot'. A method's own parameters are
+// guaranteed scalar (parse_proc_param_header() already enforces this
+// when the header itself is parsed - see ProcParamHeader), so this
+// never needs the array/record/procedural-parameter branches
+// subroutine_declaration()'s own parameter loop has to handle.
+static void register_class_method_param(int proc_idx, int slot, const char *name, DataType type, int is_var) {
+    if (is_var) {
+        add_local_var_param(name, type, 0, 0, 0);
+    } else {
+        add_local(name, type);
+    }
+    proc_table[proc_idx].param_types[slot] = type;
+    strcpy(proc_table[proc_idx].param_names[slot], name);
+    proc_table[proc_idx].param_is_array_ref[slot] = 0;
+    proc_table[proc_idx].param_is_2d[slot] = 0;
+    proc_table[proc_idx].param_is_nd[slot] = 0;
+    proc_table[proc_idx].param_nd_dims[slot] = 0;
+    proc_table[proc_idx].param_is_subrange[slot] = 0;
+    proc_table[proc_idx].param_subrange_lower[slot] = 0;
+    proc_table[proc_idx].param_subrange_upper[slot] = 0;
+    proc_table[proc_idx].param_is_record[slot] = 0;
+    proc_table[proc_idx].param_record_type_idx[slot] = 0;
+    proc_table[proc_idx].param_record_field_count[slot] = 0;
+    proc_table[proc_idx].param_is_var[slot] = is_var;
+    proc_table[proc_idx].param_is_proc[slot] = 0;
+    proc_table[proc_idx].param_proc_is_function[slot] = 0;
+    proc_table[proc_idx].param_proc_return_type[slot] = TYPE_UNKNOWN;
+    proc_table[proc_idx].param_proc_param_count[slot] = 0;
+}
+
+// 'procedure ClassName.MethodName; begin ... end;' / 'function
+// ClassName.MethodName; begin ... end;' - a class method's BODY.
+// Already past 'procedure'/'function ClassName.', with token positioned
+// at the method name. The header (name, params, return type) was
+// already fully parsed and validated when the enclosing 'class ... end;'
+// was declared (see parse_class_declaration()) - deliberately NOT
+// repeated here, exactly like completing a 'forward'-declared procedure
+// in this compiler's own existing convention (rather than Delphi's
+// convention of repeating the parameter list) - see
+// docs/LANGUAGE.md#classes.
+//
+// Registers the body as an ORDINARY top-level procedure under a
+// mangled name ('TCircle__SetRadius', the same trick record fields/
+// static locals/nested-record leaves already use - needed because
+// procedures share one flat whole-program namespace with no per-scope
+// overloading), with an implicit 'self: ClassName' parameter (always
+// slot 0) prepended before the method's own declared parameters.
+// 'self' is an ORDINARY parameter, read via 'self.field' exactly like
+// any other class-typed parameter - there's no unqualified 'field'
+// shorthand yet, a known v1 gap. A method body also doesn't support its
+// own nested procedure/function declarations yet (unlike an ordinary
+// procedure) - also a known, narrow v1 gap.
+static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a method name after '%s.'", class_name);
+    }
+    char method_name[MAX_NAME];
+    strcpy(method_name, token.text);
+    match(TOKEN_IDENTIFIER);
+
+    int class_ptr_idx = find_pointer_type(class_name);
+    if (class_ptr_idx == -1 || !pointer_types[class_ptr_idx].is_class) {
+        compile_error(decl_line, "'%s' is not a declared class", class_name);
+    }
+    PointerTypeDef *cls = &pointer_types[class_ptr_idx];
+    int method_idx = -1;
+    for (int i = 0; i < cls->method_count; i++) {
+        if (strcmp(cls->methods[i].name, method_name) == 0) { method_idx = i; break; }
+    }
+    if (method_idx == -1) {
+        compile_error(decl_line, "'%s' is not a declared method of class '%s'", method_name, class_name);
+    }
+    ProcParamHeader *h = &cls->methods[method_idx];
+    if (h->is_function != is_function_decl) {
+        compile_error(decl_line, "'%s.%s' was declared as a %s, but its body is written as a %s",
+                       class_name, method_name, h->is_function ? "function" : "procedure",
+                       is_function_decl ? "function" : "procedure");
+    }
+    match(TOKEN_SEMI);
+
+    char mangled_name[MAX_NAME];
+    snprintf(mangled_name, MAX_NAME, "%s__%s", class_name, method_name);
+    if (find_proc(mangled_name) != -1) {
+        compile_error(decl_line, "'%s.%s' already has a body", class_name, method_name);
+    }
+    int proc_idx = add_proc(mangled_name);
+    strcpy(proc_table[proc_idx].unmangled_name, method_name);
+    proc_table[proc_idx].is_function = is_function_decl;
+    proc_table[proc_idx].return_type = h->return_type;
+    proc_table[proc_idx].return_is_subrange = 0; // method return types are never subrange - see ProcParamHeader's own comment
+    proc_table[proc_idx].return_subrange_lower = 0;
+    proc_table[proc_idx].return_subrange_upper = 0;
+
+    int saved_function_idx = current_function_idx;
+    int saved_proc_idx = current_proc_idx;
+    current_proc_idx = proc_idx;
+    nesting_depth++;
+    if (nesting_depth >= MAX_NESTING_DEPTH) {
+        compile_error(decl_line, "'%s.%s' is nested too deeply (limit is %d levels)", class_name, method_name, MAX_NESTING_DEPTH);
+    }
+    current_local_count = 0;
+    local_record_var_count = 0;
+    declared_label_count = 0;
+
+    register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0);
+    for (int i = 0; i < h->param_count; i++) {
+        register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i]);
+    }
+    proc_table[proc_idx].param_count = h->param_count + 1;
+    proc_table[proc_idx].param_slot_count = current_local_count; // one frame slot per param here - always true, since method params are scalar-only (see this function's own comment)
+
+    if (token.type == TOKEN_LABEL) {
+        parse_label_section();
+    }
+
+    if (token.type == TOKEN_VAR) {
+        match(TOKEN_VAR);
+        while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_STATIC) {
+            int is_static = 0;
+            if (token.type == TOKEN_STATIC) {
+                is_static = 1;
+                match(TOKEN_STATIC);
+            }
+            NameGroup g = parse_name_group();
+            for (int i = 0; i < g.count; i++) {
+                if (is_static) {
+                    if (g.is_array) {
+                        compile_error(token.line, "'static' doesn't apply to arrays - a local array is already shared across every call, unlike a scalar local (see docs/LANGUAGE.md)");
+                    }
+                    if (g.is_record) {
+                        compile_error(token.line, "'static' doesn't apply to records yet - a persistent record local isn't supported (see docs/LANGUAGE.md)");
+                    }
+                    add_static_local(proc_table[proc_idx].name, g.names[i], g.type,
+                                      g.is_subrange, g.subrange_lower, g.subrange_upper);
+                } else if (g.is_array_of_record) {
+                    add_local_array_rec(g.names[i], g.array_record_type_idx, g.array_lower, g.array_upper);
+                } else if (g.is_array) {
+                    add_local_array(g.names[i], g.type, g.array_lower, g.array_upper,
+                                     g.is_2d, g.array_lower2, g.array_upper2,
+                                     g.is_nd, g.nd_dims, g.nd_lower, g.nd_upper,
+                                     g.is_subrange, g.subrange_lower, g.subrange_upper);
+                } else if (g.is_record) {
+                    add_local_record(g.names[i], g.record_type_idx);
+                } else {
+                    int idx = add_local(g.names[i], g.type);
+                    current_locals[idx].is_subrange = g.is_subrange;
+                    current_locals[idx].subrange_lower = g.subrange_lower;
+                    current_locals[idx].subrange_upper = g.subrange_upper;
+                }
+            }
+            match(TOKEN_SEMI);
+        }
+    }
+
+    if (proc_table[proc_idx].is_function) {
+        proc_table[proc_idx].return_slot = current_local_count++;
+        current_function_idx = proc_idx;
+    } else {
+        current_function_idx = -1;
+    }
+
+    ASTNode *body = compound_statement();
+    check_all_labels_defined();
+    match(TOKEN_SEMI);
+
+    proc_table[proc_idx].body = body;
+    proc_table[proc_idx].local_count = current_local_count;
+    proc_table[proc_idx].is_forward = 0;
+
+    check_uninitialized_locals(proc_idx, body, decl_line);
+
+    current_local_count = 0;
+    local_record_var_count = 0;
+    nesting_depth--;
+    current_proc_idx = saved_proc_idx;
+    current_function_idx = saved_function_idx;
+}
+
 // Registers the name (via add_proc) before parsing anything else, so a
 // call to this procedure's own name inside its body - recursion -
 // resolves correctly. Parameter info is written back to proc_table right
@@ -4698,6 +4894,23 @@ static void subroutine_declaration(int is_function_decl) {
     int decl_line = token.line;
     strcpy(name, token.text);
     match(TOKEN_IDENTIFIER);
+
+    if (token.type == TOKEN_PERIOD) {
+        // 'procedure ClassName.MethodName; ... ' - a class method's
+        // BODY, not an ordinary procedure/function named 'ClassName'.
+        // See parse_class_method_body()'s own comment. Only valid at
+        // the true top level (nesting_depth is still -1 here, before
+        // THIS declaration's own nesting_depth++ below - a class method
+        // body isn't itself nestable inside another procedure, the
+        // same way a class declaration itself only ever appears in the
+        // main program's own 'type' section).
+        if (nesting_depth != -1) {
+            compile_error(decl_line, "A class method body ('%s.Method') must be declared at the top level, not nested inside another procedure", name);
+        }
+        match(TOKEN_PERIOD);
+        parse_class_method_body(is_function_decl, name, decl_line);
+        return;
+    }
 
     int existing_idx = find_proc(name);
     int completing_forward = (existing_idx != -1 && proc_table[existing_idx].is_forward);
@@ -6584,7 +6797,17 @@ static ASTNode *statement(void) {
             }
         }
 
-        if (current_function_idx != -1 && strcmp(token.text, proc_table[current_function_idx].name) == 0) {
+        // A class method function's OWN name, for this "assign to set
+        // the return value" check, is the short name the user wrote in
+        // the method body's own header line ('function TFoo.Bar;') -
+        // proc_table[]'s own .name is the MANGLED 'TFoo__Bar' (needed
+        // for call-site lookups elsewhere), never what a method body's
+        // source text itself uses - see ProcSymbol.unmangled_name's
+        // comment.
+        const char *own_function_name = current_function_idx != -1 && proc_table[current_function_idx].unmangled_name[0]
+            ? proc_table[current_function_idx].unmangled_name
+            : (current_function_idx != -1 ? proc_table[current_function_idx].name : "");
+        if (current_function_idx != -1 && strcmp(token.text, own_function_name) == 0) {
             match(TOKEN_IDENTIFIER);
             if (token.type == TOKEN_ASSIGN) {
                 // Assigning to the function's own name sets its return value.
