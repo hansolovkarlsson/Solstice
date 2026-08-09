@@ -3593,6 +3593,104 @@ static ASTNode *build_self_reference_node(int line) {
     return node;
 }
 
+// Builds a read of the enclosing method's own already-declared parameter
+// at proc_table[current_proc_idx].param_names[slot] (slot 1..param_count-1,
+// slot 0 being self) - the same 5-line "look up a local by name, branch
+// on is_var_param" shape used at every other local-read site (e.g. the
+// procedural-parameter-by-name lookup a few hundred lines up, and
+// build_self_reference_node() itself for slot 0). Used only by
+// parse_inherited_call()'s bare 'inherited;' form, to forward the
+// current method's own arguments unchanged.
+static ASTNode *build_local_param_read(const char *name, int line) {
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    LocalSymbol *ls = local_at(local_idx, levels_up);
+    ASTNode *node = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+    node->line = line;
+    node->data.var_idx = local_idx;
+    node->op = (TokenType)levels_up;
+    node->expression_type = ls->type;
+    return node;
+}
+
+// 'inherited;' / 'inherited MethodName;' / 'inherited MethodName(args);' -
+// a DIRECT (non-virtual) call to the enclosing method's class's PARENT's
+// implementation of a method - see NODE_INHERITED_CALL in common.h.
+// Unlike an ordinary 'c.Method(args)' call, the target is fully resolved
+// at COMPILE time: inheritance is already flattened (parent's methods[]
+// already reflects whichever ancestor actually implements a given name,
+// however many levels up), so no vtable slot/dynamic dispatch is needed
+// at all - see the codegen.c case.
+//
+// No identifier after 'inherited' means "the same method currently
+// executing, with its own parameters forwarded unchanged" - always
+// well-typed, since an override is required to match its inherited
+// signature exactly (docs/LANGUAGE.md#classes), so the currently
+// executing method's own parameter list is guaranteed identical to
+// whatever it's calling into on the parent.
+static ASTNode *parse_inherited_call(int is_statement_context) {
+    int line = token.line;
+    match(TOKEN_INHERITED);
+
+    if (current_class_ptr_idx == -1) {
+        compile_error(line, "'inherited' can only be used inside a class method body");
+    }
+    PointerTypeDef *cls = &pointer_types[current_class_ptr_idx];
+    if (cls->parent_class_ptr_idx == -1) {
+        compile_error(line, "class '%s' has no parent class - 'inherited' can't be used here", cls->name);
+    }
+    PointerTypeDef *parent = &pointer_types[cls->parent_class_ptr_idx];
+
+    char method_name[MAX_NAME];
+    int forwarding = (token.type != TOKEN_IDENTIFIER);
+    if (forwarding) {
+        strcpy(method_name, proc_table[current_proc_idx].unmangled_name);
+    } else {
+        strcpy(method_name, token.text);
+        match(TOKEN_IDENTIFIER);
+    }
+
+    int method_idx = -1;
+    for (int i = 0; i < parent->method_count; i++) {
+        if (strcmp(parent->methods[i].name, method_name) == 0) { method_idx = i; break; }
+    }
+    if (method_idx == -1) {
+        if (forwarding) {
+            compile_error(line, "'%s' doesn't override an inherited method - '%s' has no method '%s' (use 'inherited MethodName(...)' to call a differently-named one)",
+                           proc_table[current_proc_idx].unmangled_name, parent->name, method_name);
+        }
+        compile_error(line, "'%s' is not a declared method of '%s' (or any of its ancestors)", method_name, parent->name);
+    }
+    ProcParamHeader *h = &parent->methods[method_idx];
+    int mangled_idx = find_proc(h->mangled_name);
+    if (mangled_idx == -1) {
+        compile_error(line, "'%s.%s' doesn't have a body yet", parent->name, method_name);
+    }
+    if (!is_statement_context && !h->is_function) {
+        compile_error(line, "'%s' is a procedure and does not return a value; it cannot be used in an expression", method_name);
+    }
+
+    ASTNode *call = create_node(NODE_INHERITED_CALL);
+    call->line = line;
+    call->data.var_idx = mangled_idx;
+    call->expression_type = h->is_function ? h->return_type : TYPE_UNKNOWN;
+    call->left = build_self_reference_node(line);
+
+    if (forwarding) {
+        ASTNode *arg_head = NULL;
+        ASTNode *arg_tail = NULL;
+        for (int i = 1; i < proc_table[current_proc_idx].param_count; i++) {
+            ASTNode *arg = build_local_param_read(proc_table[current_proc_idx].param_names[i], line);
+            if (!arg_head) arg_head = arg; else arg_tail->next = arg;
+            arg_tail = arg;
+        }
+        call->right = arg_head;
+    } else {
+        call->right = parse_class_method_call_arguments(mangled_idx);
+    }
+    return call;
+}
+
 // Read-context (expression) self-shorthand: the current token is a bare
 // identifier already confirmed, by the caller via class_has_member(), to
 // name a field or method of the enclosing method's class - resolves it
@@ -3886,6 +3984,8 @@ static ASTNode *factor(void) {
         node->op = op;
         node->left = factor();
         return node;
+    } else if (token.type == TOKEN_INHERITED) {
+        return parse_inherited_call(0);
     } else if (token.type == TOKEN_ORD) {
         match(TOKEN_ORD);
         match(TOKEN_LPAREN);
@@ -6873,7 +6973,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE ||
-           t == TOKEN_NEW || t == TOKEN_DISPOSE ||
+           t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -8055,6 +8155,12 @@ static ASTNode *statement(void) {
 
     if (token.type == TOKEN_BEGIN) {
         return compound_statement();
+    }
+
+    if (token.type == TOKEN_INHERITED) {
+        ASTNode *call = parse_inherited_call(1);
+        call->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
+        return call;
     }
 
     if (token.type == TOKEN_IDENTIFIER) {

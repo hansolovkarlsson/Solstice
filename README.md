@@ -342,10 +342,13 @@ work end-to-end (`type TFoo = class ... end;`, fields, methods, `new`/
 `dispose`, `c.field`, `c.Method(args)`) with reference semantics, built
 entirely on the existing pointer/heap machinery rather than a new
 addressing model. Single inheritance (`class TCircle(TShape) ... end;`)
-also works — field/method inheritance, method overriding, and upcast
+also works — field/method inheritance, method overriding, upcast
 compatibility (a subclass instance usable anywhere its ancestor is
-expected, including as `self` for an inherited method call). Every
-method call is dynamically dispatched (Java-style, no `virtual`/
+expected, including as `self` for an inherited method call), and
+`inherited` itself (`inherited MethodName(args);` or bare `inherited;`,
+forwarding the current method's own arguments) for an override to reach
+its ancestor's own implementation directly, bypassing dynamic dispatch.
+Every method call is dynamically dispatched (Java-style, no `virtual`/
 `override` keyword needed) through the calling instance's own hidden
 runtime type tag and a per-class vtable, rather than the accessing
 expression's static type — the actual polymorphism payoff: a

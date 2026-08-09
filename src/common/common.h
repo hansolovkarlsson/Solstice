@@ -152,6 +152,10 @@ typedef enum {
     TOKEN_USES,           // 'uses UnitName, ...;' - pulls a unit's declarations
                            // into the current compile (program header or a
                            // unit's own interface section).
+    TOKEN_INHERITED, // 'inherited;' or 'inherited MethodName(args);' inside
+                      // a class method body - a direct (non-virtual) call to
+                      // the enclosing method's own class's PARENT's
+                      // implementation of a method. See NODE_INHERITED_CALL.
     TOKEN_EOF
 } TokenType;
 
@@ -1640,7 +1644,7 @@ typedef enum {
                        // unlike a scalar/nested-record field, this can't
                        // be followed by a further '.field'/'^' yet (a
                        // known gap, like a method call's own result).
-    NODE_HEAP_ARRAY_FIELD_ASSIGN // Write counterpart of NODE_HEAP_ARRAY_
+    NODE_HEAP_ARRAY_FIELD_ASSIGN, // Write counterpart of NODE_HEAP_ARRAY_
                        // FIELD_ACCESS above - 'c.data[i] := val' or
                        // self-shorthand 'data[i] := val'. left = the
                        // base pointer expression. right = the value
@@ -1657,6 +1661,30 @@ typedef enum {
                        // choose OP_STORE_HEAP_ARRAY_FIELD_CHAR over the
                        // plain variant, same reasoning as NODE_HEAP_
                        // FIELD_ASSIGN's own char-field dispatch.
+    NODE_INHERITED_CALL // 'inherited MethodName(args);'/'inherited;' -
+                       // a DIRECT (non-virtual) call to the enclosing
+                       // method's class's PARENT's implementation of a
+                       // method, resolved fully at compile time (unlike
+                       // NODE_VIRTUAL_CALL's runtime vtable dispatch) -
+                       // see parse_inherited_call() in parser.c. left =
+                       // self (built via build_self_reference_node(),
+                       // same as NODE_VIRTUAL_CALL's own left). right =
+                       // the argument list, chained via each arg's own
+                       // ->next - either parsed explicitly (named-target
+                       // form) or synthesized by reading the enclosing
+                       // method's own parameters in order (bare
+                       // 'inherited;' form - always well-typed, since an
+                       // override is required to match its inherited
+                       // signature exactly). data.var_idx = the resolved
+                       // TARGET's proc_table[] index directly (not a
+                       // vtable slot - this is the one real difference
+                       // from NODE_VIRTUAL_CALL's own data.num_value).
+                       // op = TOKEN_PROCEDURE in statement context (same
+                       // "discard an unused function result, continue via
+                       // next" convention as NODE_CALL/NODE_VIRTUAL_CALL),
+                       // left unset in expression context.
+                       // expression_type = the target's return type if a
+                       // function, else TYPE_UNKNOWN.
 } NodeType;
 
 typedef struct ASTNode {

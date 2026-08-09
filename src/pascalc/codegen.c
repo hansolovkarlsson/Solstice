@@ -1092,6 +1092,33 @@ void generate_code(ASTNode *node) {
             }
             break;
 
+        case NODE_INHERITED_CALL:
+            // Unlike NODE_VIRTUAL_CALL, the target is already fully
+            // resolved at compile time (see parse_inherited_call() in
+            // parser.c) - no vtable slot, no dynamically-computed
+            // target address to keep on top of the stack, so self and
+            // the args just push in the callee's own expected order
+            // directly (self first/bottom-most, same requirement as
+            // NODE_VIRTUAL_CALL's, just without needing the SWAP dance
+            // that's only there to keep an indirect target on top).
+            generate_code(node->left); // [self]
+            for (ASTNode *arg = node->right; arg; arg = arg->next) {
+                generate_code(arg);
+            }
+            emit_static_link_for_call(node->data.var_idx); // no-op in
+                                     // practice - class methods are
+                                     // always top-level - but mirrors
+                                     // every other direct-OP_CALL site
+            record_call(node->data.var_idx); // emits OP_CALL, backpatched
+                                     // exactly like NODE_CALL's own
+            if (node->op == TOKEN_PROCEDURE) {
+                if (proc_table[node->data.var_idx].is_function) {
+                    emit(OP_POP, 0); // statement-context call to a function: discard the unused result
+                }
+                generate_code(node->next);
+            }
+            break;
+
         case NODE_VTABLE_INIT_ENTRY:
             generate_code(node->left); // a NODE_PROC_REF: pushes the implementing procedure's entry address
             emit(OP_STORE_VTABLE_SLOT, node->data.num_value);

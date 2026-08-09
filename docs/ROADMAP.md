@@ -1155,6 +1155,41 @@ primitives instead of each reinventing them.
       below, confirmed present on the pre-feature build too). See
       `examples/test/class/test_class_arrayfield_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
+- [x] `inherited` method calls — an overriding method can now reach its
+      ancestor's own implementation, both `inherited MethodName(args)`
+      (explicit target, need not share the enclosing method's own name)
+      and bare `inherited;` (same method, arguments forwarded unchanged
+      from the currently executing method's own parameters). No new
+      opcodes or `.bin` format changes: unlike an ordinary `c.Method()`
+      call, the target is fully resolved at COMPILE time - inheritance
+      is already flattened (`pointer_types[class].parent_class_ptr_idx`
+      plus the parent's own `methods[]` already resolve to whichever
+      ancestor actually implements a given method name, however many
+      levels up the real override lives, confirmed with a three-level
+      hierarchy test where the immediate parent doesn't override the
+      method itself) - so `inherited` needs a plain direct call, not a
+      vtable lookup. New node `NODE_INHERITED_CALL` reuses `OP_CALL`
+      exactly the way `NODE_CALL` already does (`record_call()`/
+      `emit_static_link_for_call()`), just pushing `self` first as an
+      implicit argument the same way `NODE_VIRTUAL_CALL` already does -
+      no `OP_SWAP` dance needed this time, since (unlike
+      `NODE_VIRTUAL_CALL`'s dynamically-computed vtable target) there's
+      no target address that needs to stay on top of the stack while
+      arguments are pushed. Grammar: `inherited [Identifier]
+      ['(' [args] ')']` - whether an identifier follows is the only
+      branch point between the two forms; the explicit form's argument
+      list reuses `parse_class_method_call_arguments()` completely
+      unchanged, which already tolerates a missing `(...)` as "zero
+      arguments" for an ordinary call, so `inherited NoArgMethod;` (no
+      parens) falls out for free. Confirmed neither `type_checker.c` nor
+      `optimizer.c` needed any change (matching `NODE_VIRTUAL_CALL`'s
+      own precedent - the generic top-of-function recursion in both
+      already covers a call's self/argument sub-expressions, and DCE's
+      `mark_used_variables()` correctly marks a global used only inside
+      an `inherited` call's argument, verified directly with a test
+      rather than assumed). `ast_printer.c` needed a case (no `default:`
+      there). See `examples/test/class/test_class_inherited_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#inherited).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real

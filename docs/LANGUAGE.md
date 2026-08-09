@@ -2330,6 +2330,84 @@ entry; the existing compile-time check at any actual call site (`'X.Y'
 doesn't have a body yet`) already prevents that entry from ever being
 read.
 
+### `inherited`
+
+An overriding method can reach its ancestor's own implementation with
+`inherited`, in either of two forms:
+
+```pascal
+type
+    TShape = class
+        name: integer;
+        function Describe: integer;
+        procedure SetName(n: integer);
+    end;
+
+    TCircle = class(TShape)
+        radius: integer;
+        function Describe: integer;
+        procedure SetName(n: integer);
+    end;
+
+function TShape.Describe;
+begin
+    Describe := name * 10;
+end;
+
+procedure TShape.SetName;
+begin
+    name := n;
+end;
+
+function TCircle.Describe;
+begin
+    Describe := inherited Describe() + radius;   { explicit form }
+end;
+
+procedure TCircle.SetName;
+begin
+    inherited;                                   { bare form }
+end;
+```
+
+- **`inherited MethodName(args)`** — an explicit, direct (non-virtual)
+  call to whatever the enclosing method's class's *parent* provides for
+  `MethodName`, with explicit arguments. `MethodName` doesn't have to
+  match the enclosing method's own name. Parens are optional for a
+  zero-argument call, exactly like an ordinary method call
+  (`inherited SomeMethod;` and `inherited SomeMethod();` are the same
+  thing) — reuses the same argument-list grammar/type-checking an
+  ordinary `c.Method(args)` call already goes through.
+- **Bare `inherited;`** — shorthand for "call the ancestor's version of
+  the *currently executing* method, forwarding this method's own
+  parameters unchanged." Always well-typed: an override is required to
+  match its inherited signature exactly (see above), so the currently
+  executing method's own parameters are guaranteed to match what it's
+  forwarding them to.
+- Usable in either statement or expression position — `inherited;` and
+  `inherited MethodName(args)` both work as a plain statement
+  (discarding an unused function result, like any other method-call
+  statement) or as part of an expression (`x := inherited GetValue() + 1;`,
+  `x := inherited;`) when the target is a function.
+- Unlike an ordinary `c.Method(args)` call, `inherited` needs no vtable
+  lookup at all — inheritance is already fully flattened at declaration
+  time (see above), so the parent's own method list already resolves to
+  whichever ancestor *actually* implements a given method, however many
+  levels up that really is. A direct, compile-time-resolved call, not a
+  dynamically dispatched one.
+- `inherited` (either form) is only valid inside a class method body,
+  and only when that class has a parent — `inherited` in a class with
+  no ancestor, or outside any method body entirely, is a compile error.
+  Bare `inherited;` additionally requires the enclosing method to
+  actually be an override — if it doesn't correspond to anything the
+  parent declares, that's a compile error too (name the target
+  explicitly instead: `inherited MethodName(...)`).
+- Same ordering constraint as an ordinary method call: the target
+  method needs a body declared *somewhere* in the file by the time
+  `inherited` referencing it is parsed (`'X.Y' doesn't have a body
+  yet`) — not a new limitation, the same one ordinary method calls
+  already have.
+
 **Not implemented yet:**
 
 - **Chaining off a method call's result** (`c.GetOther().field`) — a
