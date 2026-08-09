@@ -667,12 +667,18 @@ static int find_record_var(const char *name) {
 // indices) and returns 1; returns 0 (touching nothing) if not found in
 // either table.
 static int find_any_record_var(const char *name, int *is_local, int *record_type_idx, const int **field_idx_array) {
-    for (int i = 0; i < local_record_var_count; i++) {
-        if (strcmp(local_record_vars[i].name, name) == 0) {
-            *is_local = 1;
-            *record_type_idx = local_record_vars[i].record_type_idx;
-            *field_idx_array = local_record_vars[i].field_local_idx;
-            return 1;
+    // nesting_depth == -1 (top-level, not currently parsing a procedure/
+    // method body) means local_record_var_count/local_record_vars alias
+    // scope_record_var_count[-1]/scope_record_vars[-1] - out of bounds.
+    // Matches find_local()'s own identical guard.
+    if (nesting_depth >= 0) {
+        for (int i = 0; i < local_record_var_count; i++) {
+            if (strcmp(local_record_vars[i].name, name) == 0) {
+                *is_local = 1;
+                *record_type_idx = local_record_vars[i].record_type_idx;
+                *field_idx_array = local_record_vars[i].field_local_idx;
+                return 1;
+            }
         }
     }
     int gi = find_record_var(name);
@@ -1474,6 +1480,11 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
 // image of the check add_local_record() itself already does via
 // find_any_record_var().
 static int local_record_name_collides(const char *name) {
+    // Same nesting_depth == -1 guard as find_any_record_var() above -
+    // not yet observed to be reachable in practice (add_local() appears
+    // to only ever run once nesting_depth has already been incremented),
+    // but the same latent out-of-bounds read either way if it ever is.
+    if (nesting_depth < 0) return 0;
     for (int i = 0; i < local_record_var_count; i++) {
         if (strcmp(local_record_vars[i].name, name) == 0) return 1;
     }

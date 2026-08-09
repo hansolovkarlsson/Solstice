@@ -1418,22 +1418,45 @@ Things worth remembering that aren't attached to a phase yet:
 - Network protocol support
 - "AI stuff maybe" — genuinely open-ended, no concrete idea yet
 
-### Known issues (found via AddressSanitizer, not yet fixed)
+### Known issues (found via AddressSanitizer)
 
-Surfaced by a proactive ASan/UBSan sweep during the virtual dispatch
-work above, but both are pre-existing and unrelated to it (confirmed
-present in the commit right before that work started too) - logged here
-rather than fixed in passing, since neither is in scope for whatever
-feature happens to notice them next:
+Both surfaced by a proactive ASan/UBSan sweep during the virtual
+dispatch work, pre-existing and unrelated to it, and left logged here
+rather than fixed in passing across several subsequent features (units,
+`inherited`, `ParamCount`/`ParamStr`) since neither was in scope for
+whatever feature happened to notice them next - until fixed directly,
+once they'd shown up on every single sweep since:
 
-- `find_any_record_var()` (`parser.c`) reads `with_stack`/
-  `scope_record_var_count` at index `-1` for a plain identifier
-  reference at the TOP level (main program body, outside any procedure,
-  where `nesting_depth == -1` by design - see `parse_ast()`'s own reset
-  comment). A global-buffer-overflow read one int before `with_stack`'s
-  own storage - functionally harmless so far only because whatever
-  happens to sit there in practice reads as zero, but relies on memory
-  layout, not on anything guaranteed.
-- `OP_SHL`'s implementation (`vm.c`) computes `a << b` directly on a
-  signed `int`; `b == 31` triggers signed left-shift overflow (classic C
-  UB) whenever the shifted-in bit would be the sign bit.
+- [x] `find_any_record_var()` (`parser.c`) read `with_stack`/
+      `scope_record_var_count` at index `-1` for a plain identifier
+      reference at the TOP level (main program body, outside any
+      procedure, where `nesting_depth == -1` by design - see
+      `parse_ast()`'s own reset comment). A global-buffer-overflow read
+      one int before `with_stack`'s own storage - functionally harmless
+      so far only because whatever happened to sit there in practice
+      read as zero, but relied on memory layout, not on anything
+      guaranteed. Fixed with the same guard `find_local()` (the
+      equivalent lookup for plain, non-record locals) already had:
+      `if (nesting_depth >= 0) { ... }` around the loop, skipping the
+      local-scope scan entirely at the top level - mirrors
+      `find_local_outward()`'s own safe `for (d = nesting_depth; d >= 0; d--)`
+      pattern, just as an explicit guard rather than a naturally-empty
+      loop range, since `find_any_record_var()` doesn't loop over
+      nesting levels itself. While fixing this, found and fixed the
+      exact same latent defect one function below it,
+      `local_record_name_collides()` - not yet observed to be reachable
+      in practice (`add_local()` appears to only ever run once
+      `nesting_depth` has already been incremented), but the identical
+      unguarded read either way if it ever were. Verified against the
+      original ASan repro (any top-level `for` loop, e.g.
+      `examples/test/forin/test_forin_local.pas`) and a full
+      `examples/` sweep - clean.
+- [x] `OP_SHL`'s implementation (`vm.c`) computed `a << b` directly on a
+      signed `int`; `b == 31` triggered signed left-shift overflow
+      (classic C UB) whenever the shifted-in bit would be the sign bit.
+      Fixed by shifting the same bit pattern as `unsigned int` instead
+      (`(int)((unsigned int)a << b)`) - always well-defined for any
+      shift amount, and produces the identical two's-complement result
+      this code already relied on in practice, just without the UB.
+      Verified against the original ASan repro and a full `examples/`
+      sweep - clean.

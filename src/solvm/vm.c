@@ -1369,7 +1369,14 @@ void run_vm(void) {
                     fprintf(stderr, "VM Runtime Error: Shift amount %d out of range (0..31)\n", b);
                     fatal_abort();
                 }
-                vm_push(&sp, a << b);
+                // Shifting a signed int left is undefined behavior in C
+                // whenever the result (or the bit shifted into the sign
+                // bit) doesn't fit back in a signed int - notably b == 31
+                // for any nonzero a. Shifting the same bit pattern as an
+                // unsigned int instead is always well-defined and yields
+                // the identical two's-complement result this code already
+                // relied on in practice, just without the UB.
+                vm_push(&sp, (int)((unsigned int)a << b));
                 break;
             }
 
