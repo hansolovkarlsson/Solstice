@@ -161,6 +161,8 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"ORD",       OP_ORD,       OPERAND_NONE},
     {"CHR",       OP_CHR,       OPERAND_NONE},
     {"LENGTH",       OP_LENGTH,       OPERAND_NONE},
+    {"PARAM_COUNT",  OP_PARAM_COUNT,  OPERAND_NONE},
+    {"PARAM_STR",    OP_PARAM_STR,    OPERAND_NONE},
     {"STR_CHAR_AT",  OP_STR_CHAR_AT,  OPERAND_NONE},
     {"COPY",         OP_COPY,         OPERAND_NONE},
     {"POS",          OP_POS,          OPERAND_NONE},

@@ -628,6 +628,13 @@ void type_check(ASTNode *node) {
                     }
                     node->expression_type = TYPE_STRING;
                     break;
+                case TOKEN_PARAMSTR:
+                    if (node->left->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'paramstr' requires an integer argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    break;
                 case TOKEN_POWER: {
                     DataType bt = node->left->expression_type;
                     DataType et = node->right->expression_type;

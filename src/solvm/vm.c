@@ -113,6 +113,14 @@ static int vm_heap_freelist[MAX_RECORD_FIELDS + 1]; // index 0 unused (no
 // general convention of leaving no region uninitialized garbage.
 static int vm_vtables[MAX_POINTER_TYPES * MAX_CLASS_METHODS];
 
+// Command-line arguments the running program can see via ParamCount/
+// ParamStr - see vm_set_program_args() below. vm_arg_str_idx[0] is
+// always the .bin path; vm_arg_str_idx[1..vm_arg_count] are whatever
+// extra arguments solvm's own CLI was given. Populated once, before
+// run_vm() starts executing any user code.
+static int vm_arg_count;
+static int vm_arg_str_idx[MAX_PROGRAM_ARGS];
+
 // A file variable's real runtime state (see TYPE_FILE in common.h) -
 // indexed by the SAME sym_table[] index the variable itself has (safe
 // only because a file variable is always global - one fixed index for
@@ -413,6 +421,18 @@ static int vm_intern_string(const char *s) {
     }
     strcpy(string_pool[string_count], s);
     return string_count++;
+}
+
+void vm_set_program_args(const char *program_name, int argc, char **argv) {
+    if (argc > MAX_PROGRAM_ARGS - 1) {
+        fprintf(stderr, "VM Runtime Error: Too many command-line arguments (limit is %d)\n", MAX_PROGRAM_ARGS - 1);
+        fatal_abort();
+    }
+    vm_arg_str_idx[0] = vm_intern_string(program_name);
+    vm_arg_count = argc;
+    for (int i = 0; i < argc; i++) {
+        vm_arg_str_idx[i + 1] = vm_intern_string(argv[i]);
+    }
 }
 
 // Reads one value from stdin into a GLOBAL variable (idx), matching its
@@ -1522,6 +1542,26 @@ void run_vm(void) {
                 int val = vm_pop(&sp);
                 int idx = vm_str_index(val);
                 vm_push(&sp, (int)strlen(string_pool[idx]));
+                break;
+            }
+
+            case OP_PARAM_COUNT:
+                vm_push(&sp, vm_arg_count);
+                break;
+
+            case OP_PARAM_STR: {
+                int idx = vm_pop(&sp);
+                if (idx < 0 || idx > vm_arg_count) {
+                    // Out-of-range - real Pascal/Free Pascal's own
+                    // documented ParamStr behavior returns an empty
+                    // string here, not a runtime error (unlike this
+                    // VM's usual abort-on-out-of-range convention for
+                    // array indexing) - see OP_PARAM_STR's own comment
+                    // in common.h.
+                    vm_push(&sp, vm_intern_string(""));
+                } else {
+                    vm_push(&sp, vm_arg_str_idx[idx]);
+                }
                 break;
             }
 

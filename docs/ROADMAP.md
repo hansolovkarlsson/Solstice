@@ -1294,6 +1294,41 @@ anyway, so this is where they land instead.
       missing message is synthesized as a literal ("Assertion failed")
       at parse time, so codegen/the VM never handle a "no message" case
       separately — see [docs/LANGUAGE.md](LANGUAGE.md#assert).
+- [x] `ParamCount`/`ParamStr` — command-line argument access, following
+      Turbo Pascal/Free Pascal's own convention (standard/ISO Pascal
+      never defined this at all). No new AST node - both reuse the
+      existing `NODE_BUILTIN_CALL` mechanism `eof`/`length`/`upcase`/
+      etc. already use, dispatched on `node->op` in `codegen.c`'s
+      single shared case. Two new opcodes (`OP_PARAM_COUNT`/
+      `OP_PARAM_STR`, both `OPERAND_NONE`), backed by a new
+      `vm_set_program_args()` (`vm.h`/`vm.c`) that interns each
+      argument string into `string_pool[]` via the VM's own existing
+      `vm_intern_string()` (the same generic runtime string-interning
+      helper `readln`/string-concat already use) - called from
+      `solvm.c`'s `main()` after `load_bytecode()` (so the compiled
+      program's own static strings keep their original indices) and
+      before `run_vm()`. Needed a `solvm` CLI change too: `[-v]
+      <input.bin>` only ever accepted one positional argument before;
+      now `[-v] <input.bin> [program-args...]` forwards everything
+      after the `.bin` path, verbatim (even something that looks like
+      a flag), to the running program - `-v` is only ever recognized
+      *before* the `.bin` path, so there's no ambiguity between
+      `solvm`'s own flags and the program's. `ParamStr(0)` is the
+      `.bin` path itself; `ParamCount` excludes it, matching real
+      Pascal's own convention. An out-of-range `ParamStr(i)` returns an
+      empty string, not a runtime error - a deliberate departure from
+      this VM's usual abort-on-out-of-range convention for array
+      indexing, chosen specifically to match the real, documented
+      behavior of the reference implementations this feature is
+      modeling itself after. Surfaced one narrow, expected side effect
+      of adding any new keyword: an existing, unrelated tech exercise
+      (`examples/tech/param_count.pas`, testing a wrong-argument-COUNT
+      error message, coincidentally named `program ParamCount;`) had to
+      be renamed (`arg_count_mismatch.pas`, `program
+      ArgCountMismatch;`) since its old name is now a reserved word -
+      confirmed via a full `examples/` grep that nothing else collides.
+      See `examples/test/args/test_args_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#built-in-functions-and-procedures).
 - [ ] User-level error/warning built-ins, distinct from the VM's internal
       recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
 - [ ] Some form of try/except/retry that exposes that same

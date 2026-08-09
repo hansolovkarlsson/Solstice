@@ -213,6 +213,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "implementation") == 0) token.type = TOKEN_IMPLEMENTATION;
         else if (strcasecmp(token.text, "uses") == 0) token.type = TOKEN_USES;
         else if (strcasecmp(token.text, "inherited") == 0) token.type = TOKEN_INHERITED;
+        else if (strcasecmp(token.text, "paramcount") == 0) token.type = TOKEN_PARAMCOUNT;
+        else if (strcasecmp(token.text, "paramstr") == 0) token.type = TOKEN_PARAMSTR;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

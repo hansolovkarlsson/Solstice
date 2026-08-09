@@ -855,6 +855,14 @@ void generate_code(ASTNode *node) {
             } else if (node->op == TOKEN_POWER) {
                 generate_code(node->right); // exponent
                 emit(OP_FPOWER, 0);
+            } else if (node->op == TOKEN_PARAMCOUNT) {
+                // No node->left to generate - the generate_code(node->left)
+                // call just above this whole if/else-if chain is already a
+                // guarded no-op for NULL.
+                emit(OP_PARAM_COUNT, 0);
+            } else if (node->op == TOKEN_PARAMSTR) {
+                emit(OP_PARAM_STR, 0); // node->left (the index) already
+                                        // pushed by the shared code above
             }
             break;
 

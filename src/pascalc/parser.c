@@ -4069,6 +4069,33 @@ static ASTNode *factor(void) {
             match(TOKEN_RPAREN);
         }
         return node;
+    } else if (token.type == TOKEN_PARAMCOUNT) {
+        // 'ParamCount' - like eof/eoln above, real usage is almost
+        // always bare, but '()' (always empty - there's no file-like
+        // argument here) is accepted too. Only known at VM startup
+        // (see vm_set_program_args() in vm.c), not compile time, so
+        // this needs a real opcode.
+        match(TOKEN_PARAMCOUNT);
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            match(TOKEN_RPAREN);
+        }
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_PARAMCOUNT;
+        node->expression_type = TYPE_INTEGER;
+        return node;
+    } else if (token.type == TOKEN_PARAMSTR) {
+        // 'ParamStr(i)' - same one-required-argument shape as length(x)
+        // below. Out-of-range i is a runtime concern (empty string, not
+        // an error - see OP_PARAM_STR), not a parse/type-time one.
+        match(TOKEN_PARAMSTR);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_PARAMSTR;
+        node->left = expression();
+        node->expression_type = TYPE_STRING;
+        match(TOKEN_RPAREN);
+        return node;
     } else if (token.type == TOKEN_ODD) {
         // odd(x) desugars to '(x mod 2) <> 0' - reuses the existing
         // mod/comparison machinery entirely, so type checking (x must be

@@ -63,6 +63,8 @@ static const char *opcode_name(Opcode op) {
         case OP_ORD:   return "ord";
         case OP_CHR:   return "chr";
         case OP_LENGTH:        return "length";
+        case OP_PARAM_COUNT:   return "param_count";
+        case OP_PARAM_STR:     return "param_str";
         case OP_STR_CHAR_AT:   return "str_char_at";
         case OP_COPY:          return "copy";
         case OP_POS:           return "pos";

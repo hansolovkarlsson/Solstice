@@ -5,22 +5,30 @@
 #include "error.h"
 
 int main(int argc, char *argv[]) {
+    // '-v' is only ever recognized before the '.bin' path - the moment a
+    // non-'-v' argument is seen, it becomes bin_path and every remaining
+    // argument, verbatim (even one that looks like a flag), is forwarded
+    // to the COMPILED PROGRAM's own ParamCount/ParamStr instead of being
+    // parsed as another solvm flag. Simple and unambiguous, and matches
+    // this project's existing "-v always comes first" convention.
     const char *bin_path = NULL;
-    for (int i = 1; i < argc; i++) {
+    int i = 1;
+    for (; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) {
             verbose_mode = 1;
-        } else if (!bin_path) {
-            bin_path = argv[i];
         } else {
-            bin_path = NULL; // trigger usage error below (too many args)
+            bin_path = argv[i];
+            i++;
             break;
         }
     }
 
     if (!bin_path) {
-        printf("Usage: %s [-v] <input.bin>\n", argv[0]);
+        printf("Usage: %s [-v] <input.bin> [program-args...]\n", argv[0]);
         return 1;
     }
+    int program_argc = argc - i;
+    char **program_argv = &argv[i];
 
     // Same recovery pattern as the compiler binary, for the load+execute
     // pipeline (bytecode loader, VM).
@@ -35,6 +43,8 @@ int main(int argc, char *argv[]) {
     if (verbose_mode) {
         printf("[Bytecode Module] Loaded executable successfully (%d instructions, %d symbols)\n", code_idx, sym_count);
     }
+
+    vm_set_program_args(bin_path, program_argc, program_argv);
 
     if (verbose_mode) printf("\n--- Step 2: Virtual Machine Execution ---\n");
     run_vm();

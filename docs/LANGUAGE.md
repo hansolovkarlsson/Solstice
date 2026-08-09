@@ -249,6 +249,8 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 | `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type — see [Pointers](#pointers) |
+| `ParamCount` | function | Number of command-line arguments passed to the running program |
+| `ParamStr(i)` | function | The `i`th command-line argument as a string — `ParamStr(0)` is the running `.bin`'s own path |
 
 - `abs`/`sqr` accept `integer` or `real` (preserving whichever was
   given); `odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
@@ -267,6 +269,24 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 - `inc`/`dec` are statements (no return value, can't be used inside an
   expression), matching real Pascal. The other five are ordinary
   functions, usable anywhere an expression is expected.
+- `ParamCount`/`ParamStr` follow Turbo Pascal/Free Pascal's own
+  convention (standard/ISO Pascal never defined command-line argument
+  access at all). Arguments come from `solvm`'s own command line, not
+  `pascalc`'s: `solvm program.bin arg1 arg2` — anything after the
+  `.bin` path is forwarded verbatim to the running program, regardless
+  of whether it looks like a flag (`solvm`'s own `-v` is only ever
+  recognized *before* the `.bin` path). `ParamCount` excludes argument
+  0 (matching real Pascal — it counts only the *user*-supplied
+  arguments); `ParamStr(0)` is always the `.bin` path itself, even when
+  `ParamCount` is `0`. An out-of-range `ParamStr(i)` (`i < 0` or
+  `i > ParamCount`) returns an **empty string**, not a runtime error —
+  this is the real, documented behavior of the reference
+  implementations this pair is modeling itself after (Free Pascal:
+  "If Index is greater than the number of arguments...an empty string
+  is returned"), a deliberate departure from this compiler's more
+  usual abort-on-out-of-range convention for array indexing. `ParamCount`
+  may be called bare or as `ParamCount()`; `ParamStr` always needs its
+  argument in parens.
 
 ## Statements
 

@@ -188,6 +188,8 @@ corruption.
 | `READ_LOCAL_INT_NOFLUSH` / `READ_LOCAL_BOOL_NOFLUSH` / `READ_LOCAL_REAL_NOFLUSH` | The `read`-semantics (non-flushing) counterparts of the three `READ_LOCAL_*` opcodes above that actually have a flush step. No `_STR`/`_CHAR` `_NOFLUSH` variants exist - same `fgets` reasoning as `READ_NOFLUSH`. |
 | `EOF` | Peek at stdin (`fgetc`/`ungetc` - nothing is actually consumed); push `1` if there's no more input, else `0`. |
 | `EOLN` | Peek at stdin the same way; push `1` if the very next character is a newline OR there's no more input (matching every real Pascal implementation's end-of-file-implies-end-of-line convention), else `0`. |
+| `PARAM_COUNT` | Push the number of command-line arguments passed to the running program (excludes argument 0, the `.bin` path itself) — set once at VM startup via `vm_set_program_args()`, not a compile-time constant. |
+| `PARAM_STR` | Pop an integer index; push the corresponding argument as a `string_pool[]` index (already interned at startup), or an interned empty string if the index is out of range (`0..PARAM_COUNT`) — matching real Pascal/Free Pascal's own documented `ParamStr` behavior, not this VM's usual abort-on-out-of-range convention for array indexing. |
 
 ### Control flow
 

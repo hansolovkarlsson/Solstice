@@ -373,7 +373,12 @@ raw hexdump mode, and `.macro`/`.endmacro` macro support in `solas`
 any label the macro body defines itself — see
 [docs/ASSEMBLER.md](docs/ASSEMBLER.md#macros)). Also working, in Pascal
 source: `(* ... *)` as an alternate comment style alongside `{ }` and
-`//` (see [docs/LANGUAGE.md](docs/LANGUAGE.md#comments)).
+`//` (see [docs/LANGUAGE.md](docs/LANGUAGE.md#comments)), and
+`ParamCount`/`ParamStr` for command-line argument access (Turbo
+Pascal/Free Pascal's own convention — standard Pascal never defined
+this) — `solvm program.bin arg1 arg2` forwards `arg1`/`arg2` through to
+the running program (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#built-in-functions-and-procedures)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

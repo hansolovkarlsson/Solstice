@@ -1,4 +1,4 @@
-program ParamCount;
+program ArgCountMismatch;
 procedure foo(a, b: integer);
 begin
 end;

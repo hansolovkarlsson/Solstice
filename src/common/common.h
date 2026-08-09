@@ -16,6 +16,10 @@
                             // used for circular-dependency detection, since
                             // a unit is only ever pushed onto it once
 #define MAX_UNIT_PATH 256   // resolved unit source-file path buffer size
+#define MAX_PROGRAM_ARGS 64 // command-line arguments a compiled program
+                            // can see via ParamCount/ParamStr, INCLUDING
+                            // index 0 (the .bin path itself) - see
+                            // vm_set_program_args() in vm.c
 #define MAX_PARAMS 8
 #define MAX_CASE_LABELS 64 // per 'case' statement, across every arm combined
                            // - also bounds the number of ARMS (each arm
@@ -156,6 +160,8 @@ typedef enum {
                       // a class method body - a direct (non-virtual) call to
                       // the enclosing method's own class's PARENT's
                       // implementation of a method. See NODE_INHERITED_CALL.
+    TOKEN_PARAMCOUNT, // the 'ParamCount' builtin function - see OP_PARAM_COUNT.
+    TOKEN_PARAMSTR,   // the 'ParamStr' builtin function - see OP_PARAM_STR.
     TOKEN_EOF
 } TokenType;
 
@@ -1060,6 +1066,20 @@ typedef enum {
                   // untyped heap has no per-slot type for the VM to
                   // dispatch a char-check on at runtime the way OP_STORE
                   // does via sym_table[]).
+    OP_PARAM_COUNT, // Pushes the number of command-line arguments passed
+                  // to the running program (excluding argument 0, the
+                  // .bin path itself - see vm_set_program_args() in
+                  // vm.c), matching real Pascal's own ParamCount
+                  // convention. No operand - the count is VM state set
+                  // once at startup, not a compile-time constant.
+    OP_PARAM_STR, // Pops an integer index; pushes the corresponding
+                  // command-line argument as a string_pool[] index
+                  // (already interned at VM startup - see
+                  // vm_set_program_args()), or an interned empty string
+                  // if the index is out of range (0..ParamCount) -
+                  // matching real Pascal/Free Pascal's own documented
+                  // lenient behavior, not this VM's usual abort-on-out-
+                  // of-range convention for array indexing. No operand.
 } Opcode;
 
 typedef struct {
