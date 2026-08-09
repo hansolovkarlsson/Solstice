@@ -2026,6 +2026,40 @@ mutates the caller's own instance, and dereferencing a `nil` or never-`new`'d
 class variable is the same clean `VM Runtime Error` a plain pointer's
 nil-dereference already is.
 
+A field can also be a **nested (plain) record type** — composition by
+value, embedded directly inside the class's own heap-allocated instance:
+
+```pascal
+type
+    TPoint = record
+        x, y: integer;
+    end;
+    TCircle = class
+        center: TPoint;
+        radius: real;
+    end;
+var
+    c: TCircle;
+begin
+    new(c);
+    c.center.x := 3;
+    c.center.y := 4;
+    { or, inside a method body, via self-shorthand: center.x := 3; }
+    ...
+end.
+```
+
+Every leaf field of `center` gets its own heap slot, contiguous within
+`c`'s own instance — accessed via `c.center.x`, an arbitrary-depth
+`.field.field` chain if the nested type itself nests further, exactly
+like a nested field on a plain record already works. Composition by
+*reference* (a field whose type is another class, e.g. `next: TNode;`)
+already worked before this — that's just an ordinary scalar pointer
+field. **Not supported**: reading/writing/passing the nested record as
+a whole (`c.center` alone, with no further `.field`) — a compile error;
+you must always name a leaf field. Array-typed fields remain
+unsupported too (see "Not implemented yet" below).
+
 A method's **body** is declared separately from its header, after the
 `var` section, using `procedure ClassName.MethodName; ... end;` /
 `function ClassName.MethodName; ... end;` — note the parameter list and
@@ -2233,9 +2267,11 @@ read.
 - **Nested procedure/function declarations inside a method body** — a
   method body doesn't support its own nested subroutines yet, unlike an
   ordinary procedure.
-- **Array or nested-record (composition) fields** — a class's fields
-  must be scalar for now, the same restriction a local/parameter record
-  has today.
+- **Array-typed fields** — a class's fields must be scalar or a nested
+  plain-record type for now; array fields need a new VM primitive
+  (runtime-indexed heap addressing) that doesn't exist yet.
+- **Reading/writing a nested-record field as a whole** (`c.center`
+  alone) — always requires naming a leaf field (`c.center.x`).
 - **`new()` into a class-typed field reached through an explicit `^`**
   (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
   into a plain class variable first, then assign it into the field.

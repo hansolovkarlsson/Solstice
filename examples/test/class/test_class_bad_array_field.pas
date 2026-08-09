@@ -3,8 +3,9 @@ type
     TBuffer = class
         data: array[1..10] of integer;
     end;
-{ Expected: Compile Error - array fields aren't supported in a class yet
-  (scalar-only v1 gap, see notes/classes-and-instances-scoping.md) }
+{ Expected: Compile Error - array-typed fields aren't supported in a
+  class yet (see docs/ROADMAP.md). Nested-record fields are supported
+  now - see test_class_composite_basic.pas - only arrays remain a gap. }
 var
     b: TBuffer;
 begin

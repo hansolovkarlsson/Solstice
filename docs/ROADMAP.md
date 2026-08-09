@@ -1025,6 +1025,47 @@ primitives instead of each reinventing them.
       already unaffected since ordinary local lookup already covered
       it). See `examples/test/class/test_class_selfshorthand_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
+- [x] Composite (nested-record) class fields — a class field can now be
+      a plain `record ... end;` type (composition by value, e.g.
+      `center: TPoint;`), read/written via `c.center.x` (or, inside a
+      method body, shorthand `center.x`) - the nested-record half of
+      classes v1's "scalar fields only" gap. Array-typed fields remain
+      out of scope (need new VM opcodes for runtime-indexed heap
+      addressing - a materially bigger follow-up, deliberately split
+      off). Purely a parser-side offset-arithmetic fix: classes are
+      heap-allocated with a single compile-time-immediate field offset
+      baked into `OP_LOAD_HEAP_FIELD`/`OP_STORE_HEAP_FIELD`, which
+      previously assumed every field was exactly 1 heap slot
+      (`field_idx + 1`). Two new helpers, `class_field_heap_slots()` (1
+      for a scalar, `record_type_leaf_count()` for a nested record -
+      reusing the exact same leaf-counting plain nested records already
+      use, since a nested field is already guaranteed array-field-free)
+      and `class_field_base_offset()` (a prefix sum over preceding
+      fields' slot costs), replace the old `field_idx + 1` in
+      `resolve_heap_deref_step()`. A new `resolve_class_field_chain_offset()`
+      walks any further `.subfield` steps past the first (mirroring
+      `resolve_record_field_leaf()`'s own chain-walk, just accumulating
+      a heap offset instead of a global sym_table index) - shared by
+      both explicit `self.x`/`c.x` access and self-shorthand, since both
+      already route through the same function. `parse_class_declaration()`'s
+      old "reject array OR record fields" check narrowed to array-only;
+      `target_elem_size` now computed via the same offset helper instead
+      of a flat `field_count + 1`. Reading/writing a nested field as a
+      whole (`c.center` alone, no further `.field`) is a compile error -
+      an explicit, documented gap, not silently accepted.
+      Found and closed along the way: `vm_heap_freelist[MAX_RECORD_FIELDS + 1]`
+      (`src/solvm/vm.c`) is indexed directly by `elem_size` with no
+      runtime bounds check in `OP_NEW`/`OP_DISPOSE` - safe only because
+      `target_elem_size` had always been `<= MAX_RECORD_FIELDS + 1`
+      before nested fields could make a class's total heap footprint
+      exceed its own field count. A new compile-time check rejects any
+      class whose flattened size would exceed that bound, closing a
+      latent VM buffer-overflow this feature would otherwise have made
+      reachable for the first time (see `test_class_composite_bad_toolarge.pas`).
+      Verified with the same full `examples/` old-vs-new regression diff
+      methodology used for the previous two features. See
+      `examples/test/class/test_class_composite_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real

@@ -3196,6 +3196,65 @@ static int class_has_member(int class_ptr_idx, const char *name) {
     return 0;
 }
 
+// How many contiguous heap ints a single top-level class field
+// occupies - 1 for a scalar, or record_type_leaf_count() for a nested
+// record (guaranteed array-field-free by parse_record_field_group()'s
+// own existing check, so its leaf count IS its heap slot count - no
+// separate weighting needed). Array-typed fields aren't reachable here -
+// still rejected in parse_class_declaration().
+static int class_field_heap_slots(RecordField *f) {
+    return f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
+}
+
+// The heap offset of field field_idx within rt - 1 (the hidden runtime-
+// tag slot every class instance carries at offset 0) plus the summed
+// heap-slot cost of every preceding field. Passing field_idx ==
+// rt->field_count gives the record's TOTAL heap slot count (1 + tag) -
+// exactly target_elem_size - so parse_class_declaration() reuses this
+// directly instead of a separate "total slots" helper.
+static int class_field_base_offset(RecordTypeDef *rt, int field_idx) {
+    int offset = 1;
+    for (int i = 0; i < field_idx; i++) {
+        offset += class_field_heap_slots(&rt->fields[i]);
+    }
+    return offset;
+}
+
+// Continues an already-resolved TOP-LEVEL class field access through
+// further nested-record '.subfield' steps - same per-sibling weighting
+// resolve_record_field_leaf() uses for a plain record variable's own
+// chain (both units mean the same thing: one leaf is always one storage
+// slot, whichever kind of storage it is). Updates *f_ptr to the chain's
+// final (guaranteed scalar) leaf field. A chain that stops on a still-
+// is_record field with no further '.' is a compile error - reading/
+// writing/passing a "whole nested record" heap access isn't supported
+// yet (a known gap, like array fields).
+static int resolve_class_field_chain_offset(RecordField **f_ptr) {
+    int extra = 0;
+    RecordField *f = *f_ptr;
+    while (f->is_record) {
+        if (token.type != TOKEN_PERIOD) {
+            compile_error(token.line, "'%s' names a whole record - specify a further field, e.g. '%s.fieldname'", f->name, f->name);
+        }
+        match(TOKEN_PERIOD);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a field name after '%s.'", f->name);
+        }
+        RecordTypeDef *srt = &record_types[f->record_type_idx];
+        int sub_field_idx = find_record_field(f->record_type_idx, token.text);
+        if (sub_field_idx == -1) {
+            compile_error(token.line, "'%s' is not a field of '%s'", token.text, srt->name);
+        }
+        for (int k = 0; k < sub_field_idx; k++) {
+            extra += srt->fields[k].is_record ? record_type_leaf_count(srt->fields[k].record_type_idx) : 1;
+        }
+        match(TOKEN_IDENTIFIER);
+        f = &srt->fields[sub_field_idx];
+    }
+    *f_ptr = f;
+    return extra;
+}
+
 // Resolves ONE '^' step already matched (the caller has confirmed
 // is_pointer_type(base's type)) - '.field' if the target is a record,
 // nothing more if it's a scalar. Shared by parse_heap_deref_read()/
@@ -3296,12 +3355,26 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             compile_error(token.line, "'%s' is not a field of '%s'", token.text, pt->is_class ? pt->name : record_types[pt->target_record_type_idx].name);
         }
         match(TOKEN_IDENTIFIER);
-        RecordField *f = &record_types[pt->target_record_type_idx].fields[field_idx];
-        // +1 for a class: heap offset 0 is the hidden runtime type tag
-        // (see parse_class_declaration()'s target_elem_size comment and
-        // new()'s tag-write) - a plain 'type PFoo = ^Target;' pointer
-        // has no such slot, so field_idx IS the heap offset there.
-        step.field_offset = pt->is_class ? field_idx + 1 : field_idx;
+        RecordTypeDef *target_rt = &record_types[pt->target_record_type_idx];
+        RecordField *f = &target_rt->fields[field_idx];
+        // For a class: heap offset 0 is the hidden runtime type tag (see
+        // parse_class_declaration()'s target_elem_size comment and
+        // new()'s tag-write), and a field past the first may itself
+        // occupy more than 1 heap slot if it's a nested record -
+        // class_field_base_offset() accounts for both. A plain 'type
+        // PFoo = ^Target;' pointer has no tag slot and stays scalar-only
+        // (nested-record fields are rejected elsewhere for it), so
+        // field_idx IS the heap offset there, unchanged.
+        int offset;
+        if (pt->is_class) {
+            offset = class_field_base_offset(target_rt, field_idx);
+            if (f->is_record) {
+                offset += resolve_class_field_chain_offset(&f); // f becomes the final scalar leaf
+            }
+        } else {
+            offset = field_idx;
+        }
+        step.field_offset = offset;
         step.result_type = f->type;
         step.is_subrange = f->is_subrange;
         step.subrange_lower = f->subrange_lower;
@@ -4735,8 +4808,8 @@ static void parse_class_declaration(const char *class_name, int line) {
         parse_record_field_group(rt, rt_idx);
         match(TOKEN_SEMI);
         for (int i = field_start; i < rt->field_count; i++) {
-            if (rt->fields[i].is_array || rt->fields[i].is_record) {
-                compile_error(line, "Class '%s' field '%s' - only scalar field types are supported in a class yet (see notes/classes-and-instances-scoping.md)", class_name, rt->fields[i].name);
+            if (rt->fields[i].is_array) {
+                compile_error(line, "Class '%s' field '%s' - array-typed fields aren't supported in a class yet (see docs/ROADMAP.md)", class_name, rt->fields[i].name);
             }
         }
     }
@@ -4807,15 +4880,28 @@ static void parse_class_declaration(const char *class_name, int line) {
         }
     }
 
-    // +1 for the hidden runtime type tag every class instance carries at
-    // heap offset 0 (see resolve_heap_deref_step()'s own +1 shift for
-    // every ordinary field's offset, and new()'s tag-write) - not a
-    // user-visible field, not part of rt->fields[]/find_record_field()
-    // at all, so nothing about field lookup/inheritance/duplicate
-    // checking above needed to change for it. Only a class gets this
-    // slot - an ordinary 'type PFoo = ^Target;' pointer's own
-    // target_elem_size (set elsewhere in this file) is unaffected.
-    pt->target_elem_size = rt->field_count + 1;
+    // class_field_base_offset(rt, rt->field_count) is 1 (the hidden
+    // runtime type tag every class instance carries at heap offset 0 -
+    // see resolve_heap_deref_step()'s own comment, and new()'s tag-
+    // write) plus every field's own heap-slot cost (1 for a scalar,
+    // more for a nested-record field) - exactly the record's total heap
+    // footprint. Not a user-visible field, not part of
+    // rt->fields[]/find_record_field() at all, so nothing about field
+    // lookup/inheritance/duplicate checking above needed to change for
+    // it. Only a class gets this slot - an ordinary 'type PFoo =
+    // ^Target;' pointer's own target_elem_size (set elsewhere in this
+    // file) is unaffected.
+    pt->target_elem_size = class_field_base_offset(rt, rt->field_count);
+    // vm_heap_freelist[MAX_RECORD_FIELDS + 1] (src/solvm/vm.c) is
+    // indexed directly by elem_size with no runtime bounds check in
+    // OP_NEW/OP_DISPOSE - safe only because target_elem_size has always
+    // been <= MAX_RECORD_FIELDS + 1 before nested-record fields could
+    // make a class's total heap footprint exceed its own field count.
+    // Reject here so that invariant can never be broken by a compiled
+    // program, rather than risking an out-of-bounds VM write.
+    if (pt->target_elem_size > MAX_RECORD_FIELDS + 1) {
+        compile_error(line, "Class '%s' is too large once its nested-record fields are flattened (needs %d heap slots, limit is %d) - reduce its field count or nesting depth", class_name, pt->target_elem_size, MAX_RECORD_FIELDS + 1);
+    }
     match(TOKEN_END);
     match(TOKEN_SEMI);
     pointer_type_count++;
