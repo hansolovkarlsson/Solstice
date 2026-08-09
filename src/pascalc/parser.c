@@ -6944,6 +6944,71 @@ static ASTNode *parse_new_statement(void) {
         stmt->expression_type = step.result_type;
         return stmt;
     }
+
+    // Optional constructor-call sugar: 'new(c, Init(args));' allocates
+    // c exactly as plain 'new(c)' does, then immediately calls
+    // c.Init(args) on it - equivalent to writing 'new(c); c.Init(args);'
+    // as two statements, just guaranteed together. No method name is
+    // reserved - Init isn't special, any method works here; nothing
+    // stops 'new(c, Bump(5))'. Parsed (and the method resolved) here,
+    // before match(TOKEN_RPAREN) below, since the method's own
+    // parenthesized argument list needs to be consumed first - 'new's
+    // own closing ')' comes after it.
+    ASTNode *ctor_call = NULL;
+    if (token.type == TOKEN_COMMA) {
+        if (!pointer_types[target_type - TYPE_POINTER_BASE].is_class) {
+            compile_error(token.line, "'new(x, Method(...))' is only valid when 'x' is a class-typed variable");
+        }
+        match(TOKEN_COMMA);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a method name after ','");
+        }
+        PointerTypeDef *ctor_pt = &pointer_types[target_type - TYPE_POINTER_BASE];
+        char method_name[MAX_NAME];
+        strcpy(method_name, token.text);
+        int method_line = token.line;
+        int method_idx = -1;
+        for (int i = 0; i < ctor_pt->method_count; i++) {
+            if (strcmp(ctor_pt->methods[i].name, method_name) == 0) { method_idx = i; break; }
+        }
+        if (method_idx == -1) {
+            compile_error(method_line, "'%s' is not a method of class '%s'", method_name, ctor_pt->name);
+        }
+        match(TOKEN_IDENTIFIER);
+        ProcParamHeader *ctor_h = &ctor_pt->methods[method_idx];
+        int ctor_mangled_idx = find_proc(ctor_h->mangled_name);
+        if (ctor_mangled_idx == -1) {
+            compile_error(method_line, "'%s.%s' doesn't have a body yet", ctor_pt->name, method_name);
+        }
+        // A THIRD fresh read of the same target - self is a separate
+        // subtree from write_node's own target-ref below and the
+        // tag-write's fresh_read further down; reusing either would
+        // double-free (see build_class_tag_write()'s own comment on
+        // exactly this hazard). Same is_var_param/is_local/global
+        // 3-way branch this function already uses twice elsewhere.
+        ASTNode *ctor_self;
+        if (is_var_param) {
+            ctor_self = create_node(NODE_VAR_PARAM_READ);
+            ctor_self->data.var_idx = local_idx;
+            ctor_self->op = (TokenType)levels_up;
+        } else if (is_local) {
+            ctor_self = create_node(NODE_LOCAL_VAR);
+            ctor_self->data.var_idx = local_idx;
+            ctor_self->op = (TokenType)levels_up;
+        } else {
+            ctor_self = create_node(NODE_VARIABLE);
+            ctor_self->data.var_idx = global_idx;
+        }
+        ctor_self->line = method_line;
+        ctor_self->expression_type = target_type;
+        ctor_call = create_node(NODE_VIRTUAL_CALL);
+        ctor_call->line = method_line;
+        ctor_call->data.num_value = method_idx;
+        ctor_call->expression_type = ctor_h->is_function ? ctor_h->return_type : TYPE_UNKNOWN;
+        ctor_call->op = TOKEN_PROCEDURE; // statement context: discard an unused function result, same as any other call-statement
+        ctor_call->left = ctor_self;
+        ctor_call->right = parse_class_method_call_arguments(ctor_mangled_idx);
+    }
     match(TOKEN_RPAREN);
 
     ASTNode *value_node = create_node(NODE_HEAP_ALLOC);
@@ -6988,6 +7053,9 @@ static ASTNode *parse_new_statement(void) {
             fresh_read->expression_type = target_type;
         }
         ASTNode *tag_write = build_class_tag_write(fresh_read, target_type - TYPE_POINTER_BASE, line);
+        if (ctor_call != NULL) {
+            tag_write->next = ctor_call; // runs after the tag is written, so a constructor calling other self.methods() dispatches correctly
+        }
         return chain_two_statements(write_node, tag_write);
     }
     return write_node;

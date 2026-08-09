@@ -1066,6 +1066,44 @@ primitives instead of each reinventing them.
       methodology used for the previous two features. See
       `examples/test/class/test_class_composite_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
+- [x] Constructors — `new`'s own syntax grows an optional second
+      argument, `new(c, Init(args))`, allocating and initializing in one
+      statement. Turbo-Pascal-object-model style rather than Delphi's
+      `c := TFoo.Create(args);`, deliberately: this compiler has no
+      function/method overloading anywhere (`find_proc()` is a flat
+      name-only lookup, `add_proc()` hard-rejects a duplicate name) and
+      no precedent for a magic/reserved method name, so Delphi's model
+      would need to invent both a first-ever special method name and a
+      new expression-context allocation path. `new(c, Init(args))`
+      avoids both - `Init` isn't reserved, any method works here, and
+      it's pure sugar for `new(c); c.Init(args);` written as one
+      guaranteed-together statement. Implemented entirely inside
+      `parse_new_statement()` (`src/pascalc/parser.c`): the method name
+      + arg list are optionally parsed right before `new`'s own closing
+      `)`, resolved against the target class's `methods[]` exactly like
+      `resolve_heap_deref_step()`'s own method-call branch does, and the
+      resulting `NODE_VIRTUAL_CALL` is spliced onto the end of the
+      existing allocate-then-tag-write statement chain (after the tag
+      write, so dispatch from inside the constructor body already
+      works). A third "fresh read" of the target builds the call's
+      `self` argument, matching the two fresh-reads
+      `parse_new_statement()` already builds for the assignment and the
+      tag write - reusing either would double-free (see
+      `build_class_tag_write()`'s own comment on that exact hazard).
+      Zero new `NodeType`/`Opcode`; zero changes outside `parser.c` -
+      `NODE_HEAP_ALLOC`/`NODE_VIRTUAL_CALL`/`NODE_COMPOUND`/
+      `chain_two_statements()`/`build_class_tag_write()`/
+      `parse_class_method_call_arguments()` are all reused unmodified,
+      and inheritance works for free since `methods[]` already includes
+      inherited entries. Explicit scope decisions: nothing enforces a
+      constructor is ever called (`new(c);` alone stays completely
+      legal); no `new(head^.next, Init(...))` (matches the existing
+      restriction on `new` into a class field through `^`); no symmetric
+      `dispose(c, Cleanup)` destructor sugar. Verified with the same
+      `examples/` old-vs-new regression diff methodology used for the
+      previous three features. See
+      `examples/test/class/test_class_ctor_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real

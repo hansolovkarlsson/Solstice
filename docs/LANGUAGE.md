@@ -2121,6 +2121,49 @@ compile-time error, same message an ordinary procedure-used-as-a-value
 already gets. A method call's result can't itself be chained into a
 further `.field`/`^` step yet (a known gap, below).
 
+### Constructors
+
+`new`'s own syntax grows an optional second argument to allocate and
+initialize a class instance in one statement:
+
+```pascal
+type
+    TCircle = class
+        radius: real;
+        procedure Init(r: real);
+    end;
+var
+    c: TCircle;
+begin
+    new(c, Init(2.0));   { same as: new(c); c.Init(2.0); }
+    writeln(c.radius);
+    dispose(c);
+end.
+```
+
+`new(c, Init(args))` is pure sugar for `new(c); c.Init(args);` written
+as one guaranteed-together statement — nothing more. **No method name
+is reserved**: `Init` isn't special (this compiler has no
+function/method overloading anywhere, so there's no "the" constructor
+to pick out by a magic name either) — any method works here, including
+one that doesn't look like an initializer at all. The parenthesized
+argument list follows the same optional-when-parameterless rule as an
+ordinary method call (`new(c, Init);`). Dynamic dispatch works exactly
+as it does everywhere else, including from *inside* the called method —
+the class's runtime type tag is written before the call runs, so a
+constructor-style method calling another `self` method during its own
+body dispatches correctly, and an inherited (never-redeclared)
+constructor-style method is reachable the same way an ordinary
+inherited method call already is.
+
+**Nothing enforces a constructor actually gets called** — plain
+`new(c);` remains completely legal on its own, and reading a field no
+constructor ever set is silently allowed, exactly as it was before this
+feature. `new(head^.next, Init(...))` (an allocation target reached
+through an explicit `^`-chain rather than a plain variable) isn't
+supported, matching the existing restriction that `new` into a
+class-typed field through `^` has for a plain `new(head^.next)` too.
+
 ### Inheritance
 
 ```pascal
