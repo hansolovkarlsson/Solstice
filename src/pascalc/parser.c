@@ -862,6 +862,15 @@ static int current_function_idx = -1;
 // other per-invocation state - see subroutine_declaration() itself.
 static int current_proc_idx = -1;
 
+// The pointer_types[] index of the class whose method body is currently
+// being parsed, or -1 outside any method body. Lets a bare identifier in
+// a method body's expressions/statements be checked against the class's
+// own fields/methods (see class_has_member()) for the unqualified
+// 'self.' shorthand - saved/restored in parse_class_method_body() the
+// same way current_proc_idx is, just one more variable in that existing
+// pattern.
+static int current_class_ptr_idx = -1;
+
 const char *get_current_filename(void) {
     return current_filename;
 }
@@ -3169,6 +3178,24 @@ typedef struct {
                         // call-statement site's own convention.
 } HeapDerefStep;
 
+// Whether 'name' is a field or method of class_ptr_idx - the check that
+// decides whether a bare identifier inside a method body should be
+// treated as implicit 'self.name' shorthand (see
+// parse_self_shorthand_read()/parse_self_shorthand_write() below).
+// Mirrors resolve_heap_deref_step()'s own field-then-method check order,
+// since that's the function that actually resolves the access once this
+// says yes.
+static int class_has_member(int class_ptr_idx, const char *name) {
+    PointerTypeDef *pt = &pointer_types[class_ptr_idx];
+    if (find_record_field(pt->target_record_type_idx, name) != -1) {
+        return 1;
+    }
+    for (int i = 0; i < pt->method_count; i++) {
+        if (strcmp(pt->methods[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
 // Resolves ONE '^' step already matched (the caller has confirmed
 // is_pointer_type(base's type)) - '.field' if the target is a record,
 // nothing more if it's a scalar. Shared by parse_heap_deref_read()/
@@ -3190,17 +3217,27 @@ typedef struct {
 // rejection elsewhere in this file - a statement-context call
 // (parse_heap_deref_write) has no such restriction (calling a function
 // and discarding its result is fine, same as an ordinary NODE_CALL).
-static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_context) {
+// has_dot distinguishes an explicit '^.field'/'c.field' access (1 - the
+// current token is '.', which this function itself matches before
+// reading the field/method name) from the unqualified self-shorthand
+// path (0 - see parse_self_shorthand_read()/parse_self_shorthand_write()
+// below): there the current token IS the field/method name already,
+// with no '.' to match, since the caller confirmed via
+// class_has_member() that the bare identifier names a member before
+// ever reaching here.
+static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_context, int has_dot) {
     HeapDerefStep step;
     step.is_method_call = 0;
     step.call_node = NULL;
     DataType base_type = base->expression_type;
     PointerTypeDef *pt = &pointer_types[base_type - TYPE_POINTER_BASE];
     if (pt->target_is_record) {
-        if (token.type != TOKEN_PERIOD) {
-            compile_error(token.line, "'...^' is a pointer to a record - access a field, e.g. '...^.field'");
+        if (has_dot) {
+            if (token.type != TOKEN_PERIOD) {
+                compile_error(token.line, "'...^' is a pointer to a record - access a field, e.g. '...^.field'");
+            }
+            match(TOKEN_PERIOD);
         }
-        match(TOKEN_PERIOD);
         if (token.type != TOKEN_IDENTIFIER) {
             compile_error(token.line, "Expected a field name after '^.'");
         }
@@ -3317,7 +3354,7 @@ static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
         if (token.type == TOKEN_CARET) match(TOKEN_CARET);
-        HeapDerefStep step = resolve_heap_deref_step(base, 0); // expression context - resolve_heap_deref_step() itself rejects a procedure-method here
+        HeapDerefStep step = resolve_heap_deref_step(base, 0, 1); // expression context, explicit dot/caret already positioned - resolve_heap_deref_step() itself rejects a procedure-method here
         if (step.is_method_call) {
             return step.call_node;
         }
@@ -3349,7 +3386,7 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
             compile_error(token.line, "Cannot dereference a non-pointer value with '^'");
         }
         if (token.type == TOKEN_CARET) match(TOKEN_CARET);
-        HeapDerefStep step = resolve_heap_deref_step(base, 1); // statement context
+        HeapDerefStep step = resolve_heap_deref_step(base, 1, 1); // statement context, explicit dot/caret already positioned
         if (step.is_method_call) {
             step.call_node->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
             *out_step = step;
@@ -3362,6 +3399,77 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
         *out_step = step;
         return base;
     }
+}
+
+// Builds the synthetic 'self'-read node any unqualified self-shorthand
+// access starts from - the same NODE_LOCAL_VAR shape an explicit 'self'
+// reference resolves to via the ordinary local lookup, just built
+// directly since the caller already knows (via class_has_member()) that
+// the bare identifier it's about to resolve names a member, not 'self'
+// itself. Looked up via find_local_outward() rather than assumed to be
+// local slot 0, so this stays correct regardless of exactly which slot
+// register_class_method_param() gave 'self'.
+static ASTNode *build_self_reference_node(int line) {
+    int levels_up;
+    int local_idx = find_local_outward("self", &levels_up);
+    ASTNode *node = create_node(NODE_LOCAL_VAR);
+    node->line = line;
+    node->data.var_idx = local_idx;
+    node->op = (TokenType)levels_up;
+    node->expression_type = (DataType)(TYPE_POINTER_BASE + current_class_ptr_idx);
+    return node;
+}
+
+// Read-context (expression) self-shorthand: the current token is a bare
+// identifier already confirmed, by the caller via class_has_member(), to
+// name a field or method of the enclosing method's class - resolves it
+// as if 'self.' had been written, through the same resolve_heap_deref_step()
+// every explicit 'self.x'/'c.x' access already goes through, just with
+// has_dot=0 since there's no '.' here to consume. A field result is
+// handed off to the unmodified parse_heap_deref_read() for any further
+// explicit '^' chain (e.g. a shorthand pointer field followed by
+// '^.field') - shorthand only changes how the FIRST step is found, never
+// how a chain continues past it.
+static ASTNode *parse_self_shorthand_read(int line) {
+    ASTNode *base = build_self_reference_node(line);
+    HeapDerefStep step = resolve_heap_deref_step(base, 0, 0); // expression context, no explicit dot to consume
+    if (step.is_method_call) {
+        return step.call_node;
+    }
+    return parse_heap_deref_read(make_heap_field_access(base, step, line), line);
+}
+
+// Write/statement-context twin of parse_self_shorthand_read() above -
+// mirrors the inline pattern every explicit pointer-typed local/var-param
+// write site already uses (resolve one step; either a terminal
+// method-call statement, or a NODE_HEAP_FIELD_ASSIGN target). If a '^'
+// follows the shorthand field (further chaining), delegates to the
+// unmodified parse_heap_deref_write() for the rest, exactly like
+// parse_self_shorthand_read() delegates to parse_heap_deref_read().
+static ASTNode *parse_self_shorthand_write(void) {
+    int line = token.line;
+    ASTNode *base = build_self_reference_node(line);
+    HeapDerefStep step = resolve_heap_deref_step(base, 1, 0); // statement context, no explicit dot to consume
+    if (step.is_method_call) {
+        step.call_node->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
+        return step.call_node;
+    }
+    if (token.type == TOKEN_CARET) {
+        base = parse_heap_deref_write(make_heap_field_access(base, step, line), line, &step);
+        if (step.is_method_call) {
+            return step.call_node;
+        }
+    }
+    match(TOKEN_ASSIGN);
+    ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+    stmt->left = base;
+    stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+    ASTNode *offset_lit = create_node(NODE_NUMBER);
+    offset_lit->data.num_value = step.field_offset;
+    offset_lit->expression_type = TYPE_INTEGER;
+    stmt->extra = offset_lit;
+    stmt->expression_type = step.result_type;
+    return stmt;
 }
 
 // Given an already-resolved GLOBAL symbol index, parses whatever follows
@@ -4125,6 +4233,10 @@ static ASTNode *factor(void) {
                 return parse_heap_deref_read(node, line);
             }
             return node;
+        }
+
+        if (current_class_ptr_idx != -1 && class_has_member(current_class_ptr_idx, token.text)) {
+            return parse_self_shorthand_read(line);
         }
 
         int call_proc_idx = find_proc(token.text);
@@ -5032,6 +5144,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
                         // not needed here.
     current_proc_idx = -1;
     current_function_idx = -1;
+    current_class_ptr_idx = -1;
     record_type_count = 0;
     record_var_count = 0;
     record_array_count = 0;
@@ -5433,7 +5546,9 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
 
     int saved_function_idx = current_function_idx;
     int saved_proc_idx = current_proc_idx;
+    int saved_class_ptr_idx = current_class_ptr_idx;
     current_proc_idx = proc_idx;
+    current_class_ptr_idx = class_ptr_idx;
     nesting_depth++;
     if (nesting_depth >= MAX_NESTING_DEPTH) {
         compile_error(decl_line, "'%s.%s' is nested too deeply (limit is %d levels)", class_name, method_name, MAX_NESTING_DEPTH);
@@ -5514,6 +5629,7 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
     nesting_depth--;
     current_proc_idx = saved_proc_idx;
     current_function_idx = saved_function_idx;
+    current_class_ptr_idx = saved_class_ptr_idx;
 }
 
 // Registers the name (via add_proc) before parsing anything else, so a
@@ -7781,6 +7897,10 @@ static ASTNode *statement(void) {
             stmt->left = wrap_range_check(expression(), ls->is_subrange,
                 ls->subrange_lower, ls->subrange_upper);
             return stmt;
+        }
+
+        if (current_class_ptr_idx != -1 && class_has_member(current_class_ptr_idx, token.text)) {
+            return parse_self_shorthand_write();
         }
 
         int proc_idx = find_proc(token.text);

@@ -2037,8 +2037,23 @@ Delphi's own convention. Inside the body:
 
 - **`self`** is an ordinary parameter (always the method's first,
   hidden one) of the class's own type — read/write its fields via
-  `self.field`, exactly like any other class-typed variable. There's no
-  unqualified `field` shorthand yet (see "Not implemented yet" below).
+  `self.field`, exactly like any other class-typed variable.
+- A bare identifier that isn't a local variable/parameter, but names a
+  field or method of the enclosing class, is **implicit `self.`
+  shorthand** — `radius := r;` inside `TCircle.SetRadius` means exactly
+  `self.radius := r;`, and a bare `DoubleRadius;` means
+  `self.DoubleRadius;`. This is pure sugar: it resolves through the
+  exact same field/method lookup an explicit `self.x` already goes
+  through, so everything said above about `c.field`/`c.Method(args)`
+  (dynamic dispatch, the parenless-call rule, etc.) applies unchanged.
+  Precedence, checked in this order: a local variable or parameter of
+  the same name always wins (standard shadowing, matching how a local
+  already shadows a global); otherwise a class field or method of the
+  same name wins over a same-named global variable/procedure. An
+  inherited field/method (never redeclared by the method's own class)
+  is reachable via shorthand too, since inheritance is already flattened
+  into the class's own field/method list before any method body is
+  parsed.
 - The method's own declared parameters (`r` above) are ordinary named
   locals, usable directly.
 - A `function` method sets its return value the same way an ordinary
@@ -2213,8 +2228,6 @@ read.
 
 **Not implemented yet:**
 
-- **Unqualified field access inside a method body** (`radius := r;`
-  instead of `self.radius := r;`) — always requires `self.` for now.
 - **Chaining off a method call's result** (`c.GetOther().field`) — a
   method call is always the terminal step of an access chain.
 - **Nested procedure/function declarations inside a method body** — a

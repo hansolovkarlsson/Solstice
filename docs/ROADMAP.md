@@ -833,12 +833,13 @@ primitives instead of each reinventing them.
       the "assign to own function name" mechanism (needed for every
       function method to return a value at all) to match a method's
       unmangled short name via a new `ProcSymbol.unmangled_name`, not
-      the mangled `proc_table[].name`. Known v1 gaps: no unqualified
-      `field` shorthand (`self.` is always required), no nested
+      the mangled `proc_table[].name`. Known v1 gaps: no nested
       procedure/function declarations inside a method body, and no
       check yet that every method header declared in a class actually
       gets a body (a call to a body-less method's mangled name just
-      fails with an ordinary "unknown procedure" error). See
+      fails with an ordinary "unknown procedure" error). Unqualified
+      `self.` shorthand was later added - see the dedicated entry below.
+      See
       `examples/test/class/test_class_method_basic.pas`,
       `test_class_method_samename.pas`, `test_class_method_varparam.pas`.
 - [x] Classes and instances, step 5/5: `f.Method(args)` call syntax —
@@ -990,6 +991,40 @@ primitives instead of each reinventing them.
       `examples/test/class/test_class_virtual_basic.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes)'s "Virtual dispatch"
       subsection.
+- [x] Unqualified `self.` shorthand — a bare identifier inside a method
+      body that isn't a local/parameter, but names a field or method of
+      the enclosing class, now resolves as implicit `self.name`. Pure
+      parser-level sugar: `resolve_heap_deref_step()` (the function
+      every explicit `self.x`/`c.x` access already goes through) gained
+      a third `has_dot` parameter - `1` for its two existing call sites
+      (an explicit `.` was already matched before the field/method
+      name), `0` for the two new shorthand call sites (the current token
+      IS the name already, since there's no `.` to match). A new
+      `class_has_member()` check (mirroring that function's own
+      field-then-method lookup order) decides whether a bare identifier
+      should be treated as shorthand at all, gated on a new
+      `current_class_ptr_idx` global (parallel to, and saved/restored
+      alongside, `current_proc_idx` in `parse_class_method_body()`) so
+      the check only fires inside an actual method body. Inserted as a
+      new resolution step in both `factor()` and `statement()`, right
+      after the existing local/parameter lookup and right before the
+      free-procedure/global-variable fallback - giving the precedence
+      rule for free: a local/parameter of the same name still shadows a
+      field/method (matches this file's own pre-existing "a local
+      shadows a global" rule), while a field/method shadows a same-named
+      global. Zero new `NodeType`/`Opcode` and zero changes outside
+      `parser.c` - shorthand produces the exact same AST shapes explicit
+      `self.x` already does, so type_checker.c/optimizer.c/
+      ast_printer.c/codegen.c/vm.c/solas.c/desole.c all needed no
+      changes (same "pure parse-time" shape variant records already
+      established). Verified with the same full `examples/` old-vs-new
+      regression diff methodology the vtable feature used - the only
+      diffs were the new shorthand-specific tests themselves (two newly
+      compile, one changes its resolved value on purpose to prove the
+      new precedence rule, one - a same-named local parameter - was
+      already unaffected since ordinary local lookup already covered
+      it). See `examples/test/class/test_class_selfshorthand_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
