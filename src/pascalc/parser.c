@@ -3176,6 +3176,18 @@ typedef struct {
                         // used as a statement (discard an unused
                         // function result), matching every other
                         // call-statement site's own convention.
+    int is_array_field; // true if this step is a class array field
+                        // element access ('c.data[i]') rather than an
+                        // ordinary scalar/nested-record field - a THIRD
+                        // possible outcome alongside is_method_call,
+                        // also always terminal (see NODE_HEAP_ARRAY_
+                        // FIELD_ACCESS in common.h). field_offset is the
+                        // COMBINED offset (field base offset - array
+                        // lower bound) when this is set, not directly
+                        // usable as an ordinary field offset.
+    ASTNode *array_index; // only meaningful if is_array_field - the
+                        // index expression, already range-checked
+                        // against the field's declared array bounds.
 } HeapDerefStep;
 
 // Whether 'name' is a field or method of class_ptr_idx - the check that
@@ -3197,12 +3209,14 @@ static int class_has_member(int class_ptr_idx, const char *name) {
 }
 
 // How many contiguous heap ints a single top-level class field
-// occupies - 1 for a scalar, or record_type_leaf_count() for a nested
-// record (guaranteed array-field-free by parse_record_field_group()'s
-// own existing check, so its leaf count IS its heap slot count - no
-// separate weighting needed). Array-typed fields aren't reachable here -
-// still rejected in parse_class_declaration().
+// occupies - its element count for an array field (is_array/is_record
+// are mutually exclusive, so no further weighting needed - an array
+// field's element type is always scalar), record_type_leaf_count() for
+// a nested record (guaranteed array-field-free by
+// parse_record_field_group()'s own existing check, so its leaf count IS
+// its heap slot count), or 1 for an ordinary scalar.
 static int class_field_heap_slots(RecordField *f) {
+    if (f->is_array) return f->array_upper - f->array_lower + 1;
     return f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
 }
 
@@ -3288,6 +3302,8 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
     HeapDerefStep step;
     step.is_method_call = 0;
     step.call_node = NULL;
+    step.is_array_field = 0;
+    step.array_index = NULL;
     DataType base_type = base->expression_type;
     PointerTypeDef *pt = &pointer_types[base_type - TYPE_POINTER_BASE];
     if (pt->target_is_record) {
@@ -3370,6 +3386,27 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             offset = class_field_base_offset(target_rt, field_idx);
             if (f->is_record) {
                 offset += resolve_class_field_chain_offset(&f); // f becomes the final scalar leaf
+            } else if (f->is_array) {
+                // An array field ELEMENT access ('c.data[i]') - always
+                // terminal (see NODE_HEAP_ARRAY_FIELD_ACCESS in
+                // common.h), so this returns immediately rather than
+                // falling through to the ordinary scalar/nested-record-
+                // leaf step below. The '-array_lower' zero-basing is
+                // folded into the SAME immediate as the field's own base
+                // offset - see OP_LOAD_HEAP_ARRAY_FIELD's comment.
+                if (token.type != TOKEN_LBRACKET) {
+                    compile_error(token.line, "Array field '%s' must be indexed, e.g. '%s[i]'", f->name, f->name);
+                }
+                match(TOKEN_LBRACKET);
+                step.array_index = wrap_range_check(expression(), 1, f->array_lower, f->array_upper);
+                match(TOKEN_RBRACKET);
+                step.is_array_field = 1;
+                step.field_offset = offset - f->array_lower;
+                step.result_type = f->type;
+                step.is_subrange = f->is_subrange;
+                step.subrange_lower = f->subrange_lower;
+                step.subrange_upper = f->subrange_upper;
+                return step;
             }
         } else {
             offset = field_idx;
@@ -3431,6 +3468,19 @@ static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
         if (step.is_method_call) {
             return step.call_node;
         }
+        if (step.is_array_field) {
+            // Terminal, like a method call - must return here rather
+            // than fall through to make_heap_field_access() below, since
+            // step.field_offset here is the COMBINED offset (field base
+            // offset - array lower bound), not a plain field offset.
+            ASTNode *node = create_node(NODE_HEAP_ARRAY_FIELD_ACCESS);
+            node->line = line;
+            node->left = base;
+            node->right = step.array_index;
+            node->data.num_value = step.field_offset;
+            node->expression_type = step.result_type;
+            return node;
+        }
         base = make_heap_field_access(base, step, line);
     }
     return base;
@@ -3465,6 +3515,15 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
             *out_step = step;
             return NULL;
         }
+        if (step.is_array_field) {
+            // Terminal, like a method call - must return here, BEFORE
+            // the '^'-continuation check below, since step.field_offset
+            // here is the COMBINED offset (field base offset - array
+            // lower bound), not a plain field offset make_heap_field_
+            // access() could safely use.
+            *out_step = step;
+            return base;
+        }
         if (token.type == TOKEN_CARET) {
             base = make_heap_field_access(base, step, line);
             continue;
@@ -3472,6 +3531,37 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
         *out_step = step;
         return base;
     }
+}
+
+// Builds the final write statement for an already-resolved heap-deref
+// chain - shared by every '^'/'.'-access assignment site (a global,
+// local, var-param, or self-shorthand pointer variable). Parses ':='
+// and the value expression, then returns either a NODE_HEAP_FIELD_ASSIGN
+// (an ordinary scalar/nested-record leaf) or a NODE_HEAP_ARRAY_FIELD_ASSIGN
+// (step.is_array_field set), depending on what resolve_heap_deref_step()
+// resolved. Every call site already checked step.is_method_call itself
+// first - a method call is a complete statement on its own, never
+// reaching here.
+static ASTNode *build_heap_deref_write_statement(ASTNode *base, HeapDerefStep step) {
+    match(TOKEN_ASSIGN);
+    if (step.is_array_field) {
+        ASTNode *stmt = create_node(NODE_HEAP_ARRAY_FIELD_ASSIGN);
+        stmt->left = base;
+        stmt->extra = step.array_index;
+        stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+        stmt->data.num_value = step.field_offset;
+        stmt->expression_type = step.result_type;
+        return stmt;
+    }
+    ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
+    stmt->left = base;
+    stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+    ASTNode *offset_lit = create_node(NODE_NUMBER);
+    offset_lit->data.num_value = step.field_offset;
+    offset_lit->expression_type = TYPE_INTEGER;
+    stmt->extra = offset_lit;
+    stmt->expression_type = step.result_type;
+    return stmt;
 }
 
 // Builds the synthetic 'self'-read node any unqualified self-shorthand
@@ -3509,6 +3599,19 @@ static ASTNode *parse_self_shorthand_read(int line) {
     if (step.is_method_call) {
         return step.call_node;
     }
+    if (step.is_array_field) {
+        // Terminal, like a method call - must return here rather than
+        // fall through to make_heap_field_access() below, since
+        // step.field_offset here is the COMBINED offset (field base
+        // offset - array lower bound), not a plain field offset.
+        ASTNode *node = create_node(NODE_HEAP_ARRAY_FIELD_ACCESS);
+        node->line = line;
+        node->left = base;
+        node->right = step.array_index;
+        node->data.num_value = step.field_offset;
+        node->expression_type = step.result_type;
+        return node;
+    }
     return parse_heap_deref_read(make_heap_field_access(base, step, line), line);
 }
 
@@ -3527,22 +3630,13 @@ static ASTNode *parse_self_shorthand_write(void) {
         step.call_node->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
         return step.call_node;
     }
-    if (token.type == TOKEN_CARET) {
+    if (!step.is_array_field && token.type == TOKEN_CARET) {
         base = parse_heap_deref_write(make_heap_field_access(base, step, line), line, &step);
         if (step.is_method_call) {
             return step.call_node;
         }
     }
-    match(TOKEN_ASSIGN);
-    ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
-    stmt->left = base;
-    stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
-    ASTNode *offset_lit = create_node(NODE_NUMBER);
-    offset_lit->data.num_value = step.field_offset;
-    offset_lit->expression_type = TYPE_INTEGER;
-    stmt->extra = offset_lit;
-    stmt->expression_type = step.result_type;
-    return stmt;
+    return build_heap_deref_write_statement(base, step);
 }
 
 // Given an already-resolved GLOBAL symbol index, parses whatever follows
@@ -4804,14 +4898,16 @@ static void parse_class_declaration(const char *class_name, int line) {
     }
 
     while (token.type == TOKEN_IDENTIFIER) {
-        int field_start = rt->field_count;
+        // Array-typed and nested-record fields are both accepted here -
+        // parse_record_field_group() already enforces every restriction
+        // that still applies (a nested field's own type must be array-
+        // field-free). class_field_heap_slots()/class_field_base_offset()
+        // account for either field kind's real heap-slot cost, and the
+        // MAX_RECORD_FIELDS + 1 overflow guard below (this function's own
+        // target_elem_size check) catches an oversized combination of
+        // either kind at compile time.
         parse_record_field_group(rt, rt_idx);
         match(TOKEN_SEMI);
-        for (int i = field_start; i < rt->field_count; i++) {
-            if (rt->fields[i].is_array) {
-                compile_error(line, "Class '%s' field '%s' - array-typed fields aren't supported in a class yet (see docs/ROADMAP.md)", class_name, rt->fields[i].name);
-            }
-        }
     }
     record_type_count++;
 
@@ -4895,12 +4991,12 @@ static void parse_class_declaration(const char *class_name, int line) {
     // vm_heap_freelist[MAX_RECORD_FIELDS + 1] (src/solvm/vm.c) is
     // indexed directly by elem_size with no runtime bounds check in
     // OP_NEW/OP_DISPOSE - safe only because target_elem_size has always
-    // been <= MAX_RECORD_FIELDS + 1 before nested-record fields could
-    // make a class's total heap footprint exceed its own field count.
-    // Reject here so that invariant can never be broken by a compiled
-    // program, rather than risking an out-of-bounds VM write.
+    // been <= MAX_RECORD_FIELDS + 1 before nested-record/array fields
+    // could make a class's total heap footprint exceed its own field
+    // count. Reject here so that invariant can never be broken by a
+    // compiled program, rather than risking an out-of-bounds VM write.
     if (pt->target_elem_size > MAX_RECORD_FIELDS + 1) {
-        compile_error(line, "Class '%s' is too large once its nested-record fields are flattened (needs %d heap slots, limit is %d) - reduce its field count or nesting depth", class_name, pt->target_elem_size, MAX_RECORD_FIELDS + 1);
+        compile_error(line, "Class '%s' is too large once its nested-record/array fields are flattened (needs %d heap slots, limit is %d) - reduce its field count, nesting depth, or array sizes", class_name, pt->target_elem_size, MAX_RECORD_FIELDS + 1);
     }
     match(TOKEN_END);
     match(TOKEN_SEMI);
@@ -7344,16 +7440,7 @@ static ASTNode *parse_global_assignment(int idx) {
         HeapDerefStep step;
         base = parse_heap_deref_write(base, line, &step);
         if (step.is_method_call) return step.call_node;
-        match(TOKEN_ASSIGN);
-        ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
-        stmt->left = base;
-        stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
-        ASTNode *offset_lit = create_node(NODE_NUMBER);
-        offset_lit->data.num_value = step.field_offset;
-        offset_lit->expression_type = TYPE_INTEGER;
-        stmt->extra = offset_lit;
-        stmt->expression_type = step.result_type;
-        return stmt;
+        return build_heap_deref_write_statement(base, step);
     }
     if (is_proc_type(sym_table[idx].type)) {
         // A NAMED procedural-type global. token is already positioned
@@ -7879,16 +7966,7 @@ static ASTNode *statement(void) {
                     HeapDerefStep step;
                     base = parse_heap_deref_write(base, line, &step);
                     if (step.is_method_call) return step.call_node;
-                    match(TOKEN_ASSIGN);
-                    ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
-                    stmt->left = base;
-                    stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
-                    ASTNode *offset_lit = create_node(NODE_NUMBER);
-                    offset_lit->data.num_value = step.field_offset;
-                    offset_lit->expression_type = TYPE_INTEGER;
-                    stmt->extra = offset_lit;
-                    stmt->expression_type = step.result_type;
-                    return stmt;
+                    return build_heap_deref_write_statement(base, step);
                 }
                 match(TOKEN_ASSIGN);
                 ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);
@@ -8032,16 +8110,7 @@ static ASTNode *statement(void) {
                 HeapDerefStep step;
                 base = parse_heap_deref_write(base, line, &step);
                 if (step.is_method_call) return step.call_node;
-                match(TOKEN_ASSIGN);
-                ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
-                stmt->left = base;
-                stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
-                ASTNode *offset_lit = create_node(NODE_NUMBER);
-                offset_lit->data.num_value = step.field_offset;
-                offset_lit->expression_type = TYPE_INTEGER;
-                stmt->extra = offset_lit;
-                stmt->expression_type = step.result_type;
-                return stmt;
+                return build_heap_deref_write_statement(base, step);
             }
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
             stmt->data.var_idx = local_idx;

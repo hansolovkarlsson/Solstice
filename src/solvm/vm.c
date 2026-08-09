@@ -987,6 +987,57 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_LOAD_HEAP_ARRAY_FIELD: {
+                int index = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base < 0) {
+                    fprintf(stderr, "VM Runtime Error: Nil pointer dereference\n");
+                    fatal_abort();
+                }
+                int offset = base + instr.arg + index;
+                if (offset < 0 || offset >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_heap_mem[offset]);
+                break;
+            }
+
+            case OP_STORE_HEAP_ARRAY_FIELD: {
+                int val = vm_pop(&sp);
+                int index = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base < 0) {
+                    fprintf(stderr, "VM Runtime Error: Nil pointer dereference\n");
+                    fatal_abort();
+                }
+                int offset = base + instr.arg + index;
+                if (offset < 0 || offset >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_heap_mem[offset] = val;
+                break;
+            }
+
+            case OP_STORE_HEAP_ARRAY_FIELD_CHAR: {
+                int val = vm_pop(&sp);
+                int index = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base < 0) {
+                    fprintf(stderr, "VM Runtime Error: Nil pointer dereference\n");
+                    fatal_abort();
+                }
+                int offset = base + instr.arg + index;
+                if (offset < 0 || offset >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_check_char(val, "pointer dereference");
+                vm_heap_mem[offset] = val;
+                break;
+            }
+
             case OP_LOAD_VTABLE_SLOT: {
                 int class_id = vm_pop(&sp);
                 int flat_index = class_id * MAX_CLASS_METHODS + instr.arg;

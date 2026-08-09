@@ -1023,6 +1023,28 @@ typedef enum {
                   // entry_address (see param_is_proc in ProcSymbol),
                   // and a top-level procedure's prologue never reads
                   // vm_static_link[] in the first place.
+
+    OP_LOAD_HEAP_ARRAY_FIELD, // Arg = a class array field's combined
+                  // compile-time offset (its own base offset within the
+                  // instance, minus the array's declared lower bound -
+                  // see resolve_heap_deref_step()'s NODE_HEAP_ARRAY_
+                  // FIELD_ACCESS comment). Pops a runtime, already-
+                  // bounds-checked index, then a heap base pointer;
+                  // pushes vm_heap_mem[base + arg + index]. The
+                  // scalar-field opcodes (OP_LOAD_HEAP_FIELD etc.) take
+                  // only a base, since their offset is always exactly
+                  // one compile-time constant - an array field element
+                  // additionally needs a runtime index, which is why
+                  // this is a distinct opcode rather than a reused one.
+    OP_STORE_HEAP_ARRAY_FIELD, // Write counterpart - pops a value, then
+                  // an index, then a base; stores into
+                  // vm_heap_mem[base + arg + index].
+    OP_STORE_HEAP_ARRAY_FIELD_CHAR, // Same as OP_STORE_HEAP_ARRAY_FIELD,
+                  // but validates the value is a legal char first (same
+                  // reasoning as OP_STORE_HEAP_FIELD_CHAR - one shared
+                  // untyped heap has no per-slot type for the VM to
+                  // dispatch a char-check on at runtime the way OP_STORE
+                  // does via sym_table[]).
 } Opcode;
 
 typedef struct {
@@ -1571,7 +1593,7 @@ typedef enum {
                        // resolved method's return type if it's a
                        // function, or TYPE_UNKNOWN if a procedure - same
                        // "no value" convention as NODE_CALL_INDIRECT's.
-    NODE_VTABLE_INIT_ENTRY // One entry of the vtable-init chain
+    NODE_VTABLE_INIT_ENTRY, // One entry of the vtable-init chain
                        // (build_vtable_init_chain() in parser.c) that
                        // runs once, before any user code, populating
                        // every class's vtable - see OP_STORE_VTABLE_SLOT.
@@ -1585,6 +1607,45 @@ typedef enum {
                        // method of every class, spliced onto the front of
                        // the main program body's own statement chain so
                        // it's guaranteed to run first.
+    NODE_HEAP_ARRAY_FIELD_ACCESS, // A class array field ELEMENT read
+                       // ('c.data[i]' or self-shorthand 'data[i]') - the
+                       // array-field counterpart of NODE_HEAP_FIELD_
+                       // ACCESS. left = the base pointer expression
+                       // (as NODE_HEAP_FIELD_ACCESS's own left). right =
+                       // the index expression, already wrapped in a
+                       // NODE_RANGE_CHECK against the field's declared
+                       // array bounds (see wrap_range_check() at the
+                       // call site in resolve_heap_deref_step()).
+                       // data.num_value = the field's own compile-time
+                       // base offset within the instance MINUS the
+                       // array's declared lower bound - folding the
+                       // zero-basing into the same immediate
+                       // OP_LOAD_HEAP_ARRAY_FIELD already needs for the
+                       // field offset, so the runtime index needs no
+                       // separate adjustment: base + data.num_value +
+                       // raw_index == base + field_offset + (raw_index -
+                       // lower). expression_type = the array's declared
+                       // element type. Always a TERMINAL access step -
+                       // unlike a scalar/nested-record field, this can't
+                       // be followed by a further '.field'/'^' yet (a
+                       // known gap, like a method call's own result).
+    NODE_HEAP_ARRAY_FIELD_ASSIGN // Write counterpart of NODE_HEAP_ARRAY_
+                       // FIELD_ACCESS above - 'c.data[i] := val' or
+                       // self-shorthand 'data[i] := val'. left = the
+                       // base pointer expression. right = the value
+                       // expression (already wrapped in a NODE_RANGE_
+                       // CHECK if the array's ELEMENT type is itself a
+                       // subrange - a separate check from the index's
+                       // own bounds check, same as an ordinary scalar
+                       // field's value can be). extra = the index
+                       // expression (range-checked against the array's
+                       // bounds, same as the access node's own right).
+                       // data.num_value = the same combined offset the
+                       // access node uses. expression_type = the array's
+                       // declared element type - used by codegen to
+                       // choose OP_STORE_HEAP_ARRAY_FIELD_CHAR over the
+                       // plain variant, same reasoning as NODE_HEAP_
+                       // FIELD_ASSIGN's own char-field dispatch.
 } NodeType;
 
 typedef struct ASTNode {

@@ -301,22 +301,25 @@ static int has_set_side_effect(ASTNode *node) {
     return has_set_side_effect(node->left) || has_set_side_effect(node->right) || has_set_side_effect(node->extra);
 }
 
-// A NODE_HEAP_ALLOC ('new(p)''s desugared value - see common.h) or a
-// NODE_HEAP_FIELD_ACCESS ('p^'/'p^.field' read) each have an observable
-// runtime effect of their own: OP_NEW can abort if the heap is exhausted
-// (MAX_HEAP_MEM), and OP_LOAD_HEAP_FIELD can abort on a nil/invalid
-// pointer - so an assignment carrying either must never be swept away as
-// "dead" just because its target variable happens to be otherwise
-// unread, same reasoning as has_range_check()/has_set_side_effect()
-// above. Caught a real instance of exactly this while testing: 'x := p^;'
-// with x otherwise unread and p nil silently skipped its own nil-
-// dereference abort once eliminated. A recursive search (not just a
-// shallow check on the immediate child), matching has_set_side_effect()'s
-// own reasoning: 'x := p^.next^.data;' nests a NODE_HEAP_FIELD_ACCESS
-// (the 'p^.next' part) inside another one (the '.data' access).
+// A NODE_HEAP_ALLOC ('new(p)''s desugared value - see common.h), a
+// NODE_HEAP_FIELD_ACCESS ('p^'/'p^.field' read), or a NODE_HEAP_ARRAY_
+// FIELD_ACCESS ('c.data[i]' read) each have an observable runtime effect
+// of their own: OP_NEW can abort if the heap is exhausted (MAX_HEAP_MEM),
+// and OP_LOAD_HEAP_FIELD/OP_LOAD_HEAP_ARRAY_FIELD can abort on a
+// nil/invalid pointer (the array variant can also abort on an
+// out-of-bounds index) - so an assignment carrying any of these must
+// never be swept away as "dead" just because its target variable happens
+// to be otherwise unread, same reasoning as has_range_check()/
+// has_set_side_effect() above. Caught a real instance of exactly this
+// while testing: 'x := p^;' with x otherwise unread and p nil silently
+// skipped its own nil-dereference abort once eliminated. A recursive
+// search (not just a shallow check on the immediate child), matching
+// has_set_side_effect()'s own reasoning: 'x := p^.next^.data;' nests a
+// NODE_HEAP_FIELD_ACCESS (the 'p^.next' part) inside another one (the
+// '.data' access).
 static int has_heap_alloc_side_effect(ASTNode *node) {
     if (!node) return 0;
-    if (node->type == NODE_HEAP_ALLOC || node->type == NODE_HEAP_FIELD_ACCESS) return 1;
+    if (node->type == NODE_HEAP_ALLOC || node->type == NODE_HEAP_FIELD_ACCESS || node->type == NODE_HEAP_ARRAY_FIELD_ACCESS) return 1;
     return has_heap_alloc_side_effect(node->left) || has_heap_alloc_side_effect(node->right) || has_heap_alloc_side_effect(node->extra);
 }
 

@@ -764,6 +764,24 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_HEAP_ARRAY_FIELD_ACCESS:
+            // Valid by construction, same reasoning as NODE_HEAP_FIELD_
+            // ACCESS above - resolve_heap_deref_step() only ever builds
+            // this from an already-resolved array field and an
+            // already-range-checked index.
+            break;
+
+        case NODE_HEAP_ARRAY_FIELD_ASSIGN:
+            if (!(is_string_type(node->right->expression_type) && is_string_type(node->expression_type))
+                && !nil_compatible(node->expression_type, node->right->expression_type)
+                && node->right->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->right, node->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to array field element\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_WRITE_ARG:
             if (node->left->expression_type == TYPE_SET) {
                 // Standard Pascal defines no textual representation for a

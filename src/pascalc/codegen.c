@@ -952,6 +952,24 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_HEAP_ARRAY_FIELD_ACCESS:
+            generate_code(node->left);                  // base pointer
+            generate_code(node->right);                 // index (already range-checked by the parser)
+            emit(OP_LOAD_HEAP_ARRAY_FIELD, node->data.num_value); // combined offset (field base offset - array lower bound)
+            break;
+
+        case NODE_HEAP_ARRAY_FIELD_ASSIGN:
+            generate_code(node->left);                  // base pointer
+            generate_code(node->extra);                 // index (range-checked)
+            generate_code(node->right);                 // value
+            if (node->expression_type == TYPE_CHAR) {
+                emit(OP_STORE_HEAP_ARRAY_FIELD_CHAR, node->data.num_value);
+            } else {
+                emit(OP_STORE_HEAP_ARRAY_FIELD, node->data.num_value);
+            }
+            generate_code(node->next);
+            break;
+
         case NODE_HEAP_ALLOC:
             emit(OP_NEW, node->data.num_value);
             break;

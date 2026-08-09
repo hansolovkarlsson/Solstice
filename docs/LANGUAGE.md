@@ -2057,8 +2057,35 @@ like a nested field on a plain record already works. Composition by
 already worked before this — that's just an ordinary scalar pointer
 field. **Not supported**: reading/writing/passing the nested record as
 a whole (`c.center` alone, with no further `.field`) — a compile error;
-you must always name a leaf field. Array-typed fields remain
-unsupported too (see "Not implemented yet" below).
+you must always name a leaf field.
+
+A field can also be an **array of scalars**, read/written by indexing
+it, again via `c.data[i]` or self-shorthand `data[i]`:
+
+```pascal
+type
+    TBuffer = class
+        data: array[0..3] of integer;
+        procedure Fill;
+    end;
+var
+    b: TBuffer;
+begin
+    new(b);
+    b.data[0] := 10;
+    writeln(b.data[0]);
+end.
+```
+
+Each element gets its own heap slot, same as a nested record's leaves.
+**Not supported**: chaining a further `.field`/`^` off an array-field
+element access (`self.items[i].field` or `self.items[i]^.next`) — an
+array-field access, like a method call's result, is always the
+*terminal* step of an access chain, a known gap. There's also a
+practical size limit: every class instance's heap block must fit within
+the same `MAX_RECORD_FIELDS + 1` slot budget an ordinary (all-scalar)
+class already had, so a class's array fields are necessarily small —
+a large buffer as a class field isn't a good fit yet.
 
 A method's **body** is declared separately from its header, after the
 `var` section, using `procedure ClassName.MethodName; ... end;` /
@@ -2310,9 +2337,9 @@ read.
 - **Nested procedure/function declarations inside a method body** — a
   method body doesn't support its own nested subroutines yet, unlike an
   ordinary procedure.
-- **Array-typed fields** — a class's fields must be scalar or a nested
-  plain-record type for now; array fields need a new VM primitive
-  (runtime-indexed heap addressing) that doesn't exist yet.
+- **Chaining off an array-field element access** (`self.items[i].field`
+  or `self.items[i]^.next`) — always the terminal step of an access
+  chain, like a method call's result.
 - **Reading/writing a nested-record field as a whole** (`c.center`
   alone) — always requires naming a leaf field (`c.center.x`).
 - **`new()` into a class-typed field reached through an explicit `^`**

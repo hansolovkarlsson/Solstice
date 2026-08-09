@@ -1104,6 +1104,57 @@ primitives instead of each reinventing them.
       previous three features. See
       `examples/test/class/test_class_ctor_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
+- [x] Array-typed class fields — the last classes v1 field-type gap.
+      `data: array[0..3] of integer;` as a class field, read/written via
+      `c.data[i]` or self-shorthand `data[i]`. Deferred when composite
+      (nested-record) fields shipped, since - unlike those, pure parser-
+      side offset arithmetic - this needed a genuinely new VM primitive:
+      `OP_LOAD_HEAP_FIELD`/`OP_STORE_HEAP_FIELD` take the field offset
+      as a single compile-time immediate, and there was no existing
+      opcode for "heap address = runtime base + compile-time offset +
+      runtime index." Three new opcodes (`OP_LOAD_HEAP_ARRAY_FIELD`/
+      `OP_STORE_HEAP_ARRAY_FIELD`/`OP_STORE_HEAP_ARRAY_FIELD_CHAR`,
+      appended at the end of the `Opcode` enum this time - CLAUDE.md's
+      own "append, don't renumber" rule, learned the hard way during the
+      vtable feature's mid-enum insertion) and two new AST nodes
+      (`NODE_HEAP_ARRAY_FIELD_ACCESS`/`_ASSIGN`) do the addressing.
+      Bounds-checking needed no new `.bin` format or metadata table:
+      every existing array-indexing opcode derives bounds from a
+      `sym_table[]` symbol at runtime, not applicable to a heap field
+      with no per-instance symbol - instead this reuses
+      `OP_CHECK_LOWER`/`OP_CHECK_UPPER` exactly as `wrap_range_check()`/
+      `NODE_RANGE_CHECK` already do for subrange value checks, both
+      already taking a raw compile-time bound as their own immediate.
+      The array's `-lower` zero-basing is folded into the SAME immediate
+      as the field's own base offset at compile time
+      (`combined_offset = field_base_offset - array_lower`), so the new
+      opcodes need only one immediate each, same as every other heap
+      opcode. `class_field_heap_slots()` (from the composite-fields
+      feature) gained the array-weighting case for free reuse by
+      `class_field_base_offset()`/the `MAX_RECORD_FIELDS + 1` overflow
+      guard, both already generic. An array-field access is always a
+      TERMINAL step, like a method call - `self.items[i]` can't be
+      followed by a further `.field`/`^` yet (real generality would need
+      the read/write loops to re-enter on the array-access result,
+      non-trivial for comparatively rare payoff) - a real bug from
+      exactly this terminality requirement was caught and fixed before
+      shipping: `parse_self_shorthand_read()` had been missed when
+      wiring up the terminal-step check, silently reading element 0
+      regardless of the actual index for any array-field shorthand read.
+      A ~9-line "build the final write statement" block, duplicated at
+      every `parse_heap_deref_write()` call site, was factored into a
+      shared `build_heap_deref_write_statement()` while touching all of
+      them for the new array-vs-scalar branch. Verified with the same
+      `examples/` old-vs-new regression diff methodology used for the
+      previous three features, a full solas/desole disassemble/
+      reassemble/re-run round trip on the new opcodes, and a proactive
+      AddressSanitizer/UBSan sweep (clean - the highest-risk surface of
+      any feature this session, given raw `vm_heap_mem[]` pointer
+      arithmetic with a runtime-computed index; the sweep's only hits
+      were the same two unrelated, already-logged pre-existing bugs
+      below, confirmed present on the pre-feature build too). See
+      `examples/test/class/test_class_arrayfield_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
