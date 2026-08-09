@@ -2443,10 +2443,14 @@ end;
 - **`new()` into a class-typed field reached through an explicit `^`**
   (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
   into a plain class variable first, then assign it into the field.
-- **Multiple inheritance and visibility (`private`/`public`)** — neither
-  exists even as a plan yet beyond the scoping note. Visibility now has
-  a real boundary to enforce (a unit's `interface` vs. `implementation`
-  section — see [Units](#units)) but nothing enforces it yet.
+- **Multiple inheritance, and class-level visibility (`private`/`public`
+  fields/methods within a `class ... end;`)** — neither exists even as
+  a plan yet beyond the scoping note. A *different*, already-
+  implemented mechanism — unit-level visibility (a unit's `interface`
+  vs. `implementation` section) — now enforces visibility for
+  procedures/functions and global variables, but says nothing about
+  fields/methods within a single class declaration (see
+  [Units](#units)).
 
 ## Procedures
 
@@ -3056,12 +3060,43 @@ end.
   merge that shared unit's declarations exactly once — no duplicate-
   declaration error. A cycle (`A` uses `B` uses `A`, directly or through
   more steps) is a compile error.
-- **No visibility enforcement**: everything a unit declares, in either
-  section, becomes an ordinary global name once merged in — a program
-  can call something the unit only declared in its `implementation`.
-  Same gap as classes' `private`/`public` (also unimplemented) —
-  `interface` vs. `implementation` is a real boundary here for the
-  first time, but nothing checks it yet.
+- **Visibility is enforced for procedures/functions and global
+  variables**: something a unit declares only in its `implementation`
+  section can't be referenced from outside that unit — not from the
+  main program, and not from a different unit that merely `uses` it
+  (even one that itself `uses` the declaring unit). The unit's own
+  code, anywhere in its `implementation`, can always see its own
+  private declarations. A reference from outside reads exactly like a
+  genuinely undeclared identifier (`Unknown identifier`/`Undeclared
+  procedure/function`), not a distinct "private" error.
+  ```pascal
+  unit MathUtils;
+  interface
+      function Square(x: integer): integer;    { public }
+  implementation
+      var callCount: integer;                  { private to this unit }
+      procedure LogCall;                       { private to this unit }
+      begin callCount := callCount + 1 end;
+      function Square;
+      begin
+          LogCall;                             { fine - same unit }
+          Square := x * x;
+      end;
+  end.
+  ```
+  A program `uses MathUtils;` can call `Square`, but referencing
+  `callCount` or `LogCall` directly is a compile error. **Not yet
+  enforced**: consts, types (including classes — a class declared in a
+  unit's interface is fully visible everywhere regardless of anything
+  declared only in that unit's implementation), enumerated
+  types/values, and subrange types all stay visible everywhere
+  regardless of which section declared them; so do record variables
+  specifically (as opposed to plain scalar/array ones). Also unrelated:
+  this doesn't give private symbols their own per-unit namespace — two
+  units each privately declaring a same-named proc/var still collide as
+  a duplicate declaration, exactly as before (there's no real per-unit
+  name mangling, just a visibility check at reference sites) — same gap
+  as classes' `private`/`public`, still unimplemented on its own.
 - Not separate compilation: `uses Foo;` re-parses `Foo.pas` and merges
   its declarations into the same global tables the main program's own
   declarations use, every time it's named. There's no compiled unit
@@ -3140,9 +3175,12 @@ file.pas:1: Warning: function 'Average' never assigns a value to its own name - 
   arrays of records, plain record variables (including nested-record
   fields), record parameters/locals, and record comparison all work)
 - `uses` inside a unit's `implementation` section, and
-  interface/implementation visibility enforcement — see
-  [Units](#units) above (`unit`/`interface`/`implementation`/`uses`,
-  including units depending on units, all work)
+  interface/implementation visibility enforcement for anything besides
+  procedures/functions and global variables (consts, types, classes,
+  enums, subranges, and record variables specifically all stay visible
+  everywhere regardless of section) — see [Units](#units) above
+  (`unit`/`interface`/`implementation`/`uses`, including units
+  depending on units, and visibility for procs/vars, all work)
 
 See the project README's Status section and
 [docs/ROADMAP.md](ROADMAP.md) for the current plan.

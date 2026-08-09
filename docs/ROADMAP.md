@@ -1262,11 +1262,72 @@ primitives instead of each reinventing them.
       Scope decisions, all documented in docs/LANGUAGE.md#units rather
       than silently dropped: `uses` only in a program's own header or a
       unit's `interface` (not `implementation`); no visibility
-      enforcement (same gap as classes' `private`/`public`, now with a
-      real boundary to eventually enforce); same-directory-only unit
+      enforcement at all yet (see the dedicated entry below - fixed
+      shortly after this one shipped); same-directory-only unit
       resolution, no search path. No new opcodes were added, so (per
       CLAUDE.md's own checklist) no solas/desole changes were needed
       either. See `examples/test/units/test_units_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#units).
+- [x] Unit-level visibility for procedures/functions and global
+      variables — something a unit declares only in its
+      `implementation` section can no longer be referenced from outside
+      that unit (not the main program, not a different unit that merely
+      `uses` it). Investigated enforcing this generically across every
+      kind of declared name first: doing so correctly means auditing
+      and classifying (declaration-time, which must stay visibility-
+      blind or a private symbol in one unit could silently collide with
+      an unrelated public one elsewhere, vs. reference-time, which
+      needs the check) every call site of the relevant lookup function -
+      counted roughly 92 across 9 separate lookup functions (vars,
+      procs, consts, record types, classes, type aliases, enum types,
+      enum values, subrange types), the single largest change surface
+      in this project's history. Scoped down to procs/vars specifically
+      (chosen deliberately over class-level `private`/`public` fields -
+      a different mechanism entirely - as the more real, more requested
+      gap now that units give it an actual boundary to enforce): the
+      real number is 27 call sites (`find_var`: 11, `find_proc`: 16),
+      every one individually read and classified, not sampled.
+
+      Two new fields, `declaring_unit`/`is_unit_private`, on `Symbol`
+      and `ProcSymbol` (`common.h`), stamped by `add_var()`/
+      `add_array_var()`/its 2D/ND/record-array siblings, and
+      `add_proc()`, from two new parser-global state variables
+      (`current_unit_name`/`current_section_is_implementation`) set
+      inside `load_unit()` exactly like `current_filename`/the lexer
+      position already are (reset in `parse_ast()`, saved/restored
+      around `load_unit()`'s own body for correct nested-`uses`
+      behavior). One shared check, `symbol_visible_here()`, and two new
+      wrapper functions, `find_var_soft_visible()`/`find_proc_visible()`,
+      swapped in at exactly the reference-site call sites the audit
+      identified - `find_var()` itself needed no call-site changes at
+      all (all 8 of its own callers are reference sites, so making
+      `find_var()` visibility-aware internally, by swapping its own one
+      `find_var_soft()` call for `find_var_soft_visible()`, covered
+      every one of them for free). Found and fixed one real gap while
+      auditing: `find_file_var_soft()` (used for `read`/`write`/`eof`'s
+      leading file-argument detection) was another thin wrapper directly
+      around `find_var_soft()` that the original call-site count missed
+      entirely, since it isn't literally named `find_var`/`find_proc` -
+      caught by reading the code rather than trusting the grep count.
+      A private symbol referenced from outside its unit reads exactly
+      like a genuinely undeclared one (`Unknown identifier`/`Undeclared
+      procedure/function`) - reuses the existing not-found error paths
+      rather than a distinct "private" message, verified to be the
+      identical message a truly-undeclared identifier already produces.
+
+      Deliberately NOT covered, documented in docs/LANGUAGE.md#units
+      rather than silently dropped: consts, types (including classes),
+      enum types/values, and subrange types stay visible everywhere
+      regardless of section (the other ~65 call sites across those 7
+      lookup functions); record variables specifically, as opposed to
+      plain scalar/array ones (a separate table, `record_vars[]`, never
+      audited - outside what was scoped and approved); the pre-existing,
+      separately-documented flat-namespace collision gap (two units each
+      privately declaring the same proc/var name still collide as a
+      duplicate declaration - real per-unit name mangling would be a
+      materially different, larger feature). No new opcodes - purely a
+      parse-time concept, so no VM/solas/desole changes either. See
+      `examples/test/units/test_units_visibility_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#units).
 - [ ] Possibly a linker for separately-compiled object-style units (`.obj`)
 

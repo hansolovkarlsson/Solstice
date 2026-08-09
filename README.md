@@ -362,8 +362,10 @@ procedure/function (or `nil`), assignable, comparable, and callable
 working: units (`unit UnitName; interface ... implementation ... end.`,
 pulled into a compile via `uses UnitName;`) — a source-level `uses`
 mechanism (not separate compilation) that merges a unit's declarations,
-classes included, into the same compile (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#units)).
+classes included, into the same compile, with unit-level visibility
+enforced for procedures/functions and global variables (something a
+unit declares only in its `implementation` section can't be referenced
+from outside that unit) — see [docs/LANGUAGE.md](docs/LANGUAGE.md#units).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

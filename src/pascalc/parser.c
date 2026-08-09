@@ -927,11 +927,40 @@ static ASTNode *wrap_range_check(ASTNode *value, int is_subrange, int lower, int
     return node;
 }
 
+// Which unit's own source is currently being parsed (empty = the main
+// program, or between unit loads - see load_unit()), and whether that's
+// currently its 'interface' (0) or 'implementation' (1) section - what
+// add_var()/add_proc() stamp a new declaration's own declaring_unit/
+// is_unit_private with (see Symbol/ProcSymbol in common.h). Reset at
+// the top of parse_ast() like every other global counter there;
+// saved/restored around load_unit()'s own body exactly like
+// current_filename/the lexer position already are, so a nested 'uses'
+// (one unit loading another) can't leak its own section into the
+// resuming outer unit's.
+static char current_unit_name[MAX_NAME];
+static int current_section_is_implementation = 0;
+
+// Visibility check shared by find_var_soft_visible()/find_proc_visible()
+// below - a symbol declared in a unit's interface (or the main program)
+// is always visible; one declared in a unit's implementation is only
+// visible while THAT SAME unit's own source is what's currently being
+// parsed (its own implementation referencing its own private
+// declarations, including from an earlier point in that same
+// implementation section).
+static int symbol_visible_here(const char *declaring_unit, int is_unit_private) {
+    if (!is_unit_private) return 1;
+    return strcmp(declaring_unit, current_unit_name) == 0;
+}
+
 // Soft lookup - returns -1 if `name` isn't a declared global variable,
 // rather than erroring. Used where the caller needs to check "is this a
 // global X" before deciding how to proceed (see try_get_array_bounds
 // below), as opposed to find_var()'s "this MUST be declared, error
-// immediately if not" contract.
+// immediately if not" contract. Deliberately visibility-BLIND (unlike
+// find_var_soft_visible() just below) - used directly at declaration-
+// time duplicate-detection sites, which must keep seeing every existing
+// var regardless of which unit (if any) declared it, or a private var
+// in one unit could silently collide with an unrelated one elsewhere.
 static int find_var_soft(const char *name) {
     for (int i = 0; i < sym_count; i++) {
         if (strcmp(sym_table[i].name, name) == 0) return i;
@@ -939,8 +968,20 @@ static int find_var_soft(const char *name) {
     return -1;
 }
 
-static int find_var(const char *name) {
+// The visibility-aware counterpart of find_var_soft() above - used at
+// every REFERENCE site (resolving a bare identifier the user actually
+// typed against the global var table), as opposed to a declaration-time
+// duplicate check.
+static int find_var_soft_visible(const char *name) {
     int idx = find_var_soft(name);
+    if (idx != -1 && !symbol_visible_here(sym_table[idx].declaring_unit, sym_table[idx].is_unit_private)) {
+        return -1;
+    }
+    return idx;
+}
+
+static int find_var(const char *name) {
+    int idx = find_var_soft_visible(name);
     if (idx == -1) {
         compile_error(token.line, "Unknown identifier '%s'", name);
     }
@@ -954,7 +995,7 @@ static int find_var(const char *name) {
 // 'assign(f, ...)' file argument needs to be *detected*, not required,
 // falling back to the ordinary stdin/stdout path when it's absent).
 static int find_file_var_soft(const char *name) {
-    int idx = find_var_soft(name);
+    int idx = find_var_soft_visible(name);
     if (idx == -1 || sym_table[idx].type != TYPE_FILE) return -1;
     return idx;
 }
@@ -978,6 +1019,8 @@ static void add_var(const char *name, DataType type) {
         compile_error(token.line, "Too many variable declarations (limit is %d)", MAX_SYMBOLS);
     }
     strcpy(sym_table[sym_count].name, name);
+    strcpy(sym_table[sym_count].declaring_unit, current_unit_name);
+    sym_table[sym_count].is_unit_private = current_section_is_implementation;
     sym_table[sym_count].type = type;
     sym_table[sym_count].is_array = 0;
     sym_table[sym_count].array_lower = 0;
@@ -1014,6 +1057,8 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
         compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
     }
     strcpy(sym_table[sym_count].name, name);
+    strcpy(sym_table[sym_count].declaring_unit, current_unit_name);
+    sym_table[sym_count].is_unit_private = current_section_is_implementation;
     sym_table[sym_count].type = elem_type;
     sym_table[sym_count].is_array = 1;
     sym_table[sym_count].array_lower = lower;
@@ -1060,6 +1105,8 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
         compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
     }
     strcpy(sym_table[sym_count].name, name);
+    strcpy(sym_table[sym_count].declaring_unit, current_unit_name);
+    sym_table[sym_count].is_unit_private = current_section_is_implementation;
     sym_table[sym_count].type = elem_type;
     sym_table[sym_count].is_array = 1;
     sym_table[sym_count].array_lower = lower;
@@ -1116,6 +1163,8 @@ static void add_array_var_nd(const char *name, DataType elem_type, int dims, con
         compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
     }
     strcpy(sym_table[sym_count].name, name);
+    strcpy(sym_table[sym_count].declaring_unit, current_unit_name);
+    sym_table[sym_count].is_unit_private = current_section_is_implementation;
     sym_table[sym_count].type = elem_type;
     sym_table[sym_count].is_array = 1;
     sym_table[sym_count].array_lower = 0;
@@ -1193,6 +1242,8 @@ static void add_array_var_rec(const char *name, int record_type_idx, int lower, 
         compile_error(token.line, "Array storage exhausted (limit is %d total elements across all arrays)", MAX_ARRAY_MEM);
     }
     strcpy(sym_table[sym_count].name, name);
+    strcpy(sym_table[sym_count].declaring_unit, current_unit_name);
+    sym_table[sym_count].is_unit_private = current_section_is_implementation;
     sym_table[sym_count].type = TYPE_INTEGER; // unused - see is_record_array in common.h
     sym_table[sym_count].is_array = 1;
     sym_table[sym_count].array_lower = lower;
@@ -1307,11 +1358,29 @@ static void add_record_var(const char *name, int record_type_idx) {
 // Soft lookup - returns -1 rather than erroring, since the caller needs
 // to decide "is this name a procedure or a variable?" before knowing
 // which error (if any) is appropriate.
+// Deliberately visibility-BLIND, same reasoning as find_var_soft() above -
+// used both at declaration-time duplicate-detection sites AND at every
+// class-method mangled-name lookup (h->mangled_name, never a raw user-
+// typed identifier - methods are resolved through
+// pointer_types[].methods[], an entirely separate mechanism this
+// compiler's unit-visibility feature doesn't touch). Only the handful of
+// genuine "resolve a bare identifier the user typed" reference sites use
+// find_proc_visible() below instead.
 static int find_proc(const char *name) {
     for (int i = 0; i < proc_count; i++) {
         if (strcmp(proc_table[i].name, name) == 0) return i;
     }
     return -1;
+}
+
+// The visibility-aware counterpart of find_proc() above - see
+// find_var_soft_visible()'s own comment for the reasoning.
+static int find_proc_visible(const char *name) {
+    int idx = find_proc(name);
+    if (idx != -1 && !symbol_visible_here(proc_table[idx].declaring_unit, proc_table[idx].is_unit_private)) {
+        return -1;
+    }
+    return idx;
 }
 
 // Registers a procedure's name immediately (before its body is parsed) -
@@ -1343,6 +1412,8 @@ static int add_proc(const char *name) {
     strcpy(proc_table[proc_count].name, name);
     strncpy(proc_table[proc_count].source_file, current_filename, MAX_UNIT_PATH - 1);
     proc_table[proc_count].source_file[MAX_UNIT_PATH - 1] = '\0';
+    strcpy(proc_table[proc_count].declaring_unit, current_unit_name);
+    proc_table[proc_count].is_unit_private = current_section_is_implementation;
     proc_table[proc_count].unmangled_name[0] = '\0'; // defensive reset (see comment above ProcSymbol) - overwritten by parse_class_method_body() for a method
     proc_table[proc_count].entry_address = -1; // resolved during codegen
     proc_table[proc_count].body = NULL;        // set once the body is parsed
@@ -1456,7 +1527,7 @@ static int try_get_array_bounds(const char *name, int *lower, int *upper) {
         }
         return 0; // a local, but not an array
     }
-    int global_idx = find_var_soft(name);
+    int global_idx = find_var_soft_visible(name);
     if (global_idx != -1 && sym_table[global_idx].is_array) {
         if (sym_table[global_idx].is_2d || sym_table[global_idx].is_nd) {
             compile_error(token.line, "'%s' is a multi-dimensional array - low/high/length don't support 2D/N-D arrays yet", name);
@@ -2826,7 +2897,7 @@ static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
         return node;
     }
 
-    int target_proc_idx = find_proc(name);
+    int target_proc_idx = find_proc_visible(name);
     if (target_proc_idx == -1) {
         compile_error(line, "Undeclared procedure/function '%s'", name);
     }
@@ -2895,7 +2966,7 @@ static ASTNode *parse_proc_value(int proc_type_idx, int line) {
         return node;
     }
 
-    int global_idx = find_var_soft(name);
+    int global_idx = find_var_soft_visible(name);
     if (global_idx != -1 && sym_table[global_idx].type == (DataType)(TYPE_PROC_BASE + proc_type_idx)) {
         match(TOKEN_IDENTIFIER);
         ASTNode *node = create_node(NODE_VARIABLE);
@@ -2905,7 +2976,7 @@ static ASTNode *parse_proc_value(int proc_type_idx, int line) {
         return node;
     }
 
-    int target_proc_idx = find_proc(name);
+    int target_proc_idx = find_proc_visible(name);
     if (target_proc_idx == -1) {
         compile_error(name_line, "Undeclared procedure/function '%s'", name);
     }
@@ -4554,7 +4625,7 @@ static ASTNode *factor(void) {
             return parse_self_shorthand_read(line);
         }
 
-        int call_proc_idx = find_proc(token.text);
+        int call_proc_idx = find_proc_visible(token.text);
         if (call_proc_idx != -1) {
             if (!proc_table[call_proc_idx].is_function) {
                 compile_error(token.line, "'%s' is a procedure and does not return a value; it cannot be used in an expression",
@@ -5645,6 +5716,9 @@ static void load_unit(const char *name, int use_line) {
     const char *saved_filename = current_filename;
     LexerPos saved_pos = lexer_save_pos();
     Token saved_token = token;
+    char saved_unit_name[MAX_NAME];
+    strcpy(saved_unit_name, current_unit_name);
+    int saved_section_is_implementation = current_section_is_implementation;
 
     current_filename = owned_path;
     init_lexer(unit_source);
@@ -5655,6 +5729,8 @@ static void load_unit(const char *name, int use_line) {
     }
     match(TOKEN_IDENTIFIER);
     match(TOKEN_SEMI);
+    strcpy(current_unit_name, name);
+    current_section_is_implementation = 0;
     match(TOKEN_INTERFACE);
 
     if (token.type == TOKEN_USES) {
@@ -5668,6 +5744,7 @@ static void load_unit(const char *name, int use_line) {
     }
 
     match(TOKEN_IMPLEMENTATION);
+    current_section_is_implementation = 1;
     if (token.type == TOKEN_CONST) parse_const_section();
     if (token.type == TOKEN_TYPE) parse_type_section();
     if (token.type == TOKEN_VAR) parse_var_section();
@@ -5685,6 +5762,8 @@ static void load_unit(const char *name, int use_line) {
     current_filename = saved_filename;
     lexer_restore_pos(saved_pos);
     token = saved_token;
+    strcpy(current_unit_name, saved_unit_name);
+    current_section_is_implementation = saved_section_is_implementation;
 }
 
 // Builds the vtable-init statement chain (see NODE_VTABLE_INIT_ENTRY in
@@ -5758,6 +5837,8 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     declared_label_count = 0;
     loaded_unit_count = 0;
     loading_unit_count = 0;
+    current_unit_name[0] = '\0';
+    current_section_is_implementation = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -7600,7 +7681,7 @@ static ASTNode *parse_record_array_dest_whole_assignment(int dest_sym_idx, ASTNo
     strcpy(src_name, token.text);
     int src_line = token.line;
 
-    int src_arr_sym_idx = find_var_soft(src_name);
+    int src_arr_sym_idx = find_var_soft_visible(src_name);
     if (src_arr_sym_idx != -1 && sym_table[src_arr_sym_idx].is_record_array) {
         int src_record_type_idx = find_record_array_type(src_arr_sym_idx);
         if (src_record_type_idx != dest_record_type_idx) {
@@ -7871,7 +7952,7 @@ static ASTNode *parse_whole_record_assignment(int dest_is_local, int dest_record
     // not just another plain record variable - checked first via a soft
     // lookup, since the overwhelmingly common case is a plain record var.
     {
-        int src_arr_sym_idx = find_var_soft(token.text);
+        int src_arr_sym_idx = find_var_soft_visible(token.text);
         if (src_arr_sym_idx != -1 && sym_table[src_arr_sym_idx].is_record_array) {
             int src_record_type_idx = find_record_array_type(src_arr_sym_idx);
             if (src_record_type_idx != dest_record_type_idx) {
@@ -8473,7 +8554,7 @@ static ASTNode *statement(void) {
             return parse_self_shorthand_write();
         }
 
-        int proc_idx = find_proc(token.text);
+        int proc_idx = find_proc_visible(token.text);
         if (proc_idx != -1) {
             ASTNode *stmt = create_node(NODE_CALL);
             stmt->data.var_idx = proc_idx;

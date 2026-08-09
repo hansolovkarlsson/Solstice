@@ -402,6 +402,21 @@ typedef struct {
                               // every array (1D/2D/ND/record) shares one
                               // flat vm_array_mem[] pool with an implicit
                               // stride of 1 everywhere else.
+    char declaring_unit[MAX_NAME]; // empty if declared in the main
+                              // program or a unit's own 'interface'
+                              // section (always visible); the unit's own
+                              // name if declared in a unit's
+                              // 'implementation' section - see
+                              // is_unit_private and symbol_visible_here()
+                              // in parser.c.
+    int is_unit_private;     // 1 if this var was declared in a unit's
+                              // 'implementation' section, and so should
+                              // only resolve for reference sites parsed
+                              // from within that SAME unit's own source -
+                              // see symbol_visible_here() in parser.c.
+                              // 0 (visible everywhere) for anything
+                              // declared in the main program or a unit's
+                              // 'interface'.
 } Symbol;
 
 typedef enum {
@@ -1973,6 +1988,26 @@ typedef struct {
                                     // an error inside unit-declared code
                                     // reports the right file, not whichever
                                     // file parsing finished on last.
+    char declaring_unit[MAX_NAME]; // same idea as Symbol's own field of
+                                    // this name (a DIFFERENT purpose than
+                                    // source_file above - a bare unit
+                                    // NAME for visibility comparison, not
+                                    // a full path for error attribution) -
+                                    // empty if declared in the main
+                                    // program or a unit's 'interface',
+                                    // else the declaring unit's name.
+    int is_unit_private;           // 1 if declared in a unit's
+                                    // 'implementation' section - see
+                                    // Symbol.is_unit_private and
+                                    // symbol_visible_here() in parser.c.
+                                    // Set (harmlessly, never consulted)
+                                    // for a class method's own mangled
+                                    // proc too, since add_proc() is
+                                    // shared - method visibility isn't
+                                    // enforced by this mechanism at all,
+                                    // methods are resolved through
+                                    // pointer_types[].methods[], never
+                                    // through find_proc_visible().
 } ProcSymbol;
 
 // Shared Global State
