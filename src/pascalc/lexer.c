@@ -28,6 +28,18 @@ void init_lexer(const char *source) {
     next_token();
 }
 
+LexerPos lexer_save_pos(void) {
+    LexerPos pos;
+    pos.src = src;
+    pos.current_line = current_line;
+    return pos;
+}
+
+void lexer_restore_pos(LexerPos pos) {
+    src = pos.src;
+    current_line = pos.current_line;
+}
+
 void next_token(void) {
     while (*src && isspace(*src)) {
         if (*src == '\n') current_line++;
@@ -196,6 +208,10 @@ void next_token(void) {
         else if (strcasecmp(token.text, "left") == 0) token.type = TOKEN_LEFT;
         else if (strcasecmp(token.text, "right") == 0) token.type = TOKEN_RIGHT;
         else if (strcasecmp(token.text, "inpos") == 0) token.type = TOKEN_INPOS;
+        else if (strcasecmp(token.text, "unit") == 0) token.type = TOKEN_UNIT;
+        else if (strcasecmp(token.text, "interface") == 0) token.type = TOKEN_INTERFACE;
+        else if (strcasecmp(token.text, "implementation") == 0) token.type = TOKEN_IMPLEMENTATION;
+        else if (strcasecmp(token.text, "uses") == 0) token.type = TOKEN_USES;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

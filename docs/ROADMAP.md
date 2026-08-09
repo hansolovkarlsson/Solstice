@@ -1159,7 +1159,80 @@ primitives instead of each reinventing them.
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
       addressing/memory model for records that doesn't exist yet
-- [ ] Units/modules and an `uses`-style include/import mechanism
+- [x] Units/modules and an `uses`-style include/import mechanism — a
+      `unit UnitName; interface ... implementation ... end.` file,
+      pulled into a compile via `uses UnitName;` in a program or another
+      unit. Deliberately NOT separate compilation (that stays the
+      "linker" item below) - `uses Foo;` locates `Foo.pas` (same
+      directory as the file containing the `uses` clause, no search
+      path) and recursively re-parses its `interface`+`implementation`
+      straight into the same global tables (`sym_table[]`,
+      `proc_table[]`, `record_types[]`, `pointer_types[]`, etc.) the
+      main program's own declarations already use, via a lexer save/
+      restore point (`lexer_save_pos()`/`lexer_restore_pos()`,
+      `LexerPos` in `lexer.h`) that lets the parser recurse into another
+      file's source and come back exactly where a `uses` clause left
+      off. By the time codegen runs, a `uses`-based program is
+      indistinguishable from one big file - this needed no new AST
+      nodes, no new opcodes, and no `.bin` format changes, almost
+      entirely front-end (`lexer.c`/`parser.c`) work.
+
+      Interface procedure/function headers need no `forward` keyword -
+      the interface/implementation split IS the forward declaration,
+      matching real Pascal unit syntax. This reuses
+      `subroutine_declaration()` almost unchanged: a new `header_only`
+      parameter makes its existing `is_forward = 1` early-return branch
+      (originally gated on seeing a literal `forward` token) fire
+      unconditionally instead, so the implementation section's
+      completing bodies use this compiler's own pre-existing forward-
+      declaration completion syntax (no parameter list/return type
+      repeated) rather than standard Pascal's repeat-the-signature unit
+      style - a deliberate, documented deviation
+      (docs/LANGUAGE.md#units) in favor of reusing one existing
+      mechanism instead of building a second, parallel one. A forward-
+      declared interface proc never completed anywhere in the
+      implementation is caught for free by the existing end-of-parse
+      sweep over the whole (by-then fully merged) `proc_table[]`, run
+      once after everything - main program included - has been parsed.
+
+      Class support fell out for free: a class's method headers are
+      already registered when its `type TFoo = class ... end;` is
+      parsed (`parse_type_section()`, already standalone), and a method
+      body is completed later via the existing `procedure TFoo.Bar;`
+      branch, which returns before ever reaching the new `header_only`
+      check - so a class declared in a unit's interface, with method
+      bodies in its implementation, needed zero unit-specific code.
+      Diamond dependencies (two units both `uses`-ing a shared third)
+      and circular dependencies are handled by two small parser-local
+      registries, `loaded_units[]` (fully merged already - a repeat
+      `uses` is a silent no-op) and `loading_units[]` (a stack of units
+      currently mid-load - naming one already on it is a circular-
+      dependency compile error), both reset at the top of `parse_ast()`
+      like every other global counter there - verified not to leak
+      across compiles in the same process with a scratch harness
+      compiling two different units-using programs back to back
+      (`test_recovery.c` itself stays file-I/O-free by design, so this
+      check lives outside it rather than compromising that).
+
+      Also added: `ProcSymbol.source_file`, recorded once per proc at
+      `add_proc()` time, plus `set_current_filename()` alongside the
+      existing `get_current_filename()` - `pascalc.c`'s per-proc type-
+      check/optimize loops and `codegen.c`'s `generate_program()` proc
+      loop now switch to a proc's own recorded file while processing its
+      body, so a compile error inside unit-declared code reports the
+      right filename instead of whichever file parsing finished on last
+      (line numbers were always correct; only the filename was wrong
+      before this).
+
+      Scope decisions, all documented in docs/LANGUAGE.md#units rather
+      than silently dropped: `uses` only in a program's own header or a
+      unit's `interface` (not `implementation`); no visibility
+      enforcement (same gap as classes' `private`/`public`, now with a
+      real boundary to eventually enforce); same-directory-only unit
+      resolution, no search path. No new opcodes were added, so (per
+      CLAUDE.md's own checklist) no solas/desole changes were needed
+      either. See `examples/test/units/test_units_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#units).
 - [ ] Possibly a linker for separately-compiled object-style units (`.obj`)
 
 ### Language extensions beyond standard Pascal

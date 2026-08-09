@@ -58,14 +58,21 @@ int main(int argc, char *argv[]) {
     if (verbose_mode) printf("\n--- Phase 2: Type Checking ---\n");
     type_check(ast);
     for (int i = 0; i < proc_count; i++) {
+        // A unit-declared proc's body should report ITS OWN file on a
+        // type error, not whichever file parsing finished on last (see
+        // ProcSymbol.source_file in common.h).
+        set_current_filename(proc_table[i].source_file);
         type_check(proc_table[i].body);
     }
+    set_current_filename(source_path);
 
     if (verbose_mode) printf("\n--- Phase 3: Optimizing AST ---\n");
     ast = optimize_ast(ast);
     for (int i = 0; i < proc_count; i++) {
+        set_current_filename(proc_table[i].source_file);
         proc_table[i].body = optimize_ast(proc_table[i].body);
     }
+    set_current_filename(source_path);
     // Mark variable usage across every tree in the program before
     // sweeping any of them - a procedure can write a global that main (or
     // another procedure) reads, so DCE can't judge each tree in isolation.

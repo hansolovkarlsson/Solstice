@@ -11,6 +11,11 @@
 #define MAX_CALL_DEPTH 256
 #define MAX_FRAME_STACK 4096
 #define MAX_PROCEDURES 50
+#define MAX_UNITS 32        // total distinct units 'uses'-able in one compile
+                            // - also bounds the "currently loading" stack
+                            // used for circular-dependency detection, since
+                            // a unit is only ever pushed onto it once
+#define MAX_UNIT_PATH 256   // resolved unit source-file path buffer size
 #define MAX_PARAMS 8
 #define MAX_CASE_LABELS 64 // per 'case' statement, across every arm combined
                            // - also bounds the number of ARMS (each arm
@@ -141,6 +146,12 @@ typedef enum {
     TOKEN_NEW,    // the 'new' builtin procedure ('new(p)').
     TOKEN_DISPOSE, // the 'dispose' builtin procedure ('dispose(p)').
     TOKEN_NIL,    // the 'nil' literal.
+    TOKEN_UNIT,           // 'unit UnitName;' - a unit source file's own header.
+    TOKEN_INTERFACE,      // a unit's 'interface' section.
+    TOKEN_IMPLEMENTATION, // a unit's 'implementation' section.
+    TOKEN_USES,           // 'uses UnitName, ...;' - pulls a unit's declarations
+                           // into the current compile (program header or a
+                           // unit's own interface section).
     TOKEN_EOF
 } TokenType;
 
@@ -1903,6 +1914,17 @@ typedef struct {
                                     // classification an O(depth) walk
                                     // instead of a chain of table lookups.
     struct ASTNode *body;
+    char source_file[MAX_UNIT_PATH]; // the file this proc/function/method
+                                    // was declared in - the main program's
+                                    // own path, or a used unit's resolved
+                                    // path. Set once, at add_proc() time.
+                                    // Post-parse passes (type_checker.c,
+                                    // optimizer.c, codegen.c) switch
+                                    // current_filename to this while
+                                    // processing this proc's own body, so
+                                    // an error inside unit-declared code
+                                    // reports the right file, not whichever
+                                    // file parsing finished on last.
 } ProcSymbol;
 
 // Shared Global State

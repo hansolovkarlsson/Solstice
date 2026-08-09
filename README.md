@@ -355,7 +355,12 @@ correctly runs the subclass's own implementation
 procedural types (`type TProc = procedure(x: integer);`) — a variable,
 local, or `var` parameter that holds a reference to a top-level
 procedure/function (or `nil`), assignable, comparable, and callable
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)). Also
+working: units (`unit UnitName; interface ... implementation ... end.`,
+pulled into a compile via `uses UnitName;`) — a source-level `uses`
+mechanism (not separate compilation) that merges a unit's declarations,
+classes included, into the same compile (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#units)).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

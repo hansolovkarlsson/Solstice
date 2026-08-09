@@ -2345,9 +2345,10 @@ read.
 - **`new()` into a class-typed field reached through an explicit `^`**
   (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
   into a plain class variable first, then assign it into the field.
-- **Constructors, multiple inheritance, and visibility
-  (`private`/`public`)** — none of these exist even as a plan yet beyond
-  the scoping note.
+- **Multiple inheritance and visibility (`private`/`public`)** — neither
+  exists even as a plan yet beyond the scoping note. Visibility now has
+  a real boundary to enforce (a unit's `interface` vs. `implementation`
+  section — see [Units](#units)) but nothing enforces it yet.
 
 ## Procedures
 
@@ -2891,6 +2892,87 @@ end.
   array[1..3, 1..3] of integer;`), with the same "shared across every
   call, not per-call isolated" behavior as a 1D local array.
 
+## Units
+
+A program can be split across files. A **unit** is a separate `.pas`
+file declaring things another file can use:
+
+```pascal
+unit MathUtils;
+
+interface
+
+const
+    Factor = 3;
+
+function Square(x: integer): integer;
+
+implementation
+
+function Square;   { no parameter list/return type here - see below }
+begin
+    Square := x * x * Factor;
+end;
+
+end.
+```
+
+```pascal
+program UsesIt;
+
+uses MathUtils;
+
+begin
+    writeln(Square(4));   { 48 }
+end.
+```
+
+- A unit file's own name is required to match its declared name exactly
+  (`unit MathUtils;` must live in `MathUtils.pas`) — this is also how
+  `uses` finds it: **same directory as the file containing the `uses`
+  clause**, no separate include/search path.
+- `uses Name1, Name2, ...;` is valid right after the main program's own
+  heading (before `label`/`const`/`type`/`var`), or right after a unit's
+  own `interface` keyword — **not** inside an `implementation` section.
+  One dependency list per file.
+- A unit has exactly two sections, in order: `interface` (what it
+  declares) then `implementation` (procedure/function bodies, plus
+  optionally more `const`/`type`/`var`/procedures of its own), each
+  ending with the unit's own final `end.`.
+- **A procedure/function declared in the interface needs no `forward`
+  keyword** — the interface/implementation split *is* the forward
+  declaration, unlike this compiler's explicit
+  [`forward`](#procedures) elsewhere. Its implementation-section body
+  then completes it exactly like completing any other forward
+  declaration: **no parameter list or return type repeated** (see
+  `function Square;` above) — this differs from standard Pascal units,
+  which repeat the full signature in both places; it's a deliberate
+  reuse of this compiler's one existing forward/complete mechanism
+  rather than a second, parallel one.
+- `const`/`type`/`var` sections work identically to the main program's
+  own — including `type ... = class ... end;`: a class's fields and
+  method headers go in the interface, its method bodies
+  (`procedure TFoo.Method; ...`) in the implementation, same as any
+  other class (see [Classes](#classes)).
+- Two units that both `uses` a shared third one (a diamond dependency)
+  merge that shared unit's declarations exactly once — no duplicate-
+  declaration error. A cycle (`A` uses `B` uses `A`, directly or through
+  more steps) is a compile error.
+- **No visibility enforcement**: everything a unit declares, in either
+  section, becomes an ordinary global name once merged in — a program
+  can call something the unit only declared in its `implementation`.
+  Same gap as classes' `private`/`public` (also unimplemented) —
+  `interface` vs. `implementation` is a real boundary here for the
+  first time, but nothing checks it yet.
+- Not separate compilation: `uses Foo;` re-parses `Foo.pas` and merges
+  its declarations into the same global tables the main program's own
+  declarations use, every time it's named. There's no compiled unit
+  format, `.obj`-style linking, or precompiled unit cache.
+- A name a unit declares must be unique across the whole compile, same
+  as any other global name — a unit and the main program (or two
+  units) declaring the same name is the same "already declared" compile
+  error as any other collision.
+
 ## Errors
 
 Every compile error reports as `file:line: Compile Error: message` (or
@@ -2959,7 +3041,10 @@ file.pas:1: Warning: function 'Average' never assigns a value to its own name - 
   [Nested records](#nested-records), and [Records](#records) above (1D
   arrays of records, plain record variables (including nested-record
   fields), record parameters/locals, and record comparison all work)
-- Units/modules/`uses`
+- `uses` inside a unit's `implementation` section, and
+  interface/implementation visibility enforcement — see
+  [Units](#units) above (`unit`/`interface`/`implementation`/`uses`,
+  including units depending on units, all work)
 
 See the project README's Status section and
 [docs/ROADMAP.md](ROADMAP.md) for the current plan.

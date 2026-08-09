@@ -1360,12 +1360,18 @@ static void generate_block(ASTNode *body) {
 void generate_program(ASTNode *main_body) {
     pending_call_count = 0;
     pending_proc_ref_count = 0;
+    // Whatever file is "current" when codegen starts is the main
+    // program's own path (pascalc.c resets it there right before calling
+    // this) - saved so a unit-declared proc's own source_file (see the
+    // loop below) can be restored back to it once done with that proc.
+    const char *main_filename = get_current_filename();
 
     if (proc_count > 0) {
         int jmp_idx = code_idx;
         emit(OP_JMP, 0); // placeholder, patched below
 
         for (int i = 0; i < proc_count; i++) {
+            set_current_filename(proc_table[i].source_file);
             codegen_current_proc_idx = i;
             proc_table[i].entry_address = code_idx;
             // A nested procedure needs its own distinct fp (established
@@ -1406,6 +1412,7 @@ void generate_program(ASTNode *main_body) {
 
         code[jmp_idx].arg = code_idx; // main starts here
     }
+    set_current_filename(main_filename);
     codegen_current_proc_idx = -1;
     generate_block(main_body);
 

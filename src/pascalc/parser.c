@@ -875,6 +875,14 @@ const char *get_current_filename(void) {
     return current_filename;
 }
 
+// Lets a post-parse pass (type_checker.c, optimizer.c, codegen.c) point
+// error messages at whichever file a specific proc/function actually
+// came from (see ProcSymbol.source_file in common.h), rather than
+// whichever file parsing itself finished on last.
+void set_current_filename(const char *f) {
+    current_filename = f;
+}
+
 static void compile_error(int line, const char *fmt, ...) {
     fprintf(stderr, "%s:%d: Compile Error: ", current_filename, line);
     va_list args;
@@ -1327,6 +1335,8 @@ static int add_proc(const char *name) {
         compile_error(token.line, "Too many procedure declarations (limit is %d)", MAX_PROCEDURES);
     }
     strcpy(proc_table[proc_count].name, name);
+    strncpy(proc_table[proc_count].source_file, current_filename, MAX_UNIT_PATH - 1);
+    proc_table[proc_count].source_file[MAX_UNIT_PATH - 1] = '\0';
     proc_table[proc_count].unmangled_name[0] = '\0'; // defensive reset (see comment above ProcSymbol) - overwritten by parse_class_method_body() for a method
     proc_table[proc_count].entry_address = -1; // resolved during codegen
     proc_table[proc_count].body = NULL;        // set once the body is parsed
@@ -2319,7 +2329,7 @@ static ASTNode *expression(void);
 static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
-static void subroutine_declaration(int is_function_decl);
+static void subroutine_declaration(int is_function_decl, int header_only);
 static ASTNode *parse_case_label_value(void);
 static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx);
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
@@ -5269,6 +5279,276 @@ static void parse_type_section(void) {
     }
 }
 
+// 'var name, name2, ... : type; ...'  -- a top-level 'var' section.
+// Extracted out of parse_ast() (which used to inline this) so a unit's
+// interface/implementation sections (see load_unit() below) can reuse
+// it too - parse_const_section()/parse_type_section() were already
+// standalone for the same reason.
+static void parse_var_section(void) {
+    match(TOKEN_VAR);
+    while (token.type == TOKEN_IDENTIFIER) {
+        #define MAX_VAR_NAMES_PER_LINE 20
+        char temporary_names[MAX_VAR_NAMES_PER_LINE][MAX_NAME];
+        int count = 0;
+
+        strcpy(temporary_names[count++], token.text);
+        match(TOKEN_IDENTIFIER);
+
+        while (token.type == TOKEN_COMMA) {
+            match(TOKEN_COMMA);
+            if (count >= MAX_VAR_NAMES_PER_LINE) {
+                compile_error(token.line, "Too many identifiers in one 'var' line (limit is %d)", MAX_VAR_NAMES_PER_LINE);
+            }
+            strcpy(temporary_names[count++], token.text);
+            match(TOKEN_IDENTIFIER);
+        }
+        match(TOKEN_COLON);
+
+        if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+            int record_type_idx = find_record_type(token.text);
+            match(TOKEN_IDENTIFIER);
+            for (int i = 0; i < count; i++) {
+                add_record_var(temporary_names[i], record_type_idx);
+            }
+        } else if (token.type == TOKEN_ARRAY) {
+            match(TOKEN_ARRAY);
+            match(TOKEN_LBRACKET);
+            int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
+            int dims = parse_array_bounds(lower, upper);
+            match(TOKEN_RBRACKET);
+            match(TOKEN_OF);
+
+            if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+                if (dims != 1) {
+                    compile_error(token.line, "Arrays of records are only supported for 1D arrays right now (see docs/LANGUAGE.md)");
+                }
+                int elem_record_type_idx = find_record_type(token.text);
+                match(TOKEN_IDENTIFIER);
+                for (int i = 0; i < count; i++) {
+                    int array_sym_idx = sym_count; // add_array_var_rec() is about to append here
+                    add_array_var_rec(temporary_names[i], elem_record_type_idx, lower[0], upper[0]);
+                    register_record_array(array_sym_idx, elem_record_type_idx);
+                }
+            } else {
+                DataType elem_type = parse_scalar_type();
+                int is_subrange = scalar_type_is_subrange;
+                int subrange_lower = scalar_type_subrange_lower;
+                int subrange_upper = scalar_type_subrange_upper;
+
+                for (int i = 0; i < count; i++) {
+                    if (dims == 1) {
+                        add_array_var(temporary_names[i], elem_type, lower[0], upper[0]);
+                    } else if (dims == 2) {
+                        add_array_var_2d(temporary_names[i], elem_type, lower[0], upper[0], lower[1], upper[1]);
+                    } else {
+                        add_array_var_nd(temporary_names[i], elem_type, dims, lower, upper);
+                    }
+                    sym_table[sym_count - 1].is_subrange = is_subrange;
+                    sym_table[sym_count - 1].subrange_lower = subrange_lower;
+                    sym_table[sym_count - 1].subrange_upper = subrange_upper;
+                }
+            }
+        } else if (token.type == TOKEN_TEXT_TYPE) {
+            // A file variable - see TYPE_FILE in common.h for why
+            // this is its own branch here (the ONLY place 'text' is
+            // legal) rather than going through parse_scalar_type()
+            // like every other type does. add_var() needs nothing
+            // file-specific - TYPE_FILE is a plain scalar as far as
+            // sym_table[] itself is concerned; all the real file
+            // STATE lives in vm.c's vm_open_files[], indexed by this
+            // same symbol index.
+            match(TOKEN_TEXT_TYPE);
+            for (int i = 0; i < count; i++) {
+                add_var(temporary_names[i], TYPE_FILE);
+            }
+        } else {
+            DataType target_type = parse_scalar_type();
+            int is_subrange = scalar_type_is_subrange;
+            int subrange_lower = scalar_type_subrange_lower;
+            int subrange_upper = scalar_type_subrange_upper;
+
+            for (int i = 0; i < count; i++) {
+                add_var(temporary_names[i], target_type);
+                sym_table[sym_count - 1].is_subrange = is_subrange;
+                sym_table[sym_count - 1].subrange_lower = subrange_lower;
+                sym_table[sym_count - 1].subrange_upper = subrange_upper;
+            }
+        }
+        match(TOKEN_SEMI);
+    }
+}
+
+// Units 'uses'-d so far this compile (fully merged into the global
+// tables already) and units currently mid-load (a stack, for circular-
+// dependency detection) - see load_unit(). Both reset to 0 at the top of
+// parse_ast(), alongside every other global counter reset there, or
+// state would leak across compiles in the same process exactly like
+// test_recovery guards against for everything else.
+static char loaded_units[MAX_UNITS][MAX_NAME];
+static int loaded_unit_count = 0;
+static char loading_units[MAX_UNITS][MAX_NAME];
+static int loading_unit_count = 0;
+
+// Reads an entire unit source file into a malloc'd, NUL-terminated
+// buffer. Mirrors pascalc.c's own read_file() (fopen/fseek/fread), but
+// reports a failure via compile_error() (recoverable, points at the
+// 'uses' clause that named this unit) rather than perror()/a raw abort -
+// this file never calls exit()/fatal_abort() without going through
+// compile_error() first, and 'uses'-ing a nonexistent unit is an
+// ordinary, expected compile error, not a host-process-ending one.
+static char *read_unit_file(const char *path, int use_line, const char *unit_name) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        compile_error(use_line, "Cannot find unit '%s' (expected file '%s')", unit_name, path);
+    }
+    fseek(f, 0, SEEK_END);
+    long length = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buffer = malloc(length + 1);
+    if (!buffer) {
+        fclose(f);
+        compile_error(use_line, "Allocation failure reading unit '%s'", unit_name);
+    }
+    size_t read_count = fread(buffer, 1, length, f);
+    buffer[read_count] = '\0';
+    fclose(f);
+    return buffer;
+}
+
+// A unit is searched for in the same directory as the file containing
+// the 'uses' clause that named it (current_filename, at the point this
+// is called - before load_unit() below switches it to the unit's own
+// path) - no separate include/search-path concept, matching this
+// project's habit of not building for a requirement it hasn't hit yet.
+static void build_unit_path(char *out, size_t outsz, const char *unit_name) {
+    const char *slash = strrchr(current_filename, '/');
+    if (slash) {
+        int dir_len = (int)(slash - current_filename);
+        snprintf(out, outsz, "%.*s/%s.pas", dir_len, current_filename, unit_name);
+    } else {
+        snprintf(out, outsz, "%s.pas", unit_name);
+    }
+}
+
+static void load_unit(const char *name, int use_line);
+
+// 'uses UnitName, UnitName2, ...;' - a comma-separated list of unit
+// names, each pulled in via load_unit(). Valid right after the main
+// program's own header, or right after a unit's own 'interface' keyword
+// (see load_unit()) - not inside an 'implementation' section, one
+// dependency list per file, simpler than Turbo Pascal's two-place
+// 'uses'.
+static void parse_uses_clause(void) {
+    match(TOKEN_USES);
+    while (1) {
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a unit name after 'uses'");
+        }
+        char name[MAX_NAME];
+        int line = token.line;
+        strcpy(name, token.text);
+        match(TOKEN_IDENTIFIER);
+        load_unit(name, line);
+        if (token.type != TOKEN_COMMA) break;
+        match(TOKEN_COMMA);
+    }
+    match(TOKEN_SEMI);
+}
+
+// Loads and merges 'name.pas' (a 'unit name; interface ... implementation
+// ... end.' file) into the current compile - a no-op if already fully
+// loaded (a diamond dependency: two units both 'uses'-ing a shared third
+// one), a circular-dependency compile error if 'name' is already mid-
+// load higher up the same 'uses' chain.
+//
+// Not separate compilation: everything the unit declares is parsed
+// straight into the SAME global tables (sym_table[], proc_table[],
+// record_types[], pointer_types[], etc.) the main program's own
+// declarations use, via a nested, save-and-restore re-entry of the
+// lexer/parser on the unit's own source - by the time codegen runs, a
+// 'uses'-based program is indistinguishable from one big file. See
+// docs/LANGUAGE.md#units for the full syntax and the (documented, not
+// silently dropped) gaps this leaves: no interface/implementation
+// visibility enforcement yet (same gap as classes' private/public), and
+// same-directory-only unit resolution.
+//
+// Interface procedure/function headers need no 'forward;' keyword - see
+// subroutine_declaration()'s header_only parameter. A forward-declared
+// interface proc never completed anywhere in the implementation is
+// already caught for free by parse_ast()'s own end-of-parse sweep over
+// the whole (by-then fully merged) proc_table[], run once after
+// everything - main program included - has been parsed.
+static void load_unit(const char *name, int use_line) {
+    for (int i = 0; i < loaded_unit_count; i++) {
+        if (strcmp(loaded_units[i], name) == 0) return; // already merged
+    }
+    for (int i = 0; i < loading_unit_count; i++) {
+        if (strcmp(loading_units[i], name) == 0) {
+            compile_error(use_line, "Circular unit dependency: '%s' (directly or indirectly) uses itself", name);
+        }
+    }
+    if (loading_unit_count >= MAX_UNITS || loaded_unit_count >= MAX_UNITS) {
+        compile_error(use_line, "Too many units in this compile (limit is %d)", MAX_UNITS);
+    }
+
+    char path[MAX_UNIT_PATH];
+    build_unit_path(path, sizeof(path), name);
+    char *unit_source = read_unit_file(path, use_line, name);
+
+    strcpy(loading_units[loading_unit_count++], name);
+
+    // owned_path lives on this call's own stack frame for as long as
+    // this function is on the call stack - including every nested
+    // load_unit() this unit's own 'uses' clause triggers below - and is
+    // never referenced again once current_filename is restored at the
+    // end, so (unlike unit_source) it doesn't need a heap allocation.
+    char owned_path[MAX_UNIT_PATH];
+    strcpy(owned_path, path);
+    const char *saved_filename = current_filename;
+    LexerPos saved_pos = lexer_save_pos();
+    Token saved_token = token;
+
+    current_filename = owned_path;
+    init_lexer(unit_source);
+
+    match(TOKEN_UNIT);
+    if (token.type != TOKEN_IDENTIFIER || strcmp(token.text, name) != 0) {
+        compile_error(token.line, "File '%s' must declare 'unit %s;' to match 'uses %s' (found '%s')", path, name, name, token.text);
+    }
+    match(TOKEN_IDENTIFIER);
+    match(TOKEN_SEMI);
+    match(TOKEN_INTERFACE);
+
+    if (token.type == TOKEN_USES) {
+        parse_uses_clause();
+    }
+    if (token.type == TOKEN_CONST) parse_const_section();
+    if (token.type == TOKEN_TYPE) parse_type_section();
+    if (token.type == TOKEN_VAR) parse_var_section();
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 1); // header_only
+    }
+
+    match(TOKEN_IMPLEMENTATION);
+    if (token.type == TOKEN_CONST) parse_const_section();
+    if (token.type == TOKEN_TYPE) parse_type_section();
+    if (token.type == TOKEN_VAR) parse_var_section();
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 0);
+    }
+
+    match(TOKEN_END);
+    match(TOKEN_PERIOD);
+
+    free(unit_source);
+    loading_unit_count--;
+    strcpy(loaded_units[loaded_unit_count++], name);
+
+    current_filename = saved_filename;
+    lexer_restore_pos(saved_pos);
+    token = saved_token;
+}
+
 // Builds the vtable-init statement chain (see NODE_VTABLE_INIT_ENTRY in
 // common.h): one entry per method of every class that actually has a
 // body, populating vm_vtables[] before any user code runs. Called once,
@@ -5338,6 +5618,8 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     subrange_type_count = 0;
     with_depth = 0;
     declared_label_count = 0;
+    loaded_unit_count = 0;
+    loading_unit_count = 0;
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);
@@ -5356,6 +5638,10 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     }
     match(TOKEN_SEMI);
 
+    if (token.type == TOKEN_USES) {
+        parse_uses_clause();
+    }
+
     if (token.type == TOKEN_LABEL) {
         parse_label_section();
     }
@@ -5369,97 +5655,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     }
 
     if (token.type == TOKEN_VAR) {
-        match(TOKEN_VAR);
-        while (token.type == TOKEN_IDENTIFIER) {
-            #define MAX_VAR_NAMES_PER_LINE 20
-            char temporary_names[MAX_VAR_NAMES_PER_LINE][MAX_NAME];
-            int count = 0;
-
-            strcpy(temporary_names[count++], token.text);
-            match(TOKEN_IDENTIFIER);
-            
-            while (token.type == TOKEN_COMMA) {
-                match(TOKEN_COMMA);
-                if (count >= MAX_VAR_NAMES_PER_LINE) {
-                    compile_error(token.line, "Too many identifiers in one 'var' line (limit is %d)", MAX_VAR_NAMES_PER_LINE);
-                }
-                strcpy(temporary_names[count++], token.text);
-                match(TOKEN_IDENTIFIER);
-            }
-            match(TOKEN_COLON);
-
-            if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
-                int record_type_idx = find_record_type(token.text);
-                match(TOKEN_IDENTIFIER);
-                for (int i = 0; i < count; i++) {
-                    add_record_var(temporary_names[i], record_type_idx);
-                }
-            } else if (token.type == TOKEN_ARRAY) {
-                match(TOKEN_ARRAY);
-                match(TOKEN_LBRACKET);
-                int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
-                int dims = parse_array_bounds(lower, upper);
-                match(TOKEN_RBRACKET);
-                match(TOKEN_OF);
-
-                if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
-                    if (dims != 1) {
-                        compile_error(token.line, "Arrays of records are only supported for 1D arrays right now (see docs/LANGUAGE.md)");
-                    }
-                    int elem_record_type_idx = find_record_type(token.text);
-                    match(TOKEN_IDENTIFIER);
-                    for (int i = 0; i < count; i++) {
-                        int array_sym_idx = sym_count; // add_array_var_rec() is about to append here
-                        add_array_var_rec(temporary_names[i], elem_record_type_idx, lower[0], upper[0]);
-                        register_record_array(array_sym_idx, elem_record_type_idx);
-                    }
-                } else {
-                    DataType elem_type = parse_scalar_type();
-                    int is_subrange = scalar_type_is_subrange;
-                    int subrange_lower = scalar_type_subrange_lower;
-                    int subrange_upper = scalar_type_subrange_upper;
-
-                    for (int i = 0; i < count; i++) {
-                        if (dims == 1) {
-                            add_array_var(temporary_names[i], elem_type, lower[0], upper[0]);
-                        } else if (dims == 2) {
-                            add_array_var_2d(temporary_names[i], elem_type, lower[0], upper[0], lower[1], upper[1]);
-                        } else {
-                            add_array_var_nd(temporary_names[i], elem_type, dims, lower, upper);
-                        }
-                        sym_table[sym_count - 1].is_subrange = is_subrange;
-                        sym_table[sym_count - 1].subrange_lower = subrange_lower;
-                        sym_table[sym_count - 1].subrange_upper = subrange_upper;
-                    }
-                }
-            } else if (token.type == TOKEN_TEXT_TYPE) {
-                // A file variable - see TYPE_FILE in common.h for why
-                // this is its own branch here (the ONLY place 'text' is
-                // legal) rather than going through parse_scalar_type()
-                // like every other type does. add_var() needs nothing
-                // file-specific - TYPE_FILE is a plain scalar as far as
-                // sym_table[] itself is concerned; all the real file
-                // STATE lives in vm.c's vm_open_files[], indexed by this
-                // same symbol index.
-                match(TOKEN_TEXT_TYPE);
-                for (int i = 0; i < count; i++) {
-                    add_var(temporary_names[i], TYPE_FILE);
-                }
-            } else {
-                DataType target_type = parse_scalar_type();
-                int is_subrange = scalar_type_is_subrange;
-                int subrange_lower = scalar_type_subrange_lower;
-                int subrange_upper = scalar_type_subrange_upper;
-
-                for (int i = 0; i < count; i++) {
-                    add_var(temporary_names[i], target_type);
-                    sym_table[sym_count - 1].is_subrange = is_subrange;
-                    sym_table[sym_count - 1].subrange_lower = subrange_lower;
-                    sym_table[sym_count - 1].subrange_upper = subrange_upper;
-                }
-            }
-            match(TOKEN_SEMI);
-        }
+        parse_var_section();
     }
 
     // The main program's own label declarations (if any) must survive
@@ -5472,7 +5668,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     memcpy(main_labels, declared_labels, sizeof(DeclaredLabel) * declared_label_count);
 
     while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
-        subroutine_declaration(token.type == TOKEN_FUNCTION);
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 0);
     }
 
     for (int i = 0; i < proc_count; i++) {
@@ -5820,7 +6016,7 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
 // after the parameter list is parsed, before the body: a recursive call
 // site inside the body needs the real param_count/param_types already in
 // place, not the placeholders add_proc() set.
-static void subroutine_declaration(int is_function_decl) {
+static void subroutine_declaration(int is_function_decl, int header_only) {
     match(is_function_decl ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected a %s name", is_function_decl ? "function" : "procedure");
@@ -6111,9 +6307,16 @@ static void subroutine_declaration(int is_function_decl) {
 
     match(TOKEN_SEMI);
 
-    if (!completing_forward && token.type == TOKEN_FORWARD) {
-        match(TOKEN_FORWARD);
-        match(TOKEN_SEMI);
+    // header_only (a unit's interface section - see load_unit()) needs no
+    // literal 'forward' keyword: the interface/implementation split
+    // itself IS the forward declaration, same as real Pascal units. Takes
+    // the exact same early-return path as an explicit 'forward;' though,
+    // just without consuming a keyword that was never there.
+    if (!completing_forward && (header_only || token.type == TOKEN_FORWARD)) {
+        if (!header_only) {
+            match(TOKEN_FORWARD);
+            match(TOKEN_SEMI);
+        }
         proc_table[proc_idx].is_forward = 1;
         current_local_count = 0;
         local_record_var_count = 0;
@@ -6180,7 +6383,7 @@ static void subroutine_declaration(int is_function_decl) {
     memcpy(saved_labels, declared_labels, sizeof(DeclaredLabel) * declared_label_count);
 
     while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
-        subroutine_declaration(token.type == TOKEN_FUNCTION);
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 0);
     }
 
     memcpy(declared_labels, saved_labels, sizeof(DeclaredLabel) * saved_label_count);
