@@ -413,7 +413,12 @@ members (`class var Name: Type;`, `class procedure/function Foo(...);`,
 `class property Name: T read GetX write SetX;`) — one shared storage
 location per class hierarchy and true class methods/properties callable
 as `TMyClass.Foo`, with no instance and no implicit `self` (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#class-members)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#class-members)). Also working:
+abstract methods (`function Area: real; abstract;`) — a method with no
+body, callable through a base-typed reference and dispatched dynamically
+to whichever concrete descendant overrides it; `new()`-ing a class with
+any unresolved abstract method is a compile error (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#abstract-methods)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

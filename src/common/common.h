@@ -192,6 +192,12 @@ typedef enum {
                       // typed file only. See OP_FILE_SEEK.
     TOKEN_FILESIZE,   // the 'filesize' builtin function ('filesize(f)') -
                       // a typed file only. See OP_FILE_SIZE.
+    TOKEN_ABSTRACT,   // trailing 'abstract;' modifier after a method header
+                      // inside a 'class ... end;' body - see
+                      // ProcParamHeader.is_abstract in parser.c. Deliberately
+                      // NOT paired with a 'virtual' keyword - every instance
+                      // method in this compiler is already always virtually
+                      // dispatched, so there is no separate 'virtual' token.
     TOKEN_EOF
 } TokenType;
 

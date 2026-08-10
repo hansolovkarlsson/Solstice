@@ -543,6 +543,31 @@ typedef struct {
                                // build_vtable_init_chain()) and never
                                // overridable (see the method-loop's own
                                // override-eligibility check).
+    int is_abstract;          // unused by a functional/procedural
+                               // parameter, and never 1 alongside
+                               // is_class_method (rejected at parse time -
+                               // a class method is never overridden, so it
+                               // could never get an implementation); 1 if
+                               // declared with a trailing 'abstract;' after
+                               // the header (see the method-loop's own
+                               // parsing of it). An abstract method gets a
+                               // PHANTOM proc_table[] entry instead of a
+                               // real body - see
+                               // register_abstract_method_signature() -
+                               // so find_proc(mangled_name) succeeds for
+                               // it exactly like a real method, letting a
+                               // call through a base-typed reference
+                               // compile and dispatch dynamically to
+                               // whichever concrete descendant actually
+                               // overrides it. Propagates through
+                               // inheritance by ordinary struct-copy
+                               // (parse_class_declaration()'s copy loop)
+                               // until some class's own override replaces
+                               // the whole header with one that has
+                               // is_abstract = 0 (or re-declares abstract
+                               // again, deferring further). See
+                               // class_first_unresolved_abstract_method()
+                               // for how this blocks 'new()'.
 } ProcParamHeader;
 
 #define MAX_CLASS_PROPERTIES 16 // no vm.c coupling needed (unlike
@@ -2675,6 +2700,7 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
 static void parse_class_declaration(const char *class_name, int line);
 static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line);
+static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_idx);
 
 // Parses 'idx1, idx2, ..., idxN]' (already past the opening '[') for an
 // N-dimensional (N=dims, always 3 or more - 1D/2D have their own
@@ -3676,6 +3702,28 @@ typedef struct {
                         // method call's method_idx/NODE_VIRTUAL_CALL).
 } HeapDerefStep;
 
+// Whether class_ptr_idx is safe to new() - i.e. whether it (including
+// every method inherited from an ancestor) has any method still marked
+// abstract. Deliberately checks the is_abstract FLAG directly, NOT
+// find_proc(mangled_name) == -1 - register_abstract_method_signature()
+// gives every abstract method a phantom proc_table[] entry, so
+// find_proc() ALWAYS succeeds for one; is_abstract is the only signal
+// left that still means "no real implementation exists". Works
+// correctly across multi-level inheritance for free: an unoverridden
+// abstract method's is_abstract=1 flows through the ordinary struct-
+// copy inheritance mechanism (parse_class_declaration()'s copy loop)
+// completely unchanged; a concrete override replaces the WHOLE header
+// in place, defaulting is_abstract back to 0 unless the override is
+// itself also declared abstract (allowed - deferring further down the
+// hierarchy).
+static const char *class_first_unresolved_abstract_method(int class_ptr_idx) {
+    PointerTypeDef *pt = &pointer_types[class_ptr_idx];
+    for (int i = 0; i < pt->method_count; i++) {
+        if (pt->methods[i].is_abstract) return pt->methods[i].name;
+    }
+    return NULL;
+}
+
 // Whether 'name' is a field or method of class_ptr_idx - the check that
 // decides whether a bare identifier inside a method body should be
 // treated as implicit 'self.name' shorthand (see
@@ -4565,6 +4613,19 @@ static ASTNode *parse_inherited_call(int is_statement_context) {
     ProcParamHeader *h = &parent->methods[method_idx];
     if (h->is_class_method) {
         compile_error(line, "'inherited' can only reach an instance method - '%s' is a class method; call '%s.%s' directly instead", method_name, parent->name, method_name);
+    }
+    if (h->is_abstract) {
+        // MUST be checked explicitly, before find_proc() below -
+        // register_abstract_method_signature() gave this method a
+        // phantom proc_table[] entry, so find_proc() would otherwise
+        // succeed here too, letting 'inherited AbstractMethod' compile
+        // into a real, STATICALLY resolved NODE_INHERITED_CALL
+        // (unlike an ordinary method call's NODE_VIRTUAL_CALL, this is
+        // a direct OP_CALL backpatched straight to the phantom's own
+        // entry_address - see codegen.c) that would actually run the
+        // near-empty stub at runtime and return garbage for a
+        // function, instead of being caught here at compile time.
+        compile_error(line, "'%s.%s' is abstract and has no implementation to call via 'inherited'", parent->name, method_name);
     }
     int mangled_idx = find_proc(h->mangled_name);
     if (mangled_idx == -1) {
@@ -6288,6 +6349,20 @@ static void parse_class_declaration(const char *class_name, int line) {
         ProcParamHeader h = parse_proc_param_header();
         h.is_class_method = is_class_method_decl;
         match(TOKEN_SEMI);
+        h.is_abstract = 0;
+        if (token.type == TOKEN_ABSTRACT) {
+            // No separate 'virtual' keyword exists in this compiler -
+            // every instance method is already always virtually
+            // dispatched (see docs/LANGUAGE.md#classes) - so 'abstract'
+            // alone is the complete modifier, unlike Delphi's 'virtual;
+            // abstract;' pair.
+            if (h.is_class_method) {
+                compile_error(token.line, "'%s' can't be abstract - a class method is never overridden, so it would never have an implementation", h.name);
+            }
+            match(TOKEN_ABSTRACT);
+            match(TOKEN_SEMI);
+            h.is_abstract = 1;
+        }
         if (find_record_field(rt_idx, h.name) != -1) {
             compile_error(method_line, "'%s' is already a field of class '%s'", h.name, class_name);
         }
@@ -6326,6 +6401,9 @@ static void parse_class_declaration(const char *class_name, int line) {
             already_overridden[existing_idx] = 1;
         } else {
             compile_error(method_line, "Duplicate method '%s' in class '%s'", h.name, class_name);
+        }
+        if (h.is_abstract) {
+            register_abstract_method_signature(&h, pointer_type_count);
         }
     }
 
@@ -7211,6 +7289,20 @@ static void load_unit(const char *name, int use_line) {
 // header simply gets no vtable slot populated here: its vm_vtables[]
 // entry stays at run_vm()'s -1 reset value, never consulted, because no
 // program that compiles can ever reach an OP_LOAD_VTABLE_SLOT for it.
+//
+// An ABSTRACT method (ProcParamHeader.is_abstract) is a DIFFERENT case
+// that looks similar but isn't: register_abstract_method_signature()
+// gives it a phantom proc_table[] entry (no real body, but a real,
+// resolvable mangled_name), so find_proc() below DOES succeed for it,
+// and a vtable slot IS populated here - pointing at the phantom's tiny
+// dead OP_RET stub. That slot is still never reached, but for a
+// different reason than the lazy-gap case above: the declaring class
+// can never be new()'d while any of its methods stays is_abstract (see
+// class_first_unresolved_abstract_method()), and any variable whose
+// STATIC type is that class must, if non-nil, hold a RUNTIME tag
+// belonging to some concrete descendant - dispatch always resolves via
+// the runtime tag's own vtable row, never the abstract-declaring
+// class's own row.
 static ASTNode *build_vtable_init_chain(void) {
     ASTNode *head = NULL;
     ASTNode *tail = NULL;
@@ -7546,6 +7638,98 @@ static void register_class_method_param(int proc_idx, int slot, const char *name
     proc_table[proc_idx].param_proc_param_count[slot] = 0;
 }
 
+// Registers a PHANTOM proc_table[] entry for an abstract method - just
+// enough of the call-site-visible signature (param types/count/var-ness,
+// is_function, return_type, unmangled_name) for parse_class_method_call_
+// arguments()/the ~8 existing 'doesn't have a body yet' sites to treat it
+// exactly like any other resolvable method, without ever giving it a
+// real body. Deliberately does NOT call register_class_method_param()
+// (which calls add_local()/add_local_var_param(), mutating the AMBIENT
+// current_locals[]/current_local_count meant for whichever procedure
+// body is CURRENTLY being parsed) - this runs at class-HEADER-parse
+// time, not inside any body-parse, so touching that ambient state would
+// corrupt an unrelated context. proc_table[proc_idx].body is left NULL
+// forever (add_proc()'s own default) - generate_code(NULL) is already a
+// confirmed no-op, so this compiles to a tiny dead OP_RET stub, never
+// reached (see class_first_unresolved_abstract_method() for why: the
+// declaring class can never be new()'d while this entry's is_abstract
+// stays 1, and dispatch always resolves via the RUNTIME tag's own
+// vtable row, never this declaring class's). is_forward is also left at
+// its default 0 - never set to 1 - so the end-of-compile "forward-
+// declared but never defined" sweep correctly, silently ignores it
+// forever.
+static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_idx) {
+    int proc_idx = add_proc(h->mangled_name);
+    strcpy(proc_table[proc_idx].unmangled_name, h->name);
+    proc_table[proc_idx].is_function = h->is_function;
+    proc_table[proc_idx].return_type = h->return_type;
+    proc_table[proc_idx].return_is_subrange = 0;
+    proc_table[proc_idx].return_subrange_lower = 0;
+    proc_table[proc_idx].return_subrange_upper = 0;
+    // Defensive zeroing, not "never consulted": generate_program()
+    // (codegen.c) unconditionally emits a code block for EVERY
+    // proc_table[] entry, phantom or real - a NULL body makes that
+    // block a bare OP_RET (generate_block(NULL) is a no-op), but
+    // param_slot_count/local_count/return_slot still feed that dead
+    // block's own OP_ENTER/param-store emission, and proc_table[] is a
+    // fixed global array where only proc_count resets between compiles
+    // in a long-lived host process (see test_recovery) - a stale value
+    // from an EARLIER compile's higher-indexed entry could otherwise
+    // leak into this freshly-claimed slot.
+    proc_table[proc_idx].param_slot_count = 0;
+    proc_table[proc_idx].local_count = 0;
+    proc_table[proc_idx].return_slot = 0;
+    // Self at slot 0 - mirrors register_class_method_param()'s own real
+    // registration for defensiveness, though nothing currently reads
+    // it (self is passed as NODE_VIRTUAL_CALL's own ->left, never
+    // validated against param_types[0]; NODE_VIRTUAL_CALL has no
+    // type_checker.c case at all).
+    proc_table[proc_idx].param_types[0] = (DataType)(TYPE_POINTER_BASE + class_ptr_idx);
+    strcpy(proc_table[proc_idx].param_names[0], "self");
+    proc_table[proc_idx].param_is_var[0] = 0;
+    proc_table[proc_idx].param_is_array_ref[0] = 0;
+    proc_table[proc_idx].param_is_2d[0] = 0;
+    proc_table[proc_idx].param_is_nd[0] = 0;
+    proc_table[proc_idx].param_is_subrange[0] = 0;
+    proc_table[proc_idx].param_subrange_lower[0] = 0;
+    proc_table[proc_idx].param_subrange_upper[0] = 0;
+    proc_table[proc_idx].param_is_record[0] = 0;
+    proc_table[proc_idx].param_record_type_idx[0] = 0;
+    proc_table[proc_idx].param_record_field_count[0] = 0;
+    proc_table[proc_idx].param_is_proc[0] = 0;
+    proc_table[proc_idx].param_proc_is_function[0] = 0;
+    proc_table[proc_idx].param_proc_return_type[0] = TYPE_UNKNOWN;
+    proc_table[proc_idx].param_proc_param_count[0] = 0;
+    // h->param_count is capped at MAX_PARAMS by parse_proc_signature_
+    // tail() with no headroom reserved for self - a method declared
+    // with exactly MAX_PARAMS params already overflows
+    // param_types[MAX_PARAMS] by one slot in register_class_method_
+    // param()'s own real-body path too (no bounds check there either) -
+    // a pre-existing gap affecting any instance method, abstract or
+    // not, NOT introduced or fixed here.
+    proc_table[proc_idx].param_count = h->param_count + 1;
+    for (int i = 0; i < h->param_count; i++) {
+        int slot = i + 1;
+        proc_table[proc_idx].param_types[slot] = h->param_types[i];
+        strcpy(proc_table[proc_idx].param_names[slot], h->param_names[i]);
+        proc_table[proc_idx].param_is_var[slot] = h->param_is_var[i];
+        proc_table[proc_idx].param_is_subrange[slot] = 0;
+        proc_table[proc_idx].param_subrange_lower[slot] = 0;
+        proc_table[proc_idx].param_subrange_upper[slot] = 0;
+        proc_table[proc_idx].param_is_array_ref[slot] = 0;
+        proc_table[proc_idx].param_is_2d[slot] = 0;
+        proc_table[proc_idx].param_is_nd[slot] = 0;
+        proc_table[proc_idx].param_is_record[slot] = 0;
+        proc_table[proc_idx].param_record_type_idx[slot] = 0;
+        proc_table[proc_idx].param_record_field_count[slot] = 0;
+        proc_table[proc_idx].param_is_proc[slot] = 0;
+        proc_table[proc_idx].param_proc_is_function[slot] = 0;
+        proc_table[proc_idx].param_proc_return_type[slot] = TYPE_UNKNOWN;
+        proc_table[proc_idx].param_proc_param_count[slot] = 0;
+    }
+    return proc_idx;
+}
+
 // 'procedure ClassName.MethodName; begin ... end;' / 'function
 // ClassName.MethodName; begin ... end;' - a class method's BODY.
 // Already past 'procedure'/'function ClassName.', with token positioned
@@ -7589,6 +7773,18 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
         compile_error(decl_line, "'%s' is not a declared method of class '%s'", method_name, class_name);
     }
     ProcParamHeader *h = &cls->methods[method_idx];
+    if (h->is_abstract) {
+        // Must run before the find_proc(h->mangled_name) != -1 check
+        // below - register_abstract_method_signature() already gave
+        // this method a phantom entry, so that check would otherwise
+        // fire with the misleading generic "already has a body"
+        // message instead of this specific one. A subclass overriding
+        // concretely has its OWN h->is_abstract == 0 after the
+        // override-replace (see parse_class_declaration()'s method
+        // loop), so this only blocks a body in the SAME class that
+        // declared the method abstract, never a legitimate override.
+        compile_error(decl_line, "'%s.%s' is abstract and can't have a body - remove 'abstract' or implement it in a subclass instead", class_name, method_name);
+    }
     if (h->is_inherited) {
         compile_error(decl_line, "'%s' is inherited by '%s' and hasn't been overridden - redeclare its header inside 'class %s(...) ... end;' first (see docs/LANGUAGE.md#classes)",
                        method_name, class_name, class_name);
@@ -9238,6 +9434,10 @@ static ASTNode *parse_new_statement(void) {
     }
     write_node->left = value_node;
     if (pointer_types[target_type - TYPE_POINTER_BASE].is_class) {
+        const char *unresolved_abstract = class_first_unresolved_abstract_method(target_type - TYPE_POINTER_BASE);
+        if (unresolved_abstract != NULL) {
+            compile_error(line, "Cannot instantiate '%s' - abstract method '%s' has no implementation", pointer_types[target_type - TYPE_POINTER_BASE].name, unresolved_abstract);
+        }
         // A fresh read of the SAME target, to get the just-allocated
         // offset back for tagging - see build_class_tag_write()'s own
         // comment. Mirrors the '^'-chain branch's own base-building

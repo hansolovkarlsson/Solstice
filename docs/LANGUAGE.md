@@ -2805,6 +2805,101 @@ end.
 - **`protected`-level visibility**, same gap as ordinary
   fields/methods/properties.
 
+### Abstract methods
+
+```pascal
+type
+    TShape = class
+    public
+        function Area: real; abstract;
+        function Describe: string;
+    end;
+    TCircle = class(TShape)
+    private
+        FRadius: real;
+    public
+        function Area: real;
+        procedure SetRadius(r: real);
+    end;
+var
+    c: TCircle;
+    shape: TShape;
+
+function TShape.Describe;
+begin
+    Describe := 'a shape';
+end;
+
+function TCircle.Area;
+begin
+    Area := 3.14159 * FRadius * FRadius;
+end;
+
+procedure TCircle.SetRadius;
+begin
+    FRadius := r;
+end;
+
+begin
+    new(c);
+    c.SetRadius(2.0);
+    shape := c;
+    writeln(shape.Describe, ', area = ', shape.Area:0:2);  { a shape, area = 12.57 }
+end.
+```
+
+- `function/procedure Name(...); abstract;` — a trailing `abstract;`
+  modifier after a method header declares it with NO body, ever.
+  **Deliberately just `abstract;`, not Delphi's `virtual; abstract;`** —
+  every instance method in this compiler is already always virtually
+  dispatched (no `virtual`/`override` keyword exists at all — see
+  [Classes](#classes) above), so a separate `virtual` would be pure
+  noise.
+- Calling an abstract method through a reference whose *static* type is
+  the abstract-declaring class — exactly `shape.Area` above, where
+  `shape`'s declared type is `TShape` — is allowed and dispatches
+  dynamically, exactly like calling any other virtual method: at
+  runtime it always resolves to whichever concrete class the variable
+  actually holds (`TCircle`, in the example), never to `TShape` itself.
+  This is the entire point of the feature — without it, a base class
+  with no real implementation of `Area` couldn't be called through a
+  base-typed reference at all.
+- **A class with any unresolved abstract method (including one merely
+  inherited, never overridden) can't be instantiated** — `new()` on it
+  is a compile error naming the specific abstract method blocking it.
+  This propagates through inheritance automatically: a subclass that
+  doesn't override an inherited abstract method is *itself* still
+  blocked from instantiation, and so on down the hierarchy until some
+  class actually provides a concrete implementation.
+- **A TRUE class method (`class procedure`/`class function`) can never
+  be `abstract`** — rejected at declaration. Class methods are never
+  overridable at all (no vtable slot, ever), so an abstract one could
+  never get an implementation anywhere.
+- **An abstract method can't have a body given in the SAME class that
+  declared it abstract** — `function TShape.Area; begin ... end;` right
+  after declaring `Area` abstract in `TShape` itself is a compile
+  error. A subclass overriding it concretely (`function TCircle.Area;
+  begin ... end;`, as above) is unaffected — that's the normal,
+  expected way to resolve an abstract method.
+- **`inherited AbstractMethod(...)` is rejected** — there's no
+  ancestor implementation for `inherited` to reach, by definition.
+- A class may freely mix abstract and ordinary concrete methods —
+  only the still-abstract ones block instantiation; concrete methods
+  (including ones that call an abstract method internally, expecting a
+  subclass to have provided it by the time any instance actually
+  exists) work completely normally.
+- A subclass may re-declare an inherited abstract method as `abstract`
+  again (still deferring, still no body) — useful in a multi-level
+  hierarchy where an intermediate class isn't meant to be concrete
+  either.
+
+**Not implemented yet:**
+
+- **No `class abstract`/type-level keyword** — a class's "abstract-ness"
+  is entirely emergent from having at least one unresolved abstract
+  method (matching real Delphi, which has no such keyword either), not
+  a separate declaration.
+
 ### `is`/`as`
 
 ```pascal

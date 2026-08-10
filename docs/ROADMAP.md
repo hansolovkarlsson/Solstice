@@ -1942,6 +1942,82 @@ anyway, so this is where they land instead.
       most likely to silently regress if a class var were accidentally
       copied instead of shared - and 14 error cases covering every
       rejection path) and [docs/LANGUAGE.md](LANGUAGE.md#class-members).
+- [x] Abstract methods/classes — a trailing `abstract;` modifier after a
+      method header (`function Area: real; abstract;`), giving it NO
+      body, ever, plus a compile-time block on `new()`-ing any class
+      with an unresolved abstract method (including one merely
+      inherited, never overridden - propagates through the hierarchy
+      automatically). Closes the actual known v1 gap this bullet used
+      to describe: today you can declare a method with no body as long
+      as nothing calls it, but calling it through a BASE-typed reference
+      (the entire point of a genuine abstract-base-class pattern)
+      required the base class to have some (meaningless, dummy)
+      implementation anyway, since the existing "doesn't have a body
+      yet" call-site check is keyed off the STATIC type. **Deliberately
+      just `abstract;`, not Delphi's `virtual; abstract;`** - this
+      compiler has no `virtual`/`override` keyword at all (every
+      instance method is already always virtually dispatched), so a
+      second, redundant keyword would be pure noise.
+
+      **The key design insight**: rather than relaxing the ~8 existing
+      "doesn't have a body yet" call-site checks for `is_abstract`
+      (which would also break argument-count/type validation, since
+      those need a real `proc_table[]` signature to check against),
+      register a PHANTOM, permanently bodyless `proc_table[]` entry for
+      an abstract method's mangled name at the moment its header is
+      parsed (NOT `forward` - a real forward declaration is later
+      *required* to be completed; a phantom abstract entry never is and
+      never should be). This makes `find_proc()` succeed universally for
+      an abstract method, so all ~8 call sites, and
+      `build_vtable_init_chain()`, work completely unmodified - a call
+      through a base-typed reference compiles exactly like a call to a
+      concrete method, dispatching correctly via the stable vtable slot
+      index at runtime. `generate_code(NULL)` (already a confirmed
+      no-op) means the phantom compiles to a tiny dead `OP_RET` stub,
+      provably unreachable (the declaring class can never be
+      instantiated while any method stays abstract, and dispatch always
+      resolves via the RUNTIME tag's own vtable row) - **zero
+      `codegen.c` changes**, zero new `NodeType`s, zero new `Opcode`s.
+      "Is this class safe to instantiate" checks the `is_abstract` FLAG
+      directly, not `find_proc()` (the phantom makes that always
+      succeed) - propagates through inheritance for free via the
+      existing, unmodified struct-copy mechanism.
+
+      **One required exception, caught during design validation, not
+      left as a silent bug**: `parse_inherited_call()` builds a
+      STATICALLY resolved `NODE_INHERITED_CALL` (unlike the other sites'
+      dynamically-dispatched `NODE_VIRTUAL_CALL`), backpatched straight
+      to the phantom's own `entry_address` - without an explicit
+      `is_abstract` guard there, `inherited AbstractMethod(...)` would
+      have silently compiled and, at runtime, actually executed the
+      near-empty stub, returning garbage for a function. Fixed with its
+      own explicit rejection, verified via a dedicated test.
+
+      **A pre-existing, unrelated bug found and flagged, not fixed**:
+      an instance method header's own parameter count is capped at
+      `MAX_PARAMS` with no headroom reserved for the implicit `self`
+      slot every instance method gets - a method declared with exactly
+      `MAX_PARAMS` params already overflows `proc_table[].param_types[]`
+      by one slot today, for ANY real method body, independent of this
+      feature. The phantom-registration helper mirrors this exact
+      existing pattern and reproduces the identical overflow at the
+      identical boundary - flagged in a code comment at the phantom
+      helper, deliberately not fixed here (out of scope: affects
+      ordinary methods too, not introduced by this feature).
+
+      Scope cuts for v1 (see
+      [docs/LANGUAGE.md](LANGUAGE.md#abstract-methods)'s "Not
+      implemented yet"): no `class abstract`/type-level keyword -
+      abstractness is fully emergent from having ≥1 unresolved abstract
+      method, matching real Delphi (which has no such keyword either);
+      a TRUE class method can never be abstract (rejected at
+      declaration - class methods are never overridable, so it could
+      never get an implementation). See
+      `examples/test/abstract/test_abstract_*.pas` (4 positive cases
+      including the flagship base-typed-reference dispatch scenario and
+      a 3-level-deep multi-abstract hierarchy, and 6 error cases
+      covering every rejection path) and
+      [docs/LANGUAGE.md](LANGUAGE.md#abstract-methods).
 
 ### Object-oriented language features under consideration (Delphi-inspired)
 
@@ -1953,9 +2029,6 @@ tag, the vtable) rather than by Delphi-completeness — these are
 unscoped ideas, not committed work, and none has a design/plan yet.
 
 **Good fit — reuse existing machinery:**
-- [ ] Abstract methods/classes (`virtual; abstract;`) — formalizes the
-      already-known v1 gap ("no check yet that every declared method
-      gets a body") into an intentional, checked feature.
 - [ ] Sealed classes (`class sealed`) — a single flag check at class
       declaration time.
 
