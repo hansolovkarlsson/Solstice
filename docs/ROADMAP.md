@@ -1190,6 +1190,69 @@ primitives instead of each reinventing them.
       rather than assumed). `ast_printer.c` needed a case (no `default:`
       there). See `examples/test/class/test_class_inherited_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#inherited).
+- [x] Class-level `private`/`public` — `private`/`public` sections
+      inside a `class ... end;` body, restricting a field or method to
+      the DECLARING class's own methods - strict semantics, not
+      "protected" (no `protected` level exists), matching what was
+      actually asked for. A completely different, orthogonal mechanism
+      from unit-level visibility (interface vs. implementation
+      section, shipped earlier) - that one is file/unit-scoped, this
+      one is per-class. No new AST nodes or opcodes - purely a parse-
+      time access-control check on already-existing field/method
+      resolution.
+
+      Two new fields, `is_private`/`declaring_class_ptr_idx`, added to
+      both `RecordField` (shared with plain records - always `0`/`-1`
+      there, records have no visibility concept) and `ProcParamHeader`
+      (shared with procedural parameters/types - same convention).
+      `declaring_class_ptr_idx` tracks the ORIGINAL declaring class
+      specifically because fields/methods are copied BY VALUE into
+      every descendant's own tables (this compiler's established
+      "flatten inheritance at declaration time" design) - without it, a
+      descendant's own copy of an inherited private field couldn't be
+      told apart from one it declared itself, which is exactly what
+      strict (non-inherited) privacy needs to check. Survives an
+      inheritance copy or override for free, since it's a plain struct-
+      copy field alongside `mangled_name`/`is_inherited`, which already
+      did.
+
+      `private`/`public` are section markers, parsed as keywords
+      recognized at the top of both of `parse_class_declaration()`'s
+      two loops (fields, then methods - this compiler's class grammar
+      doesn't interleave the two, unlike real Pascal), sharing ONE
+      visibility state across both loops. Enforcement is
+      `is_private && current_class_ptr_idx != declaring_class_ptr_idx`
+      (`current_class_ptr_idx`, already tracking which class's method
+      body is CURRENTLY being parsed, is the same signal self-shorthand
+      already uses for "am I inside this class right now") - checked at
+      three independent sites: `resolve_heap_deref_step()`'s field-
+      access branch (covers every read AND write, explicit and self-
+      shorthand alike, since both already share this one function),
+      its method-call branch, and separately inside
+      `parse_new_statement()`'s constructor-call resolution (`new(c,
+      Init(args))` has its own, completely separate method lookup, not
+      routed through `resolve_heap_deref_step()` at all - a private
+      constructor needed its own identical check or it would have
+      stayed callable from anywhere). Correctly allows a `TFoo` method
+      to access *another* `TFoo` instance's private members directly
+      (privacy is per-class, not per-instance, matching real Pascal)
+      since the check is keyed on which class's code is executing, not
+      on whether the instance expression is literally `self` - verified
+      with a dedicated cross-instance test.
+
+      Testing surfaced two real, pre-existing, unrelated limitations
+      (confirmed identical on the pre-feature build) that shaped the
+      test suite: a class method can't take a parameter or return value
+      of its OWN class's type (the class isn't registered in
+      `pointer_types[]` yet while its own method HEADERS are being
+      parsed) - worked around in tests via global variables and local
+      variables inside method BODIES instead, both parsed after the
+      class is fully registered; and a specific forward-declared-
+      function-returning-a-class pattern doesn't complete correctly
+      either. Neither is in scope for this feature - logged here as
+      newly-confirmed, not newly-introduced. See
+      `examples/test/class/test_class_visibility_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#privatepublic).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real

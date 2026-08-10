@@ -2428,6 +2428,68 @@ end;
   yet`) — not a new limitation, the same one ordinary method calls
   already have.
 
+### `private`/`public`
+
+```pascal
+type
+    TCounter = class
+    private
+        count: integer;
+        procedure Bump;
+    public
+        procedure Inc3;
+        function Value: integer;
+    end;
+
+procedure TCounter.Bump;
+begin
+    count := count + 1;
+end;
+
+procedure TCounter.Inc3;
+begin
+    Bump; Bump; Bump;        { fine - self-shorthand, same class }
+end;
+
+function TCounter.Value;
+begin
+    Value := count;
+end;
+
+var c: TCounter;
+begin
+    new(c);
+    c.Inc3;
+    writeln(c.Value);        { 3 }
+    c.count := 0;            { Compile Error: 'count' is a private
+                                field of class 'TCounter' and can't be
+                                accessed here }
+end.
+```
+
+- `private`/`public` are section markers inside a `class ... end;`
+  body — every field/method declared until the next marker (or the
+  class's own `end`) takes on that visibility. Default (no marker at
+  all) is `public`, so an existing class using neither keyword is
+  completely unaffected.
+- **Strict, not "protected"**: `private` means only the *declaring*
+  class's own methods can access it — not even a subclass's methods
+  can. There's no `protected` level.
+- **Per-class, not per-instance**: any method of `TFoo` can read/write
+  *any* `TFoo` instance's private members, not just `self`'s own
+  (`if self.x = other.x then ...` is fine from inside a `TFoo` method).
+- A constructor (`new(c, Init(args))`) isn't a special case — a private
+  `Init` follows the same rule as any other private method.
+- **Section ordering**: this compiler's class grammar parses all
+  fields first, then all methods (not Pascal's free interleaving of
+  the two) — `private`/`public` sections work within each of those two
+  groups (all field-visibility sections, then all method-visibility
+  sections), not interleaved field/method-by-field/method the way real
+  Pascal allows.
+- Overriding an inherited *private* method is still permitted
+  syntactically — this only checks access (reading/writing a field,
+  calling a method), not override eligibility.
+
 **Not implemented yet:**
 
 - **Chaining off a method call's result** (`c.GetOther().field`) — a
@@ -2443,14 +2505,9 @@ end;
 - **`new()` into a class-typed field reached through an explicit `^`**
   (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
   into a plain class variable first, then assign it into the field.
-- **Multiple inheritance, and class-level visibility (`private`/`public`
-  fields/methods within a `class ... end;`)** — neither exists even as
-  a plan yet beyond the scoping note. A *different*, already-
-  implemented mechanism — unit-level visibility (a unit's `interface`
-  vs. `implementation` section) — now enforces visibility for
-  procedures/functions and global variables, but says nothing about
-  fields/methods within a single class declaration (see
-  [Units](#units)).
+- **Multiple inheritance** — doesn't exist even as a plan yet beyond
+  the scoping note. `protected`/`strict private` visibility levels
+  also don't exist — only `private`/`public` (see above).
 
 ## Procedures
 
@@ -3158,8 +3215,10 @@ end.
   this doesn't give private symbols their own per-unit namespace — two
   units each privately declaring a same-named proc/var still collide as
   a duplicate declaration, exactly as before (there's no real per-unit
-  name mangling, just a visibility check at reference sites) — same gap
-  as classes' `private`/`public`, still unimplemented on its own.
+  name mangling, just a visibility check at reference sites) — a
+  completely separate mechanism from class-level `private`/`public`
+  (see [Classes](#classes)), which is unrelated and now also
+  implemented.
 - Not separate compilation: `uses Foo;` re-parses `Foo.pas` and merges
   its declarations into the same global tables the main program's own
   declarations use, every time it's named. There's no compiled unit

@@ -265,6 +265,24 @@ typedef struct {
                            // parse_type_section()), so a nested field's
                            // own leaves are always scalar.
     int record_type_idx;  // record_types[] index; only meaningful if is_record
+    int is_private;       // only meaningful for a CLASS field (always 0 for
+                           // a plain record field - records have no
+                           // visibility concept) - 1 if declared in a
+                           // 'private' section; see resolve_heap_deref_step()'s
+                           // enforcement. Survives an inheritance copy
+                           // unchanged (a plain struct-copy field, same as
+                           // declaring_class_ptr_idx below), since a
+                           // descendant class doesn't re-declare an
+                           // inherited field.
+    int declaring_class_ptr_idx; // only meaningful for a CLASS field (-1
+                           // for a plain record field) - the pointer_types[]
+                           // index of whichever class's OWN 'class ... end;'
+                           // first declared this field, needed because
+                           // inheritance flattens a copy of every ancestor
+                           // field into a descendant's own rt->fields[] -
+                           // without this, a descendant's own copy of an
+                           // inherited PRIVATE field couldn't be told apart
+                           // from one it declared itself.
 } RecordField;
 
 typedef struct {
@@ -436,6 +454,16 @@ typedef struct {
                                // parse_class_method_body() rejects
                                // giving a body to a purely-inherited
                                // entry (redeclare it to override first).
+    int is_private;            // unused by a functional/procedural
+                               // parameter; for a class method, 1 if
+                               // declared in a 'private' section - see
+                               // RecordField.is_private's own comment
+                               // (same convention, same reasoning).
+    int declaring_class_ptr_idx; // unused by a functional/procedural
+                               // parameter; for a class method, the
+                               // pointer_types[] index of whichever class
+                               // ORIGINALLY declared it - see
+                               // RecordField.declaring_class_ptr_idx.
 } ProcParamHeader;
 
 #define MAX_POINTER_DECLS MAX_POINTER_TYPES
@@ -2414,7 +2442,7 @@ static ASTNode *compound_statement(void);
 static ASTNode *parse_call_arguments(int proc_idx);
 static void subroutine_declaration(int is_function_decl, int header_only);
 static ASTNode *parse_case_label_value(void);
-static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx);
+static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int declaring_class_ptr_idx);
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
 static void parse_class_declaration(const char *class_name, int line);
 static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line);
@@ -3538,6 +3566,15 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             }
             match(TOKEN_IDENTIFIER);
             ProcParamHeader *h = &pt->methods[method_idx];
+            if (h->is_private && current_class_ptr_idx != h->declaring_class_ptr_idx) {
+                // Strict private (not "protected"): only the DECLARING
+                // class's own methods can call this, not even a
+                // subclass's - current_class_ptr_idx is which class's
+                // method body is CURRENTLY being parsed (-1 outside any
+                // method), matching self-shorthand's own use of it for
+                // the same "am I inside this class right now" question.
+                compile_error(name_line, "'%s' is a private method of class '%s' and can't be called here", name, pointer_types[h->declaring_class_ptr_idx].name);
+            }
             // h->mangled_name - NOT "pt->name__name" - is what actually
             // implements this call STATICALLY, for a class matching
             // base's own declared type exactly - but base's RUNTIME
@@ -3578,9 +3615,17 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             // parse_class_declaration()'s comment on that mangling.
             compile_error(token.line, "'%s' is not a field of '%s'", token.text, pt->is_class ? pt->name : record_types[pt->target_record_type_idx].name);
         }
+        int field_line = token.line;
         match(TOKEN_IDENTIFIER);
         RecordTypeDef *target_rt = &record_types[pt->target_record_type_idx];
         RecordField *f = &target_rt->fields[field_idx];
+        if (f->is_private && current_class_ptr_idx != f->declaring_class_ptr_idx) {
+            // Same strict-private reasoning as the method-call check
+            // above - covers every field read AND write, explicit
+            // ('c.field') and self-shorthand alike, since both already
+            // route through this one shared function.
+            compile_error(field_line, "'%s' is a private field of class '%s' and can't be accessed here", f->name, pointer_types[f->declaring_class_ptr_idx].name);
+        }
         // For a class: heap offset 0 is the hidden runtime type tag (see
         // parse_class_declaration()'s target_elem_size comment and
         // new()'s tag-write), and a field past the first may itself
@@ -4976,7 +5021,7 @@ static void parse_const_section(void) {
 // callers handle their own trailing separator, since the two contexts
 // use different separator rules (a fixed field always needs a trailing
 // ';', a variant's last field group before ')' doesn't).
-static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx) {
+static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int declaring_class_ptr_idx) {
     #define MAX_FIELD_NAMES_PER_LINE 10
     char field_names[MAX_FIELD_NAMES_PER_LINE][MAX_NAME];
     int fcount = 0;
@@ -5048,6 +5093,8 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx) {
         f->is_subrange = is_nested_record ? 0 : scalar_type_is_subrange;
         f->subrange_lower = is_nested_record ? 0 : scalar_type_subrange_lower;
         f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
+        f->is_private = is_private;
+        f->declaring_class_ptr_idx = declaring_class_ptr_idx;
         rt->field_count++;
     }
 }
@@ -5130,7 +5177,7 @@ static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx) {
         match(TOKEN_COLON);
         match(TOKEN_LPAREN);
         while (token.type == TOKEN_IDENTIFIER) {
-            parse_record_field_group(rt, record_type_idx);
+            parse_record_field_group(rt, record_type_idx, 0, -1); // plain record - no visibility concept
             if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
             break;
         }
@@ -5266,7 +5313,22 @@ static void parse_class_declaration(const char *class_name, int line) {
         }
     }
 
-    while (token.type == TOKEN_IDENTIFIER) {
+    // Tracks the currently-active 'private'/'public' section - persists
+    // across BOTH this field loop and the method loop below (one shared
+    // state, not reset in between), since this compiler's class grammar
+    // parses all fields first, then all methods, unlike real Pascal's
+    // free interleaving of the two - so writing a 'private'/'public'
+    // section among the methods too works, just not interleaved with
+    // fields within one section. Defaults to public, so an existing
+    // class using neither keyword is completely unaffected.
+    // pointer_type_count itself (not yet incremented - see 'pt' below)
+    // is already this class's own future pointer_types[] index by
+    // construction, needed as declaring_class_ptr_idx for every
+    // field/method this class declares itself (as opposed to inherits).
+    int current_is_private = 0;
+    while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
         // Array-typed and nested-record fields are both accepted here -
         // parse_record_field_group() already enforces every restriction
         // that still applies (a nested field's own type must be array-
@@ -5275,7 +5337,7 @@ static void parse_class_declaration(const char *class_name, int line) {
         // MAX_RECORD_FIELDS + 1 overflow guard below (this function's own
         // target_elem_size check) catches an oversized combination of
         // either kind at compile time.
-        parse_record_field_group(rt, rt_idx);
+        parse_record_field_group(rt, rt_idx, current_is_private, pointer_type_count);
         match(TOKEN_SEMI);
     }
     record_type_count++;
@@ -5313,7 +5375,9 @@ static void parse_class_declaration(const char *class_name, int line) {
     // it past inherited_method_count).
     int already_overridden[MAX_CLASS_METHODS] = {0};
 
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
         int method_line = token.line;
         ProcParamHeader h = parse_proc_param_header();
         match(TOKEN_SEMI);
@@ -5322,6 +5386,8 @@ static void parse_class_declaration(const char *class_name, int line) {
         }
         snprintf(h.mangled_name, MAX_NAME, "%s__%s", class_name, h.name);
         h.is_inherited = 0;
+        h.is_private = current_is_private;
+        h.declaring_class_ptr_idx = pointer_type_count;
 
         int existing_idx = -1;
         for (int i = 0; i < pt->method_count; i++) {
@@ -5604,7 +5670,7 @@ static void parse_type_section(void) {
         rt->field_count = 0;
 
         while (token.type == TOKEN_IDENTIFIER) {
-            parse_record_field_group(rt, record_type_count);
+            parse_record_field_group(rt, record_type_count, 0, -1); // plain record - no visibility concept
             match(TOKEN_SEMI);
         }
         if (token.type == TOKEN_CASE) {
@@ -7644,6 +7710,13 @@ static ASTNode *parse_new_statement(void) {
         }
         match(TOKEN_IDENTIFIER);
         ProcParamHeader *ctor_h = &ctor_pt->methods[method_idx];
+        if (ctor_h->is_private && current_class_ptr_idx != ctor_h->declaring_class_ptr_idx) {
+            // Same strict-private check as an ordinary method call - a
+            // constructor isn't a special case (resolve_heap_deref_step()
+            // never sees this call at all, since 'new(c, Init(args))' has
+            // its own, separate method lookup here).
+            compile_error(method_line, "'%s' is a private method of class '%s' and can't be called here", method_name, pointer_types[ctor_h->declaring_class_ptr_idx].name);
+        }
         int ctor_mangled_idx = find_proc(ctor_h->mangled_name);
         if (ctor_mangled_idx == -1) {
             compile_error(method_line, "'%s.%s' doesn't have a body yet", ctor_pt->name, method_name);

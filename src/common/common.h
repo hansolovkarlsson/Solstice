@@ -162,6 +162,14 @@ typedef enum {
                       // implementation of a method. See NODE_INHERITED_CALL.
     TOKEN_PARAMCOUNT, // the 'ParamCount' builtin function - see OP_PARAM_COUNT.
     TOKEN_PARAMSTR,   // the 'ParamStr' builtin function - see OP_PARAM_STR.
+    TOKEN_PRIVATE,    // a 'private' section inside a 'class ... end;' body -
+                      // every field/method declared until the next
+                      // 'private'/'public' or the class's own 'end' is only
+                      // accessible from the DECLARING class's own methods,
+                      // not even a subclass's - see RecordField.is_private/
+                      // ProcParamHeader.is_private in parser.c.
+    TOKEN_PUBLIC,     // a 'public' section - the default visibility anyway,
+                      // but needed to switch back after a 'private' section.
     TOKEN_EOF
 } TokenType;
 

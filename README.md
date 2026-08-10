@@ -348,6 +348,11 @@ expected, including as `self` for an inherited method call), and
 `inherited` itself (`inherited MethodName(args);` or bare `inherited;`,
 forwarding the current method's own arguments) for an override to reach
 its ancestor's own implementation directly, bypassing dynamic dispatch.
+Class-level `private`/`public` sections restrict a field or method to
+the declaring class's own methods (strict semantics, not "protected" —
+not even a subclass's methods can reach a private member, matching what
+was actually asked for), a separate, class-scoped mechanism from
+units' file-scoped visibility above.
 Every method call is dynamically dispatched (Java-style, no `virtual`/
 `override` keyword needed) through the calling instance's own hidden
 runtime type tag and a per-class vtable, rather than the accessing
