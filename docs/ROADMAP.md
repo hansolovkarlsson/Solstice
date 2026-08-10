@@ -1481,6 +1481,59 @@ anyway, so this is where they land instead.
       convention every branch in both functions uses for exactly this
       reason). See `examples/test/proctype/test_proctype_return_*.pas`
       and [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
+- [x] Record/class field of procedural type — a `record`/`class` field
+      can itself be a named procedural type. Turned out much bigger than
+      expected once tested directly: a PLAIN (non-class) record field
+      already worked with zero changes at all (record field assignment
+      already routed through the ordinary procedural-type-assignment-
+      target machinery every plain var/local already used) - but a
+      CLASS field needed five distinct fixes, since class field access
+      goes through a completely different, heap-based mechanism
+      (`resolve_heap_deref_step()`/`build_heap_deref_write_statement()`/
+      `parse_heap_deref_read()`) that had no notion of procedural types
+      at all before this, none of them new AST nodes/opcodes:
+      1. `build_heap_deref_write_statement()`'s two branches (ordinary
+         field and array field) both needed the same procedural-type
+         check `parse_proc_value()`'s own callers already use elsewhere -
+         a bare proc name being assigned to a procedural-typed field was
+         being misparsed as a zero-argument call to it.
+      2. `parse_heap_deref_read()`'s end-of-chain return needed an
+         `is_proc_type(...) && token.type == TOKEN_LPAREN` check
+         (mirroring the existing NAMED-procedural-type-global case) so
+         `f.handler(5)` calls THROUGH the field's stored value via
+         `build_procvar_call()` - which turned out to already be fully
+         generic over its `callee` argument (a `NODE_HEAP_FIELD_ACCESS`
+         works exactly like a `NODE_VARIABLE` there), so no codegen.c
+         changes were needed either.
+      3 & 4. The SAME check again, separately, in both
+         `parse_heap_deref_read()`'s and `parse_self_shorthand_read()`'s
+         own array-field branches - an array field access is always a
+         terminal step (returns immediately, per the existing classes
+         scoping decision), so it can't just fall through to the shared
+         check above - the exact same duplication that caused a real,
+         shipped bug during the array-typed-fields feature itself,
+         caught this time by testing the array case explicitly rather
+         than assuming the scalar fix would cover it.
+      5. `parse_class_method_call_arguments()` (a method call's own
+         argument list) had a stale comment claiming method parameters
+         are "guaranteed scalar" and only ever needed the plain-scalar/
+         `var`-scalar cases - true for array/record parameters, but not
+         for a NAMED procedural type, which needed the same
+         `parse_proc_value()` routing as every other procedural-type
+         target.
+
+      Nested-record fields (a procedural field inside another record
+      field, itself inside a class) needed no extra fix at all - a
+      nested chain is already resolved to a single combined offset by
+      `resolve_heap_deref_step()` before the write/read machinery ever
+      sees it. Passing a class field's procedural value as an argument
+      to a plain top-level function already worked via
+      `parse_proc_argument()`'s own existing fallback (added for the
+      return-values feature just above); passing it to a class METHOD's
+      own procedural parameter needed fix 5 above, combined with that
+      same existing fallback inside `parse_proc_value()`. See
+      `examples/test/proctype/test_proctype_field_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
 - [x] Static (persistent-across-calls) local variables — `static name:
       type;` reuses the exact "hidden mangled global" trick local arrays
       already use (which are already implicitly persistent), so every

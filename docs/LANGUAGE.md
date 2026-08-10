@@ -2906,7 +2906,35 @@ exactly like a pointer).
   (`GetHandler()(5)`) isn't supported yet — assign to a variable first.
   Calling a *class method* that returns a procedural value
   (`h := f.MakeHandler();`) works the same way.
-- **Not implemented yet**: a record/class field of procedural type.
+- **A record or class field can itself have a named procedural type**:
+  ```pascal
+  type
+      TProc = function(x: integer): integer;
+      TFoo = class
+          handler: TProc;
+      end;
+  var
+      f: TFoo;
+
+  function Double(x: integer): integer;
+  begin
+      Double := x * 2;
+  end;
+
+  begin
+      new(f);
+      f.handler := Double;    { bare reference, same rule as any other
+                                 procedural-type assignment target }
+      writeln(f.handler(5));  { 10 - explicit '()' to call it }
+      dispose(f);
+  end.
+  ```
+  Works the same way for a plain (non-class) record field, an array-
+  typed field (`data: array[0..3] of TProc;`), a procedural field
+  nested inside another record field, unqualified `self.`-shorthand
+  access from inside a method, and passing a field's value directly as
+  an argument to another call (a plain function's or a class method's
+  own procedural parameter).
 
 ## Functions
 

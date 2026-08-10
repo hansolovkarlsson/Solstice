@@ -3322,10 +3322,12 @@ static ASTNode *build_procvar_call(ASTNode *callee, int proc_type_idx, int line,
 // instance expression) and splices it in as argument 0 itself, before
 // this function's own returned list. mangled_proc_idx's OWN
 // param_count includes self at slot 0, so every check/lookup here is
-// offset by 1. Method parameters are guaranteed scalar (see
-// ProcParamHeader/parse_proc_param_header()), so this only ever needs
-// the plain-scalar/'var'-scalar cases parse_call_arguments() itself
-// handles - never array/record/procedural arguments.
+// offset by 1. Method parameters are guaranteed scalar - never array/
+// record arguments - but DO include named procedural types (see
+// ProcParamHeader/parse_proc_param_header()), which need the same
+// specialized parse_proc_value() every other procedural-type target
+// already uses, alongside the plain-scalar/'var'-scalar cases
+// parse_call_arguments() itself handles.
 static ASTNode *parse_class_method_call_arguments(int mangled_proc_idx) {
     ASTNode *arg_head = NULL;
     ASTNode *arg_tail = NULL;
@@ -3339,6 +3341,8 @@ static ASTNode *parse_class_method_call_arguments(int mangled_proc_idx) {
                 ASTNode *arg;
                 if (arg_count < user_param_count && proc_table[mangled_proc_idx].param_is_var[slot]) {
                     arg = parse_var_argument(proc_table[mangled_proc_idx].param_types[slot], proc_table[mangled_proc_idx].unmangled_name, slot);
+                } else if (arg_count < user_param_count && proc_table[mangled_proc_idx].param_types[slot] >= TYPE_PROC_BASE) {
+                    arg = parse_proc_value(proc_table[mangled_proc_idx].param_types[slot] - TYPE_PROC_BASE, token.line);
                 } else if (arg_count < user_param_count) {
                     arg = wrap_range_check(expression(), proc_table[mangled_proc_idx].param_is_subrange[slot],
                         proc_table[mangled_proc_idx].param_subrange_lower[slot], proc_table[mangled_proc_idx].param_subrange_upper[slot]);
@@ -3683,9 +3687,28 @@ static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
             node->right = step.array_index;
             node->data.num_value = step.field_offset;
             node->expression_type = step.result_type;
+            // Same procedural-typed-field-followed-by-'(' call check the
+            // bottom of this function does for a plain field - an array
+            // field is terminal either way, so this can't just fall
+            // through to that shared check below.
+            if (is_proc_type(node->expression_type) && token.type == TOKEN_LPAREN) {
+                return build_procvar_call(node, node->expression_type - TYPE_PROC_BASE, line, 0);
+            }
             return node;
         }
         base = make_heap_field_access(base, step, line);
+    }
+    // A procedural-typed field followed by '(' is a CALL through the
+    // stored value - same "bare reference vs. call" convention every
+    // other procedural-type read already follows (see the NAMED-
+    // procedural-type-global case this mirrors), just reached via a
+    // heap field instead of a plain variable. build_procvar_call() only
+    // needs an already-built expression that reads the value (here,
+    // 'base' itself - a NODE_HEAP_FIELD_ACCESS, or the original pointer
+    // expression if the loop above never ran), same as it already
+    // accepts for a plain global/local/var-param read.
+    if (is_proc_type(base->expression_type) && token.type == TOKEN_LPAREN) {
+        return build_procvar_call(base, base->expression_type - TYPE_PROC_BASE, line, 0);
     }
     return base;
 }
@@ -3752,14 +3775,23 @@ static ASTNode *build_heap_deref_write_statement(ASTNode *base, HeapDerefStep st
         ASTNode *stmt = create_node(NODE_HEAP_ARRAY_FIELD_ASSIGN);
         stmt->left = base;
         stmt->extra = step.array_index;
-        stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+        // A procedural-typed field needs the same specialized parser
+        // every other procedural-type assignment target already uses -
+        // the generic expression() below would misparse a bare proc name
+        // as a zero-argument CALL to it, not a reference (see
+        // docs/LANGUAGE.md#procedural-types).
+        stmt->right = step.result_type >= TYPE_PROC_BASE
+            ? parse_proc_value(step.result_type - TYPE_PROC_BASE, token.line)
+            : wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
         stmt->data.num_value = step.field_offset;
         stmt->expression_type = step.result_type;
         return stmt;
     }
     ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
     stmt->left = base;
-    stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+    stmt->right = step.result_type >= TYPE_PROC_BASE
+        ? parse_proc_value(step.result_type - TYPE_PROC_BASE, token.line)
+        : wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
     ASTNode *offset_lit = create_node(NODE_NUMBER);
     offset_lit->data.num_value = step.field_offset;
     offset_lit->expression_type = TYPE_INTEGER;
@@ -3912,6 +3944,12 @@ static ASTNode *parse_self_shorthand_read(int line) {
         node->right = step.array_index;
         node->data.num_value = step.field_offset;
         node->expression_type = step.result_type;
+        // Same procedural-typed-field-followed-by-'(' call check
+        // parse_heap_deref_read() makes for its own array-field branch -
+        // see that comment.
+        if (is_proc_type(node->expression_type) && token.type == TOKEN_LPAREN) {
+            return build_procvar_call(node, node->expression_type - TYPE_PROC_BASE, line, 0);
+        }
         return node;
     }
     return parse_heap_deref_read(make_heap_field_access(base, step, line), line);
