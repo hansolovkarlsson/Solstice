@@ -217,6 +217,10 @@ void next_token(void) {
         else if (strcasecmp(token.text, "paramstr") == 0) token.type = TOKEN_PARAMSTR;
         else if (strcasecmp(token.text, "private") == 0) token.type = TOKEN_PRIVATE;
         else if (strcasecmp(token.text, "public") == 0) token.type = TOKEN_PUBLIC;
+        else if (strcasecmp(token.text, "try") == 0) token.type = TOKEN_TRY;
+        else if (strcasecmp(token.text, "except") == 0) token.type = TOKEN_EXCEPT;
+        else if (strcasecmp(token.text, "raise") == 0) token.type = TOKEN_RAISE;
+        else if (strcasecmp(token.text, "exceptmessage") == 0) token.type = TOKEN_EXCEPTMESSAGE;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

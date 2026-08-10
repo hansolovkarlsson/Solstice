@@ -1455,9 +1455,75 @@ anyway, so this is where they land instead.
       [docs/LANGUAGE.md](LANGUAGE.md#built-in-functions-and-procedures).
 - [ ] User-level error/warning built-ins, distinct from the VM's internal
       recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
-- [ ] Some form of try/except/retry that exposes that same
-      recoverable-error mechanism to Pascal source itself, not just the C
-      host
+- [x] `try`/`except`/`raise` — `raise <message>;` (any string/char
+      expression) unwinds straight to the innermost active `try`'s
+      `except` block, however many procedure calls deep it's nested;
+      `ExceptMessage` (built-in, no-arg, reuses the same
+      `NODE_BUILTIN_CALL` mechanism `ParamCount`/`ParamStr` already
+      share) reads the caught message back inside the handler.
+
+      Deliberately does NOT expose the VM's own built-in runtime errors
+      (division by zero, array-index-out-of-range, nil-pointer
+      dereference, stack overflow, ...) to `except` — those remain
+      always-fatal exactly as before this feature. Investigated the
+      full "catch everything" version first: it would mean routing all
+      ~90 of `vm.c`'s scattered inline `fprintf(...); fatal_abort();`
+      error sites through one new choke-point function first, a much
+      larger and riskier mechanical refactor of `vm.c` for comparable
+      value. Chose the smaller, self-contained "only what Pascal code
+      explicitly raises is catchable" scope instead (an explicit user
+      decision, not a default) - it ships the full raise/catch
+      mechanism now, with catching built-in VM errors left as a
+      natural, separately-scoped follow-up.
+
+      Needed genuinely new VM machinery, not just new syntax: a
+      VM-internal exception-handler stack (`vm_except_stack[]` in
+      `vm.c`, new `MAX_EXCEPT_DEPTH` constant in `common.h`) that a new
+      `OP_TRY` opcode pushes a `{sp, call_sp, fp, frame_sp, handler_ip}`
+      snapshot onto - every one of the VM's own state variables that
+      together define "where execution currently is". A `raise`
+      (`OP_RAISE`) many calls deep can therefore unwind straight back
+      to an enclosing `try`, however many `vm_call_stack[]` frames that
+      spans, by simply *overwriting* those four values from the
+      snapshot rather than actually popping `vm_call_stack[]` one frame
+      at a time the way `OP_RET` does (`RET` only ever pops exactly
+      one) - genuinely new capability, since nothing in this VM before
+      this feature ever jumped across more than one call frame at
+      once. Restoring `sp` specifically is what discards any partial
+      expression-evaluation or in-progress-call-argument garbage left
+      on the operand stack by whatever was interrupted. Deliberately
+      needed NONE of `error.c`'s existing `setjmp`/`longjmp`
+      `fatal_abort()` machinery for the catching path at all - every
+      value being restored is already VM-local state living inside
+      `run_vm()`'s one C stack frame/dispatch loop, so a `raise` is
+      just another jump-based control-flow opcode from the dispatch
+      loop's own perspective, same as `JMP`/`JZ`. `fatal_abort()` is
+      only reached, completely unchanged, for the *uncaught* case (no
+      active handler) - preserving exactly the "print message, abort
+      the whole program" behavior every other runtime error already
+      has.
+
+      `OP_END_TRY` pops the handler when the try-body completes with no
+      exception (so it can't be re-entered from code the try-body falls
+      through to). `OP_RAISE`, on a catch, pops (consumes) the handler
+      it's jumping to *before* jumping - so a `raise` executed from
+      inside the except-body itself correctly reaches the *next*
+      enclosing `try`, not the one that just fired again, verified with
+      a dedicated re-raise test. Four new opcodes total (`TRY` takes an
+      address operand like `JMP`/`CALL`; `END_TRY`/`RAISE`/
+      `EXCEPT_MSG` take none, like `ASSERT`/`RET`), appended at the end
+      of the `Opcode` enum per the lesson already learned this session
+      from the vtable feature's mid-enum insertion mistake.
+      `type_checker.c` needed one new case (the raised message must be
+      string/char-typed, mirroring `assert`'s own message-type check);
+      confirmed by direct code reading (not assumed from the `assert`
+      precedent alone) that `optimizer.c` needed no changes at all -
+      both `mark_used_variables()` and `sweep_dead_assignments()`
+      already recurse generically into any node type they don't
+      specifically special-case. solas/desole round-trip verified (new
+      opcodes were added). See
+      `examples/test/except/test_except_*.pas` and
+      [docs/LANGUAGE.md](LANGUAGE.md#try--except--raise).
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call

@@ -10,6 +10,8 @@
 #define MAX_ARRAY_MEM 4096
 #define MAX_CALL_DEPTH 256
 #define MAX_FRAME_STACK 4096
+#define MAX_EXCEPT_DEPTH 64  // nested 'try' blocks active at once - see
+                              // vm_except_stack[] in vm.c
 #define MAX_PROCEDURES 50
 #define MAX_UNITS 32        // total distinct units 'uses'-able in one compile
                             // - also bounds the "currently loading" stack
@@ -170,6 +172,10 @@ typedef enum {
                       // ProcParamHeader.is_private in parser.c.
     TOKEN_PUBLIC,     // a 'public' section - the default visibility anyway,
                       // but needed to switch back after a 'private' section.
+    TOKEN_TRY,        // 'try ... except ... end' - see NODE_TRY.
+    TOKEN_EXCEPT,     // the 'except' half of a 'try' statement.
+    TOKEN_RAISE,      // 'raise <message>;' - see NODE_RAISE/OP_RAISE.
+    TOKEN_EXCEPTMESSAGE, // the 'ExceptMessage' builtin - see OP_EXCEPT_MSG.
     TOKEN_EOF
 } TokenType;
 
@@ -1103,6 +1109,33 @@ typedef enum {
                   // matching real Pascal/Free Pascal's own documented
                   // lenient behavior, not this VM's usual abort-on-out-
                   // of-range convention for array indexing. No operand.
+    OP_TRY,       // arg = the except-body's start address. Pushes
+                  // {sp, call_sp, fp, frame_sp, arg} onto vm_except_stack[]
+                  // - a snapshot to restore to if a raise occurs anywhere
+                  // in the try-body, including several call frames deep.
+                  // Overflow past MAX_EXCEPT_DEPTH is a VM Runtime Error.
+    OP_END_TRY,   // The try-body finished with no exception - pop
+                  // vm_except_stack[] (this handler is no longer active).
+                  // No operand. Popping an empty stack is a VM Runtime
+                  // Error (unreachable from valid codegen).
+    OP_RAISE,     // Pops a string_pool[] index (the message). If
+                  // vm_except_stack[] is empty: VM Runtime Error
+                  // ("Unhandled exception: <message>"), fatal. Else: pops
+                  // the innermost handler (consuming it, so a raise
+                  // inside the except-body itself reaches the NEXT
+                  // enclosing handler, not this one again), restores
+                  // sp/call_sp/fp/frame_sp from it, records the message
+                  // in vm_current_exception_msg (see OP_EXCEPT_MSG), and
+                  // jumps to the handler's except-body address - all
+                  // without touching error.c's fatal_abort()/longjmp
+                  // mechanism, since every value being restored is VM-
+                  // local state already inside run_vm()'s one dispatch
+                  // loop. No operand.
+    OP_EXCEPT_MSG // Pushes vm_current_exception_msg directly (a
+                  // string_pool[] index - already-interned entries are
+                  // immutable, so no re-interning needed, unlike
+                  // OP_PARAM_STR's argv-at-startup interning). Meaningful
+                  // only when executed inside an except-body. No operand.
 } Opcode;
 
 typedef struct {
@@ -1704,7 +1737,7 @@ typedef enum {
                        // choose OP_STORE_HEAP_ARRAY_FIELD_CHAR over the
                        // plain variant, same reasoning as NODE_HEAP_
                        // FIELD_ASSIGN's own char-field dispatch.
-    NODE_INHERITED_CALL // 'inherited MethodName(args);'/'inherited;' -
+    NODE_INHERITED_CALL, // 'inherited MethodName(args);'/'inherited;' -
                        // a DIRECT (non-virtual) call to the enclosing
                        // method's class's PARENT's implementation of a
                        // method, resolved fully at compile time (unlike
@@ -1728,6 +1761,19 @@ typedef enum {
                        // left unset in expression context.
                        // expression_type = the target's return type if a
                        // function, else TYPE_UNKNOWN.
+    NODE_TRY,          // 'try <body> except <handler> end' - left = the
+                       // try-body statement list, right = the except-body
+                       // statement list (both via statement_list(), the
+                       // same mechanism 'repeat's body already uses - not
+                       // a separate list structure). No exception-class
+                       // matching - a single blanket handler catches any
+                       // 'raise' from anywhere in the try-body, including
+                       // several call frames deep - see OP_TRY/OP_RAISE.
+    NODE_RAISE         // 'raise <message-expr>;' - left = the message
+                       // expression (must be string/char-typed, see
+                       // type_checker.c). Unwinds to the innermost active
+                       // OP_TRY handler if one exists, else a fatal VM
+                       // Runtime Error - see OP_RAISE.
 } NodeType;
 
 typedef struct ASTNode {

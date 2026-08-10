@@ -883,6 +883,14 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_RAISE:
+            if (!is_string_type(node->left->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: 'raise' requires a string or char message\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_FILE_OP:
             // reset/rewrite/close's file-variable argument was already
             // validated at parse time (find_file_var_soft() only ever

@@ -186,6 +186,48 @@ static inline CallRecord vm_call_pop(int *call_sp) {
     return vm_call_stack[(*call_sp)--];
 }
 
+// A snapshot of every stack the VM maintains, taken when a 'try' is
+// entered, so a 'raise' anywhere in its body - including several call
+// frames deep - can unwind straight back to it in one step: restore
+// sp/call_sp/fp/frame_sp from here (discarding whatever partial
+// expression evaluation or nested-call state accumulated since), then
+// jump to handler_ip. All VM-local state, so this needs no help from
+// error.c's fatal_abort()/longjmp mechanism - see OP_RAISE.
+typedef struct {
+    int sp;
+    int call_sp;
+    int fp;
+    int frame_sp;
+    int handler_ip;
+} ExceptHandler;
+
+static ExceptHandler vm_except_stack[MAX_EXCEPT_DEPTH];
+static int vm_current_exception_msg = 0; // string_pool[] index, set by the
+                                          // most recent caught OP_RAISE -
+                                          // see OP_EXCEPT_MSG.
+
+static inline void vm_except_push(int *except_sp, int sp, int call_sp, int fp, int frame_sp, int handler_ip) {
+    if (*except_sp >= MAX_EXCEPT_DEPTH - 1) {
+        fprintf(stderr, "VM Runtime Error: Exception handler stack overflow (limit is %d) - too many nested 'try' blocks\n",
+                MAX_EXCEPT_DEPTH);
+        fatal_abort();
+    }
+    (*except_sp)++;
+    vm_except_stack[*except_sp].sp = sp;
+    vm_except_stack[*except_sp].call_sp = call_sp;
+    vm_except_stack[*except_sp].fp = fp;
+    vm_except_stack[*except_sp].frame_sp = frame_sp;
+    vm_except_stack[*except_sp].handler_ip = handler_ip;
+}
+
+static inline ExceptHandler vm_except_pop(int *except_sp) {
+    if (*except_sp < 0) {
+        fprintf(stderr, "VM Runtime Error: 'end_try' with no matching 'try' (exception handler stack empty)\n");
+        fatal_abort();
+    }
+    return vm_except_stack[(*except_sp)--];
+}
+
 static inline int vm_var_index(int idx) {
     if (idx < 0 || idx >= sym_count) {
         fprintf(stderr, "VM Runtime Error: Variable index %d out of range (0..%d)\n", idx, sym_count - 1);
@@ -734,6 +776,7 @@ void run_vm(void) {
     int call_sp = -1;
     int fp = -1;         // -1 = no active frame
     int frame_sp = -1;   // top of the frame stack (empty when -1)
+    int except_sp = -1;  // top of vm_except_stack[] (empty when -1)
     int ip = 0;
 
     while (1) {
@@ -1456,6 +1499,34 @@ void run_vm(void) {
                 }
                 break;
             }
+
+            case OP_TRY:
+                vm_except_push(&except_sp, sp, call_sp, fp, frame_sp, instr.arg);
+                break;
+
+            case OP_END_TRY:
+                vm_except_pop(&except_sp);
+                break;
+
+            case OP_RAISE: {
+                int msg_idx = vm_str_index(vm_pop(&sp));
+                if (except_sp < 0) {
+                    fprintf(stderr, "VM Runtime Error: Unhandled exception: %s\n", string_pool[msg_idx]);
+                    fatal_abort();
+                }
+                ExceptHandler h = vm_except_pop(&except_sp);
+                sp = h.sp;
+                call_sp = h.call_sp;
+                fp = h.fp;
+                frame_sp = h.frame_sp;
+                vm_current_exception_msg = msg_idx;
+                ip = h.handler_ip;
+                break;
+            }
+
+            case OP_EXCEPT_MSG:
+                vm_push(&sp, vm_current_exception_msg);
+                break;
 
             case OP_ABS: {
                 int a = vm_pop(&sp);

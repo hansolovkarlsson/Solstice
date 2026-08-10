@@ -251,6 +251,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type — see [Pointers](#pointers) |
 | `ParamCount` | function | Number of command-line arguments passed to the running program |
 | `ParamStr(i)` | function | The `i`th command-line argument as a string — `ParamStr(0)` is the running `.bin`'s own path |
+| `ExceptMessage` | function | The message from the `raise` an enclosing `except` block just caught — see [`try` / `except` / `raise`](#try--except--raise) |
 
 - `abs`/`sqr` accept `integer` or `real` (preserving whichever was
   given); `odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
@@ -670,6 +671,57 @@ assert(x > 0, 'x must be positive');
   invariant explicitly and have the compiler check it at exactly the
   point you expect it to hold, with a message describing what actually
   went wrong.
+
+### `try` / `except` / `raise`
+
+```pascal
+try
+  writeln('before');
+  raise 'something went wrong';
+  writeln('never printed');
+except
+  writeln('caught: ', ExceptMessage);
+end;
+writeln('after');
+```
+
+- `raise <message>;` — `message` must be `string` or `char` (any
+  expression, not just a literal). If a `try` is currently active
+  (anywhere on the dynamic call chain, including several procedure
+  calls deep — not just the current one), control jumps straight to
+  that `try`'s `except` block, abandoning whatever was in progress at
+  the `raise` site. If no `try` is active anywhere, `raise` behaves
+  like every other fatal error: `VM Runtime Error: Unhandled exception:
+  message`, then the program stops.
+- `try <body> except <handler> end` — runs `body`; if it completes with
+  no `raise`, `handler` is skipped entirely and execution continues
+  after `end`. If anything in `body` raises, `handler` runs instead
+  (from the top), and execution continues after `end` from there.
+- `ExceptMessage` — a built-in, no-argument function that returns the
+  message string from whichever `raise` was just caught. Only
+  meaningful inside a `handler` block.
+- A `try` inside another `try`'s `body` nests normally: an inner
+  `raise` is caught by the *innermost* enclosing `try`, not any outer
+  one. A `raise` from inside a `handler` block itself is *not* caught
+  by that same `try` again (the handler that just ran is no longer
+  active) — it propagates to whatever `try` encloses that one, or
+  aborts the program if there isn't one.
+- **`except` only catches an explicit `raise`.** The VM's own built-in
+  runtime errors — division by zero, array-index-out-of-range,
+  nil-pointer dereference, stack overflow, and so on — are **not**
+  catchable by `except` and remain always-fatal exactly as they were
+  before this feature existed. This is a deliberate scope decision, not
+  an oversight: `raise`/`except` is a language-level mechanism for
+  Pascal code to signal and handle its own error conditions, layered on
+  top of (not a replacement for) the VM's existing "a bad runtime
+  operation always aborts" guarantee. Catching built-in runtime errors
+  too would be a substantially larger, separately-scoped change.
+- No exception classes or types — `except` is a single blanket handler,
+  there's no Delphi-style `on E: SomeExceptionType do` matching (every
+  `raise` in a given `try`'s body is caught the same way, regardless of
+  what its message says). No `finally` block. No bare `raise;`
+  re-raise shorthand — re-raising means writing out
+  `raise ExceptMessage;` (or any other message) explicitly.
 
 ### Compound statements
 

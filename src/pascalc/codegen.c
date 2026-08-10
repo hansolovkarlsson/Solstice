@@ -863,6 +863,9 @@ void generate_code(ASTNode *node) {
             } else if (node->op == TOKEN_PARAMSTR) {
                 emit(OP_PARAM_STR, 0); // node->left (the index) already
                                         // pushed by the shared code above
+            } else if (node->op == TOKEN_EXCEPTMESSAGE) {
+                // No node->left either, same as ParamCount above.
+                emit(OP_EXCEPT_MSG, 0);
             }
             break;
 
@@ -1211,6 +1214,34 @@ void generate_code(ASTNode *node) {
             generate_code(node->left);  // condition
             generate_code(node->right); // message
             emit(OP_ASSERT, 0);
+            generate_code(node->next);
+            break;
+
+        // try <body> except <handler> end
+        //     TRY except_or_end   ; patched below
+        //     <body>
+        //     END_TRY
+        //     JMP end             ; patched below
+        //   except_or_end:
+        //     <handler>
+        //   end:
+        case NODE_TRY: {
+            int try_idx = code_idx;
+            emit(OP_TRY, 0);                 // placeholder, patched below
+            generate_code(node->left);       // try-body
+            emit(OP_END_TRY, 0);
+            int jmp_idx = code_idx;
+            emit(OP_JMP, 0);                 // placeholder, patched below
+            code[try_idx].arg = code_idx;    // TRY's handler: start of except-body
+            generate_code(node->right);      // except-body
+            code[jmp_idx].arg = code_idx;    // JMP lands here: past the except-body
+            generate_code(node->next);
+            break;
+        }
+
+        case NODE_RAISE:
+            generate_code(node->left); // message
+            emit(OP_RAISE, 0);
             generate_code(node->next);
             break;
 

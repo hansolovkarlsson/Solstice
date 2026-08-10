@@ -387,6 +387,14 @@ Pascal/Free Pascal's own convention — standard Pascal never defined
 this) — `solvm program.bin arg1 arg2` forwards `arg1`/`arg2` through to
 the running program (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#built-in-functions-and-procedures)).
+Also working: `try`/`except`/`raise` — `raise <message>;` unwinds
+straight to the innermost enclosing `try`'s `except` block, however
+many procedure calls deep it's nested, readable back via `ExceptMessage`;
+scoped deliberately to exceptions Pascal code explicitly raises — the
+VM's own built-in runtime errors (division by zero, array bounds, and
+so on) stay always-fatal, not catchable, matching the "you write it, you
+catch it" boundary this feature draws (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#try--except--raise)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

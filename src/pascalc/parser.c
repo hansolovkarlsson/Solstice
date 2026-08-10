@@ -4361,6 +4361,20 @@ static ASTNode *factor(void) {
         node->op = TOKEN_PARAMCOUNT;
         node->expression_type = TYPE_INTEGER;
         return node;
+    } else if (token.type == TOKEN_EXCEPTMESSAGE) {
+        // 'ExceptMessage' - meaningful only inside an except-body, same
+        // bare-or-empty-parens shape as ParamCount above. Only known at
+        // runtime (whatever the innermost active OP_RAISE last recorded),
+        // so this needs a real opcode too.
+        match(TOKEN_EXCEPTMESSAGE);
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            match(TOKEN_RPAREN);
+        }
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_EXCEPTMESSAGE;
+        node->expression_type = TYPE_STRING;
+        return node;
     } else if (token.type == TOKEN_PARAMSTR) {
         // 'ParamStr(i)' - same one-required-argument shape as length(x)
         // below. Out-of-range i is a runtime concern (empty string, not
@@ -7309,6 +7323,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
+           t == TOKEN_TRY || t == TOKEN_RAISE ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -9142,6 +9157,23 @@ static ASTNode *statement(void) {
 
     if (token.type == TOKEN_CASE) {
         return parse_case_statement();
+    }
+
+    if (token.type == TOKEN_TRY) {
+        ASTNode *stmt = create_node(NODE_TRY);
+        match(TOKEN_TRY);
+        stmt->left = statement_list();   // try-body
+        match(TOKEN_EXCEPT);
+        stmt->right = statement_list();  // except-body
+        match(TOKEN_END);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_RAISE) {
+        ASTNode *stmt = create_node(NODE_RAISE);
+        match(TOKEN_RAISE);
+        stmt->left = expression();       // message
+        return stmt;
     }
 
     if (token.type == TOKEN_WITH) {

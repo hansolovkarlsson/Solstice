@@ -192,6 +192,10 @@ static const char *opcode_name(Opcode op) {
         case OP_DEBUG_STACK: return "debug_stack";
         case OP_DEBUG_SYMS:  return "debug_syms";
         case OP_CALL_INDIRECT: return "call_indirect";
+        case OP_TRY:        return "try";
+        case OP_END_TRY:    return "end_try";
+        case OP_RAISE:      return "raise";
+        case OP_EXCEPT_MSG: return "except_msg";
         default:       return NULL;
     }
 }
@@ -229,7 +233,7 @@ static const char *type_name(DataType type) {
 // True for opcodes whose arg is an absolute instruction index (a jump
 // target), as opposed to an immediate value or a variable index.
 static int is_jump(Opcode op) {
-    return op == OP_JMP || op == OP_JZ || op == OP_CALL;
+    return op == OP_JMP || op == OP_JZ || op == OP_CALL || op == OP_TRY;
 }
 
 // True for opcodes whose arg is a variable index into sym_table[]. Note

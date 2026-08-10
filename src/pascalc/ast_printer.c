@@ -284,6 +284,29 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_TRY:
+            printf("[Try]\n");
+            print_indent(indent + 1);
+            printf("Body:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Except:\n");
+            print_ast(node->right, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_RAISE:
+            printf("[Raise]\n");
+            print_indent(indent + 1);
+            printf("Message:\n");
+            print_ast(node->left, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_FILE_OP: {
             const char *op_name = node->op == TOKEN_FILE_ASSIGN ? "Assign"
                                  : node->op == TOKEN_RESET ? "Reset"

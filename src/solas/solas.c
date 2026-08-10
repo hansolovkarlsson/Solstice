@@ -278,6 +278,10 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"DEBUG_STACK", OP_DEBUG_STACK, OPERAND_NONE},
     {"DEBUG_SYMS",  OP_DEBUG_SYMS,  OPERAND_NONE},
     {"CALL_INDIRECT", OP_CALL_INDIRECT, OPERAND_NONE}, // pops its jump target off the stack - the one opcode here where the "operand" is implicit, not a label name
+    {"TRY",         OP_TRY,         OPERAND_LABEL}, // operand = except-body's address, same convention as JMP/CALL
+    {"END_TRY",     OP_END_TRY,     OPERAND_NONE},
+    {"RAISE",       OP_RAISE,       OPERAND_NONE},
+    {"EXCEPT_MSG",  OP_EXCEPT_MSG,  OPERAND_NONE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 
