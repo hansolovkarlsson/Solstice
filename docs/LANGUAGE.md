@@ -2647,6 +2647,81 @@ end.
   only ever strict `private`/`public`, matching the class visibility
   model as a whole (see above).
 
+### `is`/`as`
+
+```pascal
+type
+    TShape = class
+    public
+        function Area: real;
+    end;
+    TCircle = class(TShape)
+    private
+        FRadius: real;
+    public
+        function Area: real;
+        procedure SetRadius(r: real);
+    end;
+
+function TShape.Area;
+begin
+    Area := 0.0;
+end;
+
+function TCircle.Area;
+begin
+    Area := 3.14159 * FRadius * FRadius;
+end;
+
+procedure TCircle.SetRadius;
+begin
+    FRadius := r;
+end;
+
+var shape: TShape; c: TCircle;
+begin
+    new(c);
+    c.SetRadius(5.0);
+    shape := c;                  { upcast - shape's STATIC type is TShape }
+    if shape is TCircle then     { True - shape's ACTUAL runtime class is TCircle }
+        writeln('It is a circle');
+    c := shape as TCircle;       { succeeds - same runtime check as 'is' }
+    writeln(c.Area:0:2);         { 78.54 }
+end.
+```
+
+- `obj is TFoo` tests `obj`'s *actual runtime class* (or a descendant of
+  it) — not its static/declared type. `TFoo` must be a class type.
+- `obj as TFoo` performs the same runtime check; on success it yields
+  `obj`, now usable/assignable as `TFoo`. On failure, it raises a
+  catchable exception (`"Cannot cast to 'TFoo'"`), reaching the
+  innermost enclosing `try`/`except` exactly like an explicit `raise`
+  would (see [`try` / `except` / `raise`](#try--except--raise)) — or an uncaught,
+  fatal `VM Runtime Error: Unhandled exception: ...` if there is no
+  enclosing `try`.
+- `nil is TFoo` is always `False`. `nil as TFoo` always yields `nil`,
+  never raises.
+- Both operators reject, **at compile time**, a combination where
+  neither operand's class could ever be an ancestor or descendant of the
+  other — `is`/`as` between two classes with no possible relationship
+  can never succeed, so it's caught before the program even runs, the
+  same way an incompatible `=`/`<>` comparison between two unrelated
+  class-typed operands already is.
+- This is why the feature exists at all: reference-assignment lets an
+  ancestor-typed variable hold a subclass's pointer value (`shape := c;`
+  above) — an expression's *static* type and the object's *actual*
+  runtime class can diverge, and only `is`/`as` can tell them apart.
+
+**Not implemented yet:**
+
+- **The failure message names only the target class**, not the actual
+  runtime class being cast from — no mechanism exists to map a runtime
+  class tag back to a class-name string.
+- **`is`/`as` against a non-class pointer type** (`type PFoo = ^integer;`)
+  — class types only.
+- **Chaining** — `is`/`as` are a single, one-shot check per expression,
+  the same precedence tier as `in`; there's no `obj is TFoo is TBar`.
+
 ## Procedures
 
 ```pascal

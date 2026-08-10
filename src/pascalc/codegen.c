@@ -1136,6 +1136,12 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_CLASS_PARENT_INIT_ENTRY:
+            generate_code(node->left); // a NODE_NUMBER: pushes the parent's class_id (or -1)
+            emit(OP_STORE_CLASS_PARENT, node->data.num_value);
+            generate_code(node->next);
+            break;
+
         case NODE_LOCAL_VAR:
             emit_load_local((int)node->op, node->data.var_idx);
             break;
@@ -1244,6 +1250,46 @@ void generate_code(ASTNode *node) {
             emit(OP_RAISE, 0);
             generate_code(node->next);
             break;
+
+        case NODE_IS_TEST:
+            generate_code(node->left);
+            emit(OP_IS_INSTANCE, node->data.num_value);
+            break;
+
+        // 'obj as TFoo' - evaluate obj once, then:
+        //   1. nil check: obj < 0 -> obj itself (nil) IS the correct
+        //      result, skip the class check/raise entirely (OP_IS_
+        //      INSTANCE would also say "no" for nil, but for the wrong
+        //      reason - 'as' on nil must yield nil, not raise).
+        //   2. otherwise, OP_IS_INSTANCE against the target class - match
+        //      means obj is already the correct result; no match means
+        //      raise the compile-time-interned failure message via the
+        //      exact same OP_RAISE ordinary 'raise' statements use.
+        case NODE_AS_CAST: {
+            generate_code(node->left);        // [obj]
+            emit(OP_DUP, 0);                  // [obj, obj]
+            emit(OP_PUSH, 0);                 // [obj, obj, 0]
+            emit(OP_LT, 0);                   // [obj, (obj<0)]
+            int nil_jz = code_idx;
+            emit(OP_JZ, 0);                   // not nil -> class-check block
+            int nil_done_jmp = code_idx;
+            emit(OP_JMP, 0);                  // nil: stack is already [obj] - skip everything else
+            code[nil_jz].arg = code_idx;
+            emit(OP_DUP, 0);                  // [obj, obj]
+            emit(OP_IS_INSTANCE, node->data.num_value); // [obj, matches?]
+            int match_jz = code_idx;
+            emit(OP_JZ, 0);                   // wrong class -> raise
+            int match_done_jmp = code_idx;
+            emit(OP_JMP, 0);                  // matches: obj is already the result
+            code[match_jz].arg = code_idx;    // [obj]
+            emit(OP_POP, 0);                  // discard - []
+            generate_code(node->right);       // push the interned failure message
+            emit(OP_RAISE, 0);                // never falls through
+            int end_idx = code_idx;
+            code[nil_done_jmp].arg = end_idx;
+            code[match_done_jmp].arg = end_idx;
+            break;
+        }
 
         case NODE_FILE_OP:
             if (node->op == TOKEN_FILE_ASSIGN) {

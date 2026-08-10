@@ -323,6 +323,18 @@ static int has_heap_alloc_side_effect(ASTNode *node) {
     return has_heap_alloc_side_effect(node->left) || has_heap_alloc_side_effect(node->right) || has_heap_alloc_side_effect(node->extra);
 }
 
+// A NODE_AS_CAST ('obj as TFoo') has an observable runtime effect of its
+// own: a failed cast raises a catchable exception (OP_RAISE) - so an
+// assignment carrying one must never be swept away as dead just because
+// its target happens to be otherwise unread, same reasoning as the three
+// helpers above. NODE_IS_TEST needs no such protection - OP_IS_INSTANCE
+// never aborts (nil is handled gracefully, not fatally).
+static int has_as_cast_side_effect(ASTNode *node) {
+    if (!node) return 0;
+    if (node->type == NODE_AS_CAST) return 1;
+    return has_as_cast_side_effect(node->left) || has_as_cast_side_effect(node->right) || has_as_cast_side_effect(node->extra);
+}
+
 static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
@@ -369,7 +381,8 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
         if (!var_used_tracker[var_idx] && !sym_table[var_idx].is_array
             && !has_range_check(node->left) && !has_range_check(node->right)
             && !has_set_side_effect(node->left) && !has_set_side_effect(node->right)
-            && !has_heap_alloc_side_effect(node->left) && !has_heap_alloc_side_effect(node->right)) {
+            && !has_heap_alloc_side_effect(node->left) && !has_heap_alloc_side_effect(node->right)
+            && !has_as_cast_side_effect(node->left) && !has_as_cast_side_effect(node->right)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
                        sym_table[var_idx].name);

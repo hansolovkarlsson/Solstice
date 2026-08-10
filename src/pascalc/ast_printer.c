@@ -307,6 +307,23 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_IS_TEST:
+            printf("[Is Test] -> Class ID: %d\n", node->data.num_value);
+            print_ast(node->left, indent + 1);
+            break;
+
+        case NODE_AS_CAST:
+            printf("[As Cast] -> Class ID: %d\n", node->data.num_value);
+            print_ast(node->left, indent + 1);
+            break;
+
+        case NODE_CLASS_PARENT_INIT_ENTRY:
+            printf("[Class Parent Init] -> Class: %d, Parent: %d\n", node->data.num_value, node->left->data.num_value);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_FILE_OP: {
             const char *op_name = node->op == TOKEN_FILE_ASSIGN ? "Assign"
                                  : node->op == TOKEN_RESET ? "Reset"

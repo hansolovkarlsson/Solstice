@@ -5196,6 +5196,73 @@ static ASTNode *expression(void) {
         in_node->expression_type = TYPE_BOOLEAN;
         node = in_node;
     }
+    // 'obj is TFoo' / 'obj as TFoo' - same precedence tier as 'in' above,
+    // and the same reasoning for being a single optional check rather
+    // than part of the while loop: chaining is/as with itself or with
+    // the relational operators isn't meaningful. The right-hand side is
+    // a bare class TYPE NAME, not an expression - factor()/expression()
+    // have no hook anywhere for "identifier that names a type, not a
+    // variable" (a bare class name used as an operand today falls
+    // through to find_var()'s "Unknown identifier" error), so this is
+    // hand-parsed here directly against find_pointer_type(), mirroring
+    // how new(x, MethodName) hand-parses an identifier against its own
+    // lookup table instead of going through expression().
+    if (token.type == TOKEN_IS || token.type == TOKEN_AS) {
+        TokenType op = token.type;
+        int line = token.line;
+        match(op);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a class type name after '%s'", op == TOKEN_IS ? "is" : "as");
+        }
+        int class_idx = find_pointer_type(token.text);
+        if (class_idx == -1 || !pointer_types[class_idx].is_class) {
+            compile_error(token.line, "'%s' is not a known class type", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+
+        DataType left_t = node->expression_type;
+        int left_is_class = is_pointer_type(left_t) && pointer_types[left_t - TYPE_POINTER_BASE].is_class;
+        if (left_t != TYPE_NIL && !left_is_class) {
+            compile_error(line, "'%s' requires a class-typed (or nil) operand", op == TOKEN_IS ? "is" : "as");
+        }
+        DataType target_t = (DataType)(TYPE_POINTER_BASE + class_idx);
+        // TYPE_NIL bypasses the ancestor/descendant relationship check
+        // entirely - nil has no runtime class of its own, so 'nil is X'/
+        // 'nil as X' are legal for ANY class X. class_type_is_subtype_of()
+        // requires is_pointer_type() on both operands and would otherwise
+        // wrongly reject this (TYPE_NIL isn't in the pointer-type range
+        // at all - see is_pointer_type()'s bounded-range check).
+        if (left_t != TYPE_NIL
+            && !class_type_is_subtype_of(left_t, target_t)
+            && !class_type_is_subtype_of(target_t, left_t)) {
+            compile_error(line, "'%s' can never succeed: '%s' and '%s' are unrelated classes",
+                           op == TOKEN_IS ? "is" : "as",
+                           pointer_types[left_t - TYPE_POINTER_BASE].name, pointer_types[class_idx].name);
+        }
+
+        if (op == TOKEN_IS) {
+            ASTNode *test = create_node(NODE_IS_TEST);
+            test->line = line;
+            test->left = node;
+            test->data.num_value = class_idx;
+            test->expression_type = TYPE_BOOLEAN;
+            node = test;
+        } else {
+            ASTNode *cast = create_node(NODE_AS_CAST);
+            cast->line = line;
+            cast->left = node;
+            cast->data.num_value = class_idx;
+            cast->expression_type = target_t;
+            char msg[MAX_NAME + 32];
+            snprintf(msg, sizeof(msg), "Cannot cast to '%s'", pointer_types[class_idx].name);
+            ASTNode *msg_node = create_node(NODE_STRING);
+            msg_node->line = line;
+            msg_node->data.var_idx = intern_string(msg);
+            msg_node->expression_type = TYPE_STRING;
+            cast->right = msg_node;
+            node = cast;
+        }
+    }
     return node;
 }
 
@@ -6456,6 +6523,30 @@ static ASTNode *build_vtable_init_chain(void) {
     return head;
 }
 
+// Companion to build_vtable_init_chain() above - one entry per class
+// (not per method), storing its immediate parent's own class_id (or -1
+// for none) into vm_class_parent[] at program startup, for OP_IS_
+// INSTANCE's runtime ancestor walk (is/as). No backpatching needed here
+// - unlike a method's entry_address, a parent's class_id is already a
+// fully known compile-time integer.
+static ASTNode *build_class_parent_init_chain(void) {
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    for (int c = 0; c < pointer_type_count; c++) {
+        PointerTypeDef *pt = &pointer_types[c];
+        if (!pt->is_class) continue;
+        ASTNode *parent_lit = create_node(NODE_NUMBER);
+        parent_lit->data.num_value = pt->parent_class_ptr_idx; // -1 if none
+        parent_lit->expression_type = TYPE_INTEGER;
+        ASTNode *entry = create_node(NODE_CLASS_PARENT_INIT_ENTRY);
+        entry->left = parent_lit;
+        entry->data.num_value = c;
+        if (!head) head = entry; else tail->next = entry;
+        tail = entry;
+    }
+    return head;
+}
+
 ASTNode *parse_ast(const char *source, const char *filename) {
     current_filename = filename ? filename : "<source>";
     sym_count = 0;
@@ -6552,6 +6643,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     declared_label_count = main_label_count;
 
     ASTNode *vtable_init = build_vtable_init_chain();
+    ASTNode *class_parent_init = build_class_parent_init_chain();
     ASTNode *root = compound_statement();
     check_all_labels_defined();
     match(TOKEN_PERIOD);
@@ -6565,6 +6657,15 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         while (tail->next) tail = tail->next;
         tail->next = root->left;
         root->left = vtable_init;
+    }
+    if (class_parent_init) {
+        // Independent second prepend - order relative to vtable_init
+        // doesn't matter, they populate disjoint tables
+        // (vm_class_parent[] vs. vm_vtables[]).
+        ASTNode *tail = class_parent_init;
+        while (tail->next) tail = tail->next;
+        tail->next = root->left;
+        root->left = class_parent_init;
     }
     return root;
 }

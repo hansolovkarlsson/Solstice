@@ -182,6 +182,10 @@ typedef enum {
                       // unconditionally-reserved TOKEN_READ/TOKEN_WRITE tokens
                       // (already used for read/readln/write/writeln I/O) - no
                       // new token needed for either.
+    TOKEN_IS,         // 'obj is TFoo' - runtime type test. See NODE_IS_TEST/
+                      // OP_IS_INSTANCE.
+    TOKEN_AS,         // 'obj as TFoo' - checked downcast. See NODE_AS_CAST/
+                      // OP_IS_INSTANCE (reused) + OP_RAISE.
     TOKEN_EOF
 } TokenType;
 
@@ -1137,11 +1141,33 @@ typedef enum {
                   // mechanism, since every value being restored is VM-
                   // local state already inside run_vm()'s one dispatch
                   // loop. No operand.
-    OP_EXCEPT_MSG // Pushes vm_current_exception_msg directly (a
+    OP_EXCEPT_MSG, // Pushes vm_current_exception_msg directly (a
                   // string_pool[] index - already-interned entries are
                   // immutable, so no re-interning needed, unlike
                   // OP_PARAM_STR's argv-at-startup interning). Meaningful
                   // only when executed inside an except-body. No operand.
+    OP_IS_INSTANCE, // 'obj is TFoo' / one step of 'obj as TFoo' - arg =
+                  // target class_id (a pointer_types[] index, same
+                  // meaning as OP_LOAD_VTABLE_SLOT's runtime class_id).
+                  // Pops an object pointer. If < 0 (nil): pushes 0
+                  // immediately WITHOUT touching vm_heap_mem[] at all -
+                  // unlike OP_LOAD_HEAP_FIELD, a nil operand here is not
+                  // a fatal error, since 'nil is X' must be False, not
+                  // an abort. Otherwise reads the tag directly from
+                  // vm_heap_mem[obj] (offset 0 - inlined here rather than
+                  // composed from a separate OP_LOAD_HEAP_FIELD 0, for
+                  // exactly the reason above), then walks
+                  // vm_class_parent[] upward from that tag (own class,
+                  // parent, grandparent, ...) until arg is found (push 1)
+                  // or the walk reaches the -1 root sentinel (push 0).
+    OP_STORE_CLASS_PARENT // Populates one vm_class_parent[] slot at
+                  // program startup (NODE_CLASS_PARENT_INIT_ENTRY in
+                  // codegen.c, emitted once per class, ahead of any user
+                  // code - see parser.c's build_class_parent_init_chain()
+                  // - same population pattern as OP_STORE_VTABLE_SLOT).
+                  // arg = this class's own class_id. Pops a parent
+                  // class_id (or -1 for none); stores it into
+                  // vm_class_parent[arg].
 } Opcode;
 
 typedef struct {
@@ -1775,11 +1801,41 @@ typedef enum {
                        // matching - a single blanket handler catches any
                        // 'raise' from anywhere in the try-body, including
                        // several call frames deep - see OP_TRY/OP_RAISE.
-    NODE_RAISE         // 'raise <message-expr>;' - left = the message
+    NODE_RAISE,        // 'raise <message-expr>;' - left = the message
                        // expression (must be string/char-typed, see
                        // type_checker.c). Unwinds to the innermost active
                        // OP_TRY handler if one exists, else a fatal VM
                        // Runtime Error - see OP_RAISE.
+    NODE_IS_TEST,      // 'obj is TFoo' - left = the object expression
+                       // (class- or TYPE_NIL-typed). data.num_value =
+                       // target class's pointer_types[] index (same
+                       // meaning as the runtime tag OP_NEW writes for
+                       // that class). expression_type = TYPE_BOOLEAN.
+                       // right/extra/op unused. See OP_IS_INSTANCE.
+    NODE_AS_CAST,      // 'obj as TFoo' - left = the object expression.
+                       // right = a synthesized NODE_STRING failure
+                       // message ("Cannot cast to 'TFoo'"), built the
+                       // same way NODE_ASSERT's default "Assertion
+                       // failed" message is synthesized when none is
+                       // given - so codegen never needs a separate
+                       // no-message case. data.num_value = target
+                       // class's pointer_types[] index. expression_type
+                       // = TYPE_POINTER_BASE + that index (the cast
+                       // result's new static type). extra/op unused.
+                       // See OP_IS_INSTANCE/OP_RAISE.
+    NODE_CLASS_PARENT_INIT_ENTRY // One entry of the startup class-
+                       // parent-init chain (build_class_parent_init_
+                       // chain() in parser.c) - populates vm_class_
+                       // parent[], mirroring NODE_VTABLE_INIT_ENTRY's own
+                       // vm_vtables[] population. left = a NODE_NUMBER
+                       // holding this class's parent's own class_id (or
+                       // -1 for none - no backpatching needed, unlike
+                       // NODE_VTABLE_INIT_ENTRY's NODE_PROC_REF, since a
+                       // parent's class_id is already a fully known
+                       // compile-time integer). data.num_value = THIS
+                       // class's own class_id (OP_STORE_CLASS_PARENT's
+                       // arg). Chained via ->next, one entry per class
+                       // (not per method, unlike NODE_VTABLE_INIT_ENTRY).
 } NodeType;
 
 typedef struct ASTNode {

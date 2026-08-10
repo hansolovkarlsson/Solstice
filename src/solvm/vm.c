@@ -113,6 +113,13 @@ static int vm_heap_freelist[MAX_RECORD_FIELDS + 1]; // index 0 unused (no
 // general convention of leaving no region uninitialized garbage.
 static int vm_vtables[MAX_POINTER_TYPES * MAX_CLASS_METHODS];
 
+// One entry per class: its immediate parent's own class_id (or -1 for
+// none/root) - populated at program startup by build_class_parent_init_
+// chain()'s bytecode (OP_STORE_CLASS_PARENT), read by OP_IS_INSTANCE's
+// runtime ancestor walk for 'is'/'as'. Same population pattern as
+// vm_vtables[] above. Reset to -1 per slot below.
+static int vm_class_parent[MAX_POINTER_TYPES];
+
 // Command-line arguments the running program can see via ParamCount/
 // ParamStr - see vm_set_program_args() below. vm_arg_str_idx[0] is
 // always the .bin path; vm_arg_str_idx[1..vm_arg_count] are whatever
@@ -768,6 +775,7 @@ void run_vm(void) {
     vm_heap_count = 0;
     for (int i = 0; i < MAX_RECORD_FIELDS + 1; i++) vm_heap_freelist[i] = -1;
     for (int i = 0; i < MAX_POINTER_TYPES * MAX_CLASS_METHODS; i++) vm_vtables[i] = -1;
+    for (int i = 0; i < MAX_POINTER_TYPES; i++) vm_class_parent[i] = -1;
     for (int i = 0; i < MAX_FRAME_STACK; i++) vm_static_link[i] = -1; // -1, not 0 -
                                              // 0 is a valid fp value, so this can't
                                              // just be memset to zero like the plain
@@ -1115,6 +1123,38 @@ void run_vm(void) {
             case OP_STORE_VTABLE_SLOT: {
                 int target = vm_pop(&sp);
                 vm_vtables[instr.arg] = target;
+                break;
+            }
+
+            case OP_IS_INSTANCE: {
+                int obj = vm_pop(&sp);
+                if (obj < 0) { // nil - not an instance of anything, but NOT
+                                // a fatal error like OP_LOAD_HEAP_FIELD's own
+                                // nil check: 'nil is X' must be False.
+                    vm_push(&sp, 0);
+                    break;
+                }
+                if (obj >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid pointer value %d\n", obj);
+                    fatal_abort();
+                }
+                int tag = vm_heap_mem[obj]; // offset 0 - the hidden runtime type tag
+                int result = 0;
+                while (tag != -1) {
+                    if (tag == instr.arg) { result = 1; break; }
+                    if (tag < 0 || tag >= MAX_POINTER_TYPES) {
+                        fprintf(stderr, "VM Runtime Error: Invalid class tag %d\n", tag);
+                        fatal_abort();
+                    }
+                    tag = vm_class_parent[tag];
+                }
+                vm_push(&sp, result);
+                break;
+            }
+
+            case OP_STORE_CLASS_PARENT: {
+                int parent = vm_pop(&sp);
+                vm_class_parent[instr.arg] = parent;
                 break;
             }
 

@@ -222,6 +222,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "raise") == 0) token.type = TOKEN_RAISE;
         else if (strcasecmp(token.text, "exceptmessage") == 0) token.type = TOKEN_EXCEPTMESSAGE;
         else if (strcasecmp(token.text, "property") == 0) token.type = TOKEN_PROPERTY;
+        else if (strcasecmp(token.text, "is") == 0) token.type = TOKEN_IS;
+        else if (strcasecmp(token.text, "as") == 0) token.type = TOKEN_AS;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

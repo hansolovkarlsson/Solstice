@@ -398,7 +398,11 @@ catch it" boundary this feature draws (see
 Also working: properties (`property Name: T read F write SetF;`), a
 field- or method-backed named accessor resolved entirely at compile
 time into an ordinary field access or method call — no new opcodes (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#properties)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#properties)). Also working: `is`/`as`
+(`obj is TCircle`, `obj as TCircle`) — a runtime type test and checked
+downcast against an object's actual runtime class, not its static type;
+a failed `as` raises a catchable exception, same as an explicit `raise`
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#isas)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

@@ -239,6 +239,8 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"STORE_HEAP_ARRAY_FIELD_CHAR", OP_STORE_HEAP_ARRAY_FIELD_CHAR, OPERAND_IMMEDIATE},
     {"LOAD_VTABLE_SLOT",  OP_LOAD_VTABLE_SLOT,  OPERAND_IMMEDIATE}, // operand = method slot number
     {"STORE_VTABLE_SLOT", OP_STORE_VTABLE_SLOT, OPERAND_IMMEDIATE}, // operand = precomputed flat vm_vtables[] index
+    {"IS_INSTANCE",         OP_IS_INSTANCE,         OPERAND_IMMEDIATE}, // operand = target class_id
+    {"STORE_CLASS_PARENT",  OP_STORE_CLASS_PARENT,  OPERAND_IMMEDIATE}, // operand = this class's own class_id
     {"FILE_ASSIGN",  OP_FILE_ASSIGN,  OPERAND_VAR},
     {"FILE_RESET",   OP_FILE_RESET,   OPERAND_VAR},
     {"FILE_REWRITE", OP_FILE_REWRITE, OPERAND_VAR},

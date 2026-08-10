@@ -1322,6 +1322,67 @@ primitives instead of each reinventing them.
       private members, setter int-&gt;real widening - and 14 error cases
       covering every rejection path) and
       [docs/LANGUAGE.md](LANGUAGE.md#properties).
+- [x] `is`/`as` operators — `obj is TFoo` (a runtime type test) and
+      `obj as TFoo` (a checked downcast). Unlike Properties, this is NOT
+      zero-runtime-footprint - it needs a genuine runtime check, because
+      an expression's static/declared type and an object's actual
+      runtime class can diverge once reference-assignment lets an
+      ancestor-typed variable hold a subclass's pointer value; that
+      divergence is exactly what these operators test, and it's
+      unknowable at compile time (`class_type_is_subtype_of()`, the
+      existing compile-time subtype check, only answers the static
+      question).
+
+      Two new opcodes: `OP_IS_INSTANCE` (arg = target class_id; pops an
+      object pointer, nil-checks it FIRST so `nil is X` is `False`
+      rather than a fatal nil-dereference abort, then walks a new
+      `vm_class_parent[]` table upward from the object's own runtime tag
+      until the target is found or the walk reaches the root) and
+      `OP_STORE_CLASS_PARENT` (populates one `vm_class_parent[]` slot at
+      startup). `vm_class_parent[]` is populated the exact same way
+      `vm_vtables[]` already is - no new `.bin` file format, just
+      ordinary compiler-emitted bytecode (`build_class_parent_init_chain()`
+      in `parser.c`, mirroring `build_vtable_init_chain()`) that runs
+      before any user code.
+
+      `is` compiles to a single `OP_IS_INSTANCE` call. `as` is a small
+      instruction sequence built from entirely PRE-EXISTING opcodes
+      (`OP_DUP`/`OP_PUSH`/`OP_LT`/`OP_JZ`/`OP_JMP`/`OP_POP`) plus the one
+      new `OP_IS_INSTANCE`: evaluate the object once, check for nil first
+      (nil short-circuits straight to "yield nil", bypassing the class
+      check entirely - `OP_IS_INSTANCE` alone can't distinguish "nil"
+      from "wrong non-nil class"), then on a class mismatch, push a
+      compile-time-interned failure message and `emit(OP_RAISE, 0)` -
+      the EXACT same opcode an explicit `raise` statement uses, so a
+      failed `as` is a genuinely catchable exception (Delphi's
+      `EInvalidCast`), not a fatal VM error like nil-deref/bounds checks.
+      No changes to `OP_RAISE`/the except-handler stack were needed at
+      all.
+
+      The right-hand operand (a bare class type NAME, not an expression)
+      needed new, hand-written parsing - `factor()`/`expression()` have
+      no existing hook for "identifier that names a type, not a
+      variable" (mirrors how `new(x, MethodName)` already hand-parses an
+      identifier against its own lookup table). A compile-time sanity
+      check rejects `is`/`as` between two classes with no possible
+      ancestor/descendant relationship in either direction, mirroring
+      the existing `=`/`&lt;&gt;` pointer-comparison compatibility check in
+      `type_checker.c`. `optimizer.c`'s dead-code elimination needed one
+      new side-effect guard (`has_as_cast_side_effect()`) so a `NODE_ASSIGN`
+      carrying a failed-cast-that-might-raise is never swept away just
+      because its target is otherwise unread - the same class of gap
+      `has_range_check()`/`has_set_side_effect()`/
+      `has_heap_alloc_side_effect()` already exist to close.
+
+      Scope cuts for v1 (see [docs/LANGUAGE.md](LANGUAGE.md#isas)'s "Not
+      implemented yet"): the failure message names only the target
+      class, not the actual runtime source class (no tag-to-name-string
+      machinery exists); class types only, no non-class pointer types;
+      one-shot precedence tier, no chaining. See
+      `examples/test/isas/test_isas_*.pas` (6 positive cases including
+      the ancestor-typed-variable scenario that makes the feature
+      meaningful, and 5 error cases - 4 compile-time, 1 uncaught runtime
+      exception) and [docs/LANGUAGE.md](LANGUAGE.md#isas).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
@@ -1751,9 +1812,6 @@ tag, the vtable) rather than by Delphi-completeness — these are
 unscoped ideas, not committed work, and none has a design/plan yet.
 
 **Good fit — reuse existing machinery:**
-- [ ] `is`/`as` operators (safe type check/downcast) — cheap given the
-      runtime class tag and `class_type_is_subtype_of()` already built
-      for upcast compatibility; likely the lowest-cost item on this list.
 - [ ] Abstract methods/classes (`virtual; abstract;`) — formalizes the
       already-known v1 gap ("no check yet that every declared method
       gets a body") into an intentional, checked feature.
