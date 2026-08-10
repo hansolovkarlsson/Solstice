@@ -408,7 +408,12 @@ time into an ordinary field access or method call — no new opcodes (see
 (`obj is TCircle`, `obj as TCircle`) — a runtime type test and checked
 downcast against an object's actual runtime class, not its static type;
 a failed `as` raises a catchable exception, same as an explicit `raise`
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#isas)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#isas)). Also working: class
+members (`class var Name: Type;`, `class procedure/function Foo(...);`,
+`class property Name: T read GetX write SetX;`) — one shared storage
+location per class hierarchy and true class methods/properties callable
+as `TMyClass.Foo`, with no instance and no implicit `self` (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#class-members)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

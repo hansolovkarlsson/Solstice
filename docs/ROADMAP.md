@@ -1872,6 +1872,76 @@ anyway, so this is where they land instead.
       Shared correctly across recursive calls; two procedures' own
       same-named static don't collide (mangled `__static_proc_name`) —
       see [docs/LANGUAGE.md](LANGUAGE.md#static-local-variables).
+- [x] Class members — `class var Name: Type;` (one shared global per
+      class hierarchy, not per instance), `class procedure/function
+      Foo(...);` (a TRUE class method - Delphi terminology - callable as
+      `TMyClass.Foo(...)`, no instance, no implicit `self`), and `class
+      property Name: T read GetX [write SetX];` (mirrors the shipped
+      instance-property mechanism, backed by a class var/class method
+      instead of an instance field/method).
+
+      Genuinely MORE zero-runtime-footprint than Properties was: a class
+      var is representationally identical to any other global
+      (`NODE_VARIABLE`/`NODE_ASSIGN`, completely unmodified), and a class
+      method call is a plain `NODE_CALL` (no vtable, no `self` splice) -
+      simpler than Properties' own getter/setter machinery, which still
+      needed `NODE_VIRTUAL_CALL`'s self-splicing dance. Confirmed by
+      direct reading: zero new `NodeType`s, zero new `Opcode`s, and zero
+      changes needed in `type_checker.c`/`optimizer.c`/`ast_printer.c`/
+      `codegen.c`/`vm.c`/`solas.c`/`desole.c` - a `parser.c`-only
+      feature.
+
+      The one genuinely new parsing capability: `TMyClass.Foo(...)`
+      starts with a CLASS TYPE NAME, not a variable, at the exact
+      syntactic position an ordinary variable reference already occupies
+      (the start of `factor()`'s or `statement()`'s identifier
+      resolution) - unlike Properties or `is`/`as`, which each had a
+      syntactically unambiguous position to hook a type-name lookup
+      into. Solved with a genuine one-token lookahead
+      (`try_resolve_class_qualified_access()`, using the same
+      `lexer_save_pos()`/`lexer_restore_pos()` primitives the field
+      loop's own `class var` peek already uses) that falls through to
+      the caller's completely unchanged existing resolution chain unless
+      the leading identifier is a known class name immediately followed
+      by `.`.
+
+      Class methods reuse the exact same `methods[]` table, `"%s__%s"`
+      mangling, `add_proc()`/`find_proc()`, and inheritance-copy
+      machinery an instance method already uses - `is_class_method` is
+      the only new discriminant flag, not a separate array. Two pitfalls
+      caught before any code ran (both would otherwise have been silent
+      bugs): the pre-existing method-loop's override-eligibility check
+      needed an explicit exclusion so a class method can never be
+      accepted as an "override" (no vtable slot is ever allocated for
+      one - redeclaring an inherited class method is a duplicate-name
+      error instead); and an instance property backed by a class method
+      target needed a defensive reject guard, since
+      `resolve_heap_deref_step()`'s existing getter-call path
+      unconditionally splices `self` into the call, which would silently
+      corrupt the stack against a class method (no `self` parameter at
+      slot 0) rather than just fail to compile.
+
+      Class vars are inherited BY REFERENCE, not by copy - a subclass's
+      own `class_vars[]` entry is struct-copied from the parent
+      UNCHANGED (same `sym_idx`, never re-registered), so the mangled
+      global is genuinely SHARED between `TBase.X` and `TSub.X`, matching
+      real Delphi class-var semantics automatically (verified with a
+      dedicated test).
+
+      Scope cuts for v1 (see
+      [docs/LANGUAGE.md](LANGUAGE.md#class-members)'s "Not implemented
+      yet"): no instance-qualified access to a class member (`c.Total` is
+      a compile error naming the correct `TCounter.Total` form instead -
+      the single biggest scope decision, avoiding a restructure of
+      `resolve_heap_deref_step()`'s heavily-tested field-backed property
+      logic to understand a second backing-table shape); no class method
+      virtual dispatch/overriding; `inherited` and bare instance-member
+      access are both rejected inside a class method body (no `self`
+      exists there). See `examples/test/classmember/test_classmember_*.pas`
+      (7 positive cases including inheritance-shared-storage - the one
+      most likely to silently regress if a class var were accidentally
+      copied instead of shared - and 14 error cases covering every
+      rejection path) and [docs/LANGUAGE.md](LANGUAGE.md#class-members).
 
 ### Object-oriented language features under consideration (Delphi-inspired)
 
@@ -1888,9 +1958,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
       gets a body") into an intentional, checked feature.
 - [ ] Sealed classes (`class sealed`) — a single flag check at class
       declaration time.
-- [ ] Class methods/class variables/class properties (members on the
-      class itself, not an instance) — a class var is one shared global
-      per class; a class method needs no implicit `self`.
 
 **Moderate — needs some new machinery:**
 - [ ] `TObject` implicit root class + virtual destructor pattern

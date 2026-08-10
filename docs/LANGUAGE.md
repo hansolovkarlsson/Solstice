@@ -2714,12 +2714,96 @@ end.
   getter/setter.
 - **`default` array property** — using an object directly with `[]`
   indexing via one designated indexed property.
-- **Class-level properties** — properties on the class itself, not an
-  instance (class-level fields/methods don't exist yet either).
+- **Indexed class properties** and `default` array properties — same gap
+  as above, on the class-level form (see [Class members](#class-members)).
 - **Property overriding** in a subclass.
 - **`protected`-level visibility** — a property's own visibility is
   only ever strict `private`/`public`, matching the class visibility
   model as a whole (see above).
+
+### Class members
+
+```pascal
+type
+    TCounter = class
+    private
+        class var FTotalInstances: integer;
+    public
+        FVal: integer;
+        class function GetTotal: integer;
+        procedure Bump;
+        class property Total: integer read GetTotal;
+    end;
+var c1, c2: TCounter;
+
+function TCounter.GetTotal;         { NOT 'class function' - see note below }
+begin
+    GetTotal := FTotalInstances;
+end;
+
+procedure TCounter.Bump;
+begin
+    FVal := FVal + 1;
+    FTotalInstances := FTotalInstances + 1;   { bare self-shorthand }
+end;
+
+begin
+    new(c1);
+    new(c2);
+    c1.Bump;
+    c2.Bump;
+    writeln('Total = ', TCounter.Total);      { 2 }
+end.
+```
+
+- **`class var Name: Type;`** declares one shared storage location per
+  class hierarchy, not per instance — every instance of `TCounter`, and
+  every instance of any of its descendants, sees the same
+  `FTotalInstances`. Comma-separated names and subrange types work
+  exactly like an ordinary field group.
+- **`class procedure/function Foo(...);`** declares a *true* class
+  method (Delphi terminology) — callable as `TMyClass.Foo(...)` with no
+  instance and no implicit `self`; the method body can't reference `self`
+  or any instance field/method, even by bare name. **The body definition
+  does not repeat `class`** — `function TCounter.GetTotal;` is correct,
+  matching how an ordinary method's own body definition never repeats
+  its parameter list either (the header, parsed once at declaration
+  time, already recorded that this is a class method).
+- **`class property Name: T read GetX [write SetX];`** mirrors an
+  ordinary property, but its read/write target must itself be a class
+  var or a class method — mixing kinds (a class property backed by an
+  instance method, or an instance property backed by a class method) is
+  a compile error in both directions.
+- **Access class members through the class name**: `TCounter.Total`,
+  `TCounter.GetTotal`, `TCounter.FTotalInstances` — never through an
+  instance (`c.Total` is a compile error naming the correct
+  `TCounter.Total` form instead). **Bare self-shorthand** (`FTotalInstances`
+  with no qualifier) still works from inside any method of the class —
+  instance method or class method alike, as `Bump` above shows.
+- **Inherited by reference, not by copy**: a subclass doesn't get its
+  own separate `class var` — it shares the exact same storage as its
+  ancestor. Writing through the subclass's name and reading through the
+  ancestor's name (or vice versa) sees the same value.
+- **Class methods are never overridable** — no vtable slot is ever
+  allocated for one, so redeclaring an inherited class method in a
+  subclass (even with a matching signature) is a duplicate-declaration
+  compile error, not an override. `inherited` is rejected outright
+  inside a class method body, for the same reason.
+- **Section ordering**: exactly like properties, class vars/methods/
+  properties are folded into the same three field/method/property groups
+  an ordinary class body already parses in order — a `class var` can
+  appear anywhere in the field group, a class method anywhere in the
+  method group, and so on.
+- `new(c, SomeClassMethod(...))`'s constructor-call sugar rejects a class
+  method as the constructor — it has no instance to initialize.
+
+**Not implemented yet:**
+
+- **Instance-qualified access to a class member** (`c.Total`) — only the
+  `TCounter.Total` form works; see the bullet above.
+- **Class method virtual dispatch/overriding** — see the bullet above.
+- **`protected`-level visibility**, same gap as ordinary
+  fields/methods/properties.
 
 ### `is`/`as`
 

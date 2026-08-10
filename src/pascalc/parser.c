@@ -527,6 +527,22 @@ typedef struct {
                                // pointer_types[] index of whichever class
                                // ORIGINALLY declared it - see
                                // RecordField.declaring_class_ptr_idx.
+    int is_class_method;      // unused by a functional/procedural
+                               // parameter; 1 if declared 'class
+                               // procedure'/'class function' - a TRUE
+                               // class method (Delphi terminology; NOT
+                               // the loose "class method" = "method of a
+                               // class" sense the REST of this codebase's
+                               // own comments otherwise use for an
+                               // ordinary INSTANCE method - see
+                               // build_class_member_access()'s own
+                               // comment). Called as 'ClassName.Name(...)',
+                               // no instance, no implicit 'self' parameter
+                               // at slot 0 (see parse_class_method_body()),
+                               // never virtually dispatched (see
+                               // build_vtable_init_chain()) and never
+                               // overridable (see the method-loop's own
+                               // override-eligibility check).
 } ProcParamHeader;
 
 #define MAX_CLASS_PROPERTIES 16 // no vm.c coupling needed (unlike
@@ -597,7 +613,54 @@ typedef struct {
                              // "copied, not yet overridden" never needs
                              // distinguishing from "declared fresh" for a
                              // property.
+    int is_class_property;   // 1 if declared 'class property' - a TRUE
+                             // class property, backed by a class var
+                             // (read_is_field/write_is_field) or a TRUE
+                             // class method (see ProcParamHeader.
+                             // is_class_method) instead of an instance
+                             // field/method. read_idx/write_idx then index
+                             // pt->class_vars[]/pt->methods[] (still
+                             // filtered to is_class_method entries)
+                             // instead of rt->fields[]/pt->methods[]
+                             // unfiltered. Accessed only as
+                             // 'ClassName.Name', never through an
+                             // instance - see build_class_member_access().
 } ClassProperty;
+
+#define MAX_CLASS_VARS 16 // no vm.c coupling needed - a class var is an
+                           // ordinary sym_table[]/vm_vars[] global,
+                           // reusing that pre-existing MAX_SYMBOLS-bounded
+                           // capacity; this only bounds the per-class
+                           // PARSE-TIME lookup table, same reasoning as
+                           // MAX_CLASS_PROPERTIES above.
+
+// One 'class var Name: Type;' entry - a variable shared across ALL
+// instances of a class (and every descendant that inherits it), not
+// per-instance. Unlike an instance field, this has no heap-offset
+// concept at all - it's an ORDINARY GLOBAL (sym_table[]/vm_vars[] slot),
+// mangled "ClassName__VarName" exactly like a class method's own mangled
+// name (see ProcParamHeader.mangled_name's comment), registered via the
+// same add_var() every plain global uses. Struct-copied UNCHANGED (same
+// sym_idx, never re-registered) into a descendant's own class_vars[] on
+// inheritance - this is what makes TBase.X and TSub.X genuinely share
+// ONE storage location, matching real Delphi class-var semantics for
+// free, simply by not re-running add_var() for an inherited entry.
+typedef struct {
+    char name[MAX_NAME];
+    int sym_idx;              // sym_table[]/vm_vars[] index - see comment above
+    DataType type;
+    int is_subrange;
+    int subrange_lower;
+    int subrange_upper;
+    int is_private;           // same strict-private convention as every
+                               // other class member - gates access to
+                               // THIS class var, checked against
+                               // current_class_ptr_idx.
+    int declaring_class_ptr_idx; // pointer_types[] index of whichever
+                               // class's own 'class ... end;' first
+                               // declared this class var - same
+                               // convention as every other class member.
+} ClassVar;
 
 #define MAX_POINTER_DECLS MAX_POINTER_TYPES
 // MAX_CLASS_METHODS now lives in common.h - vm.c's vm_vtables[] needs it
@@ -642,6 +705,14 @@ typedef struct {
                                   // comment; flattened across inheritance
                                   // exactly like 'methods' above, but never
                                   // overridden (add-only, like fields).
+    int class_var_count;         // only meaningful if is_class
+    ClassVar class_vars[MAX_CLASS_VARS]; // only meaningful if is_class -
+                                  // see ClassVar's own comment. Inherited
+                                  // BY REFERENCE (struct-copied UNCHANGED,
+                                  // same sym_idx, never re-added), not by
+                                  // value like fields/properties are -
+                                  // this is what makes class-var storage
+                                  // genuinely SHARED across a hierarchy.
     int parent_class_ptr_idx;    // only meaningful if is_class - this
                                   // class's OWN parent's pointer_types[]
                                   // index ('class TFoo(TBase) ... end;'),
@@ -1043,6 +1114,16 @@ static int current_proc_idx = -1;
 // same way current_proc_idx is, just one more variable in that existing
 // pattern.
 static int current_class_ptr_idx = -1;
+
+// Whether the method body CURRENTLY being parsed is a TRUE class method
+// (ProcParamHeader.is_class_method) - meaningless (0) whenever
+// current_class_ptr_idx is -1. No 'self' local exists in a class
+// method's body at all (see parse_class_method_body()'s own skip), so
+// this is what lets self-shorthand resolution (parse_self_shorthand_
+// read()/write()) tell "no self exists here, only class members are
+// reachable" apart from the ordinary instance-method case - saved/
+// restored the same way current_class_ptr_idx already is.
+static int current_method_is_class_method = 0;
 
 const char *get_current_filename(void) {
     return current_filename;
@@ -3613,6 +3694,13 @@ static int class_has_member(int class_ptr_idx, const char *name) {
     for (int i = 0; i < pt->method_count; i++) {
         if (strcmp(pt->methods[i].name, name) == 0) return 1;
     }
+    // Covers TRUE class methods (is_class_method) / TRUE class
+    // properties (is_class_property) automatically too, unmodified -
+    // they're already just flagged entries in the two loops above.
+    // class_vars[] is the one genuinely new table needing its own scan.
+    for (int i = 0; i < pt->class_var_count; i++) {
+        if (strcmp(pt->class_vars[i].name, name) == 0) return 1;
+    }
     return 0;
 }
 
@@ -3745,6 +3833,14 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             if (prop_idx != -1) {
                 match(TOKEN_IDENTIFIER);
                 ClassProperty *prop = &pt->properties[prop_idx];
+                if (prop->is_class_property) {
+                    // v1 scope cut: no instance-qualified access to a
+                    // TRUE class property - only 'ClassName.Name' (see
+                    // build_class_member_access()). Avoids teaching this
+                    // function's field-backed read/write branches above
+                    // to also understand a second backing-table shape.
+                    compile_error(name_line, "'%s' is a class property of '%s' - access it via '%s.%s', not through an instance", name, pt->name, pt->name, name);
+                }
                 if (prop->is_private && current_class_ptr_idx != prop->declaring_class_ptr_idx) {
                     // The PROPERTY's own visibility gates access here - the
                     // underlying field's/method's own is_private is
@@ -3822,6 +3918,11 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             }
             match(TOKEN_IDENTIFIER);
             ProcParamHeader *h = &pt->methods[method_idx];
+            if (h->is_class_method) {
+                // Same v1 scope cut as the class-property guard above -
+                // no instance-qualified access to a TRUE class method.
+                compile_error(name_line, "'%s' is a class method of '%s' - call it via '%s.%s', not through an instance", name, pt->name, pt->name, name);
+            }
             if (h->is_private && current_class_ptr_idx != h->declaring_class_ptr_idx) {
                 // Strict private (not "protected"): only the DECLARING
                 // class's own methods can call this, not even a
@@ -4168,6 +4269,204 @@ static ASTNode *build_property_setter_call(ASTNode *base, HeapDerefStep step, in
     return call;
 }
 
+// Shared widen+range-check helper for build_class_member_access() below -
+// factors out the int->real widening / exact-type-match check
+// build_property_setter_call() above already established as this
+// codebase's own pattern for "a value about to be stored where
+// type_checker.c has no case to defer to" (NODE_CALL/NODE_ASSIGN
+// targeting a mangled class-member global/proc have no dedicated
+// type_checker.c case either - see docs/ROADMAP.md's Properties entry
+// for why). Kept local to this one new function (not exported/reused
+// Resolves a bare class-member name (a class var, a TRUE class method,
+// or a TRUE class property - Delphi terminology; see ProcParamHeader.
+// is_class_method's own comment for why "class method" needs saying
+// explicitly here) of class_ptr_idx into a complete, SELF-FREE AST node.
+// Shared by both callers that need this: try_resolve_class_qualified_
+// access() (after consuming 'ClassName.', for 'TMyClass.Foo' access) and
+// the self-shorthand path in parse_self_shorthand_read()/write() (after
+// consuming nothing extra, for bare 'Foo' access from inside a method
+// body) - mirrors resolve_heap_deref_step()'s own single-function-two-
+// calling-contexts shape. Assumes the CURRENT token is already the bare
+// member-name identifier (not yet matched). Resolves against
+// class_vars[] -> is_class_method-flagged methods[] -> is_class_property-
+// flagged properties[], in that order (mirrors class_has_member()'s own
+// field->property->method order) - the three tables/flags are already
+// guaranteed to share one flat, collision-checked namespace (see
+// parse_class_declaration()'s own duplicate-name checks), so this
+// function never needs to worry about a name matching more than one.
+static ASTNode *build_class_member_access(int class_ptr_idx, int is_statement_context) {
+    PointerTypeDef *pt = &pointer_types[class_ptr_idx];
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "Expected a class member name");
+    }
+    char name[MAX_NAME];
+    int name_line = token.line;
+    strcpy(name, token.text);
+
+    int cvi = -1;
+    for (int i = 0; i < pt->class_var_count; i++) {
+        if (strcmp(pt->class_vars[i].name, name) == 0) { cvi = i; break; }
+    }
+    if (cvi != -1) {
+        match(TOKEN_IDENTIFIER);
+        ClassVar *cv = &pt->class_vars[cvi];
+        if (cv->is_private && current_class_ptr_idx != cv->declaring_class_ptr_idx) {
+            compile_error(name_line, "'%s' is a private class variable of class '%s' and can't be accessed here", name, pointer_types[cv->declaring_class_ptr_idx].name);
+        }
+        if (is_statement_context) {
+            match(TOKEN_ASSIGN);
+            ASTNode *value = wrap_range_check(expression(), cv->is_subrange, cv->subrange_lower, cv->subrange_upper);
+            ASTNode *assign = create_node(NODE_ASSIGN);
+            assign->line = name_line;
+            assign->data.var_idx = cv->sym_idx;
+            assign->left = value;
+            return assign;
+        }
+        ASTNode *node = create_node(NODE_VARIABLE);
+        node->line = name_line;
+        node->data.var_idx = cv->sym_idx;
+        node->expression_type = cv->type;
+        return node;
+    }
+
+    int mi = -1;
+    for (int i = 0; i < pt->method_count; i++) {
+        if (pt->methods[i].is_class_method && strcmp(pt->methods[i].name, name) == 0) { mi = i; break; }
+    }
+    if (mi != -1) {
+        match(TOKEN_IDENTIFIER);
+        ProcParamHeader *h = &pt->methods[mi];
+        if (h->is_private && current_class_ptr_idx != h->declaring_class_ptr_idx) {
+            compile_error(name_line, "'%s' is a private class method of class '%s' and can't be called here", name, pointer_types[h->declaring_class_ptr_idx].name);
+        }
+        int mangled_idx = find_proc(h->mangled_name);
+        if (mangled_idx == -1) {
+            compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, name);
+        }
+        if (!is_statement_context && !h->is_function) {
+            compile_error(name_line, "'%s' is a procedure and does not return a value; it cannot be used in an expression", name);
+        }
+        ASTNode *call = create_node(NODE_CALL);
+        call->line = name_line;
+        call->data.var_idx = mangled_idx;
+        call->expression_type = h->is_function ? h->return_type : TYPE_UNKNOWN;
+        call->left = parse_call_arguments(mangled_idx);
+        if (is_statement_context) call->op = TOKEN_PROCEDURE;
+        return call;
+    }
+
+    int pi = -1;
+    for (int i = 0; i < pt->property_count; i++) {
+        if (pt->properties[i].is_class_property && strcmp(pt->properties[i].name, name) == 0) { pi = i; break; }
+    }
+    if (pi != -1) {
+        match(TOKEN_IDENTIFIER);
+        ClassProperty *prop = &pt->properties[pi];
+        if (prop->is_private && current_class_ptr_idx != prop->declaring_class_ptr_idx) {
+            compile_error(name_line, "'%s' is a private class property of class '%s' and can't be accessed here", name, pointer_types[prop->declaring_class_ptr_idx].name);
+        }
+        if (is_statement_context) {
+            if (!prop->has_write) {
+                compile_error(name_line, "'%s' is a read-only class property of class '%s' and can't be assigned to", name, pt->name);
+            }
+            if (prop->write_is_field) {
+                ClassVar *cv = &pt->class_vars[prop->write_idx];
+                match(TOKEN_ASSIGN);
+                ASTNode *value = wrap_range_check(expression(), cv->is_subrange, cv->subrange_lower, cv->subrange_upper);
+                ASTNode *assign = create_node(NODE_ASSIGN);
+                assign->line = name_line;
+                assign->data.var_idx = cv->sym_idx;
+                assign->left = value;
+                return assign;
+            }
+            // Setter class method - its mangled proc has NO 'self' at
+            // slot 0 (see parse_class_method_body()'s own skip), so the
+            // one user-visible parameter is slot 0, not slot 1 the way
+            // build_property_setter_call()'s instance-method setter
+            // needs above.
+            ProcParamHeader *h = &pt->methods[prop->write_idx];
+            int mangled_idx = find_proc(h->mangled_name);
+            if (mangled_idx == -1) {
+                compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, h->name);
+            }
+            match(TOKEN_ASSIGN);
+            ASTNode *value = wrap_range_check(expression(), proc_table[mangled_idx].param_is_subrange[0],
+                proc_table[mangled_idx].param_subrange_lower[0], proc_table[mangled_idx].param_subrange_upper[0]);
+            ASTNode *call = create_node(NODE_CALL);
+            call->line = name_line;
+            call->data.var_idx = mangled_idx;
+            call->expression_type = TYPE_UNKNOWN;
+            call->left = value; // parse_call_arguments() builds a ->next-chained arg list; a single node is already a valid one-element list
+            call->op = TOKEN_PROCEDURE;
+            return call;
+        }
+        // Read/expression context.
+        if (prop->read_is_field) {
+            ClassVar *cv = &pt->class_vars[prop->read_idx];
+            ASTNode *node = create_node(NODE_VARIABLE);
+            node->line = name_line;
+            node->data.var_idx = cv->sym_idx;
+            node->expression_type = cv->type;
+            return node;
+        }
+        // Getter class method - arity/return-type were already validated
+        // to be zero-arg/exact-match at property-declaration time, so
+        // parse_call_arguments() (which tolerates a missing '(' for a
+        // zero-arg call) needs no special-casing here.
+        ProcParamHeader *h = &pt->methods[prop->read_idx];
+        int mangled_idx = find_proc(h->mangled_name);
+        if (mangled_idx == -1) {
+            compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, h->name);
+        }
+        ASTNode *call = create_node(NODE_CALL);
+        call->line = name_line;
+        call->data.var_idx = mangled_idx;
+        call->expression_type = h->return_type;
+        call->left = parse_call_arguments(mangled_idx);
+        return call;
+    }
+
+    compile_error(name_line, "'%s' is not a class member of '%s'", name, pt->name);
+    return NULL; // unreachable
+}
+
+// Disambiguates a bare leading identifier that STARTS an expression
+// (factor()) or a statement (statement()) between "an ordinary
+// variable/const/proc reference" (the overwhelmingly common case, left
+// completely untouched) and "TMyClass.Foo" - a CLASS TYPE NAME used as a
+// qualifier, at the exact same syntactic position an ordinary variable
+// reference already occupies. Unlike is/as's own class-name parsing
+// (which sits in an unambiguous position right after 'is'/'as' has
+// already been consumed, on a LATER token factor() never even sees - see
+// expression()'s own TOKEN_IS/TOKEN_AS handling), the parser does NOT
+// yet know, at the moment it sees THIS bare identifier, which
+// interpretation is coming - class names and variable names live in
+// separate, non-cross-checked namespaces in this compiler (nothing stops
+// a variable sharing a name with a class), so a genuine one-token
+// lookahead (save/restore the lexer position, same primitives the field
+// loop's own TOKEN_CLASS branch already uses) is required, not just a
+// name match. Returns NULL (falls through to the caller's own,
+// completely unchanged existing resolution chain) unless the identifier
+// is a known class type name IMMEDIATELY followed by '.' -
+// class-qualified interpretation wins whenever both hold, a deliberate
+// precedence rule documented in docs/LANGUAGE.md.
+static ASTNode *try_resolve_class_qualified_access(int is_statement_context) {
+    int class_idx = find_pointer_type(token.text);
+    if (class_idx == -1 || !pointer_types[class_idx].is_class) {
+        return NULL; // cheap, non-disruptive check for the overwhelmingly common case
+    }
+    Token saved_token = token;
+    LexerPos saved_pos = lexer_save_pos();
+    next_token(); // peek past the class name
+    if (token.type != TOKEN_PERIOD) {
+        token = saved_token;
+        lexer_restore_pos(saved_pos);
+        return NULL;
+    }
+    match(TOKEN_PERIOD);
+    return build_class_member_access(class_idx, is_statement_context);
+}
+
 // Builds the synthetic 'self'-read node any unqualified self-shorthand
 // access starts from - the same NODE_LOCAL_VAR shape an explicit 'self'
 // reference resolves to via the ordinary local lookup, just built
@@ -4229,6 +4528,14 @@ static ASTNode *parse_inherited_call(int is_statement_context) {
     if (current_class_ptr_idx == -1) {
         compile_error(line, "'inherited' can only be used inside a class method body");
     }
+    if (current_method_is_class_method) {
+        // TRUE class methods (Delphi terminology - see ProcParamHeader.
+        // is_class_method) are never overridden (no vtable slot, ever -
+        // see build_vtable_init_chain()'s skip and the method-loop's own
+        // override-eligibility check), so there's no ancestor
+        // implementation for 'inherited' to reach.
+        compile_error(line, "'inherited' can't be used inside a class method body - class methods are never overridden");
+    }
     PointerTypeDef *cls = &pointer_types[current_class_ptr_idx];
     if (cls->parent_class_ptr_idx == -1) {
         compile_error(line, "class '%s' has no parent class - 'inherited' can't be used here", cls->name);
@@ -4256,6 +4563,9 @@ static ASTNode *parse_inherited_call(int is_statement_context) {
         compile_error(line, "'%s' is not a declared method of '%s' (or any of its ancestors)", method_name, parent->name);
     }
     ProcParamHeader *h = &parent->methods[method_idx];
+    if (h->is_class_method) {
+        compile_error(line, "'inherited' can only reach an instance method - '%s' is a class method; call '%s.%s' directly instead", method_name, parent->name, method_name);
+    }
     int mangled_idx = find_proc(h->mangled_name);
     if (mangled_idx == -1) {
         compile_error(line, "'%s.%s' doesn't have a body yet", parent->name, method_name);
@@ -4285,6 +4595,28 @@ static ASTNode *parse_inherited_call(int is_statement_context) {
     return call;
 }
 
+// Whether 'name' names a CLASS-shaped member (a class var, a TRUE class
+// method, or a TRUE class property) of class_ptr_idx - as opposed to an
+// ordinary instance field/method/property. Used by the self-shorthand
+// read/write functions below to decide, BEFORE ever building a 'self'
+// reference, whether a bare name should route to build_class_member_
+// access() (self-free) instead - critical inside a class method body,
+// which has no 'self' local at all (see parse_class_method_body()'s own
+// skip) to build in the first place.
+static int class_ptr_has_class_shaped_member(int class_ptr_idx, const char *name) {
+    PointerTypeDef *pt = &pointer_types[class_ptr_idx];
+    for (int i = 0; i < pt->class_var_count; i++) {
+        if (strcmp(pt->class_vars[i].name, name) == 0) return 1;
+    }
+    for (int i = 0; i < pt->method_count; i++) {
+        if (pt->methods[i].is_class_method && strcmp(pt->methods[i].name, name) == 0) return 1;
+    }
+    for (int i = 0; i < pt->property_count; i++) {
+        if (pt->properties[i].is_class_property && strcmp(pt->properties[i].name, name) == 0) return 1;
+    }
+    return 0;
+}
+
 // Read-context (expression) self-shorthand: the current token is a bare
 // identifier already confirmed, by the caller via class_has_member(), to
 // name a field or method of the enclosing method's class - resolves it
@@ -4296,6 +4628,12 @@ static ASTNode *parse_inherited_call(int is_statement_context) {
 // '^.field') - shorthand only changes how the FIRST step is found, never
 // how a chain continues past it.
 static ASTNode *parse_self_shorthand_read(int line) {
+    if (class_ptr_has_class_shaped_member(current_class_ptr_idx, token.text)) {
+        return build_class_member_access(current_class_ptr_idx, 0);
+    }
+    if (current_method_is_class_method) {
+        compile_error(token.line, "cannot access instance member '%s' from a class method - no instance available", token.text);
+    }
     ASTNode *base = build_self_reference_node(line);
     HeapDerefStep step = resolve_heap_deref_step(base, 0, 0); // expression context, no explicit dot to consume
     if (step.is_method_call) {
@@ -4332,6 +4670,12 @@ static ASTNode *parse_self_shorthand_read(int line) {
 // parse_self_shorthand_read() delegates to parse_heap_deref_read().
 static ASTNode *parse_self_shorthand_write(void) {
     int line = token.line;
+    if (class_ptr_has_class_shaped_member(current_class_ptr_idx, token.text)) {
+        return build_class_member_access(current_class_ptr_idx, 1);
+    }
+    if (current_method_is_class_method) {
+        compile_error(token.line, "cannot access instance member '%s' from a class method - no instance available", token.text);
+    }
     ASTNode *base = build_self_reference_node(line);
     HeapDerefStep step = resolve_heap_deref_step(base, 1, 0); // statement context, no explicit dot to consume
     if (step.is_method_call) {
@@ -4991,6 +5335,9 @@ static ASTNode *factor(void) {
         return node;
     } else if (token.type == TOKEN_IDENTIFIER) {
         int line = token.line;
+
+        ASTNode *class_qualified = try_resolve_class_qualified_access(0);
+        if (class_qualified) return class_qualified;
 
         int const_idx = find_const(token.text);
         if (const_idx != -1) {
@@ -5754,35 +6101,12 @@ static void parse_class_declaration(const char *class_name, int line) {
         }
     }
 
-    // Tracks the currently-active 'private'/'public' section - persists
-    // across BOTH this field loop and the method loop below (one shared
-    // state, not reset in between), since this compiler's class grammar
-    // parses all fields first, then all methods, unlike real Pascal's
-    // free interleaving of the two - so writing a 'private'/'public'
-    // section among the methods too works, just not interleaved with
-    // fields within one section. Defaults to public, so an existing
-    // class using neither keyword is completely unaffected.
-    // pointer_type_count itself (not yet incremented - see 'pt' below)
-    // is already this class's own future pointer_types[] index by
-    // construction, needed as declaring_class_ptr_idx for every
-    // field/method this class declares itself (as opposed to inherits).
-    int current_is_private = 0;
-    while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC) {
-        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
-        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
-        // Array-typed and nested-record fields are both accepted here -
-        // parse_record_field_group() already enforces every restriction
-        // that still applies (a nested field's own type must be array-
-        // field-free). class_field_heap_slots()/class_field_base_offset()
-        // account for either field kind's real heap-slot cost, and the
-        // MAX_RECORD_FIELDS + 1 overflow guard below (this function's own
-        // target_elem_size check) catches an oversized combination of
-        // either kind at compile time.
-        parse_record_field_group(rt, rt_idx, current_is_private, pointer_type_count);
-        match(TOKEN_SEMI);
-    }
-    record_type_count++;
-
+    // pt setup (and every inheritance-copy loop) moved HERE, ahead of the
+    // field loop below - the field loop now also parses 'class var'
+    // groups (see its own TOKEN_CLASS branch), which need pt->class_vars[]
+    // to already exist. Harmless to hoist: pt->method_count/property_count/
+    // class_var_count are each explicitly zeroed right where they're used
+    // either way, just slightly earlier now.
     if (pointer_type_count >= MAX_POINTER_TYPES) {
         compile_error(line, "Too many pointer type declarations (limit is %d)", MAX_POINTER_TYPES);
     }
@@ -5801,6 +6125,8 @@ static void parse_class_declaration(const char *class_name, int line) {
         // method-parsing loop below's own existing MAX_CLASS_METHODS
         // check (against the running, inherited-seeded pt->method_count)
         // catches any overflow from adding this class's own methods.
+        // Covers TRUE class methods (ProcParamHeader.is_class_method)
+        // too, unchanged - they're plain entries in this same table.
         for (int i = 0; i < parent->method_count; i++) {
             pt->methods[pt->method_count] = parent->methods[i];
             pt->methods[pt->method_count].is_inherited = 1;
@@ -5814,12 +6140,117 @@ static void parse_class_declaration(const char *class_name, int line) {
         // duplicate-name check below) - so, unlike the method copy above,
         // no is_inherited marking is needed here. Same overflow reasoning
         // as the field/method copies: parent->property_count is already
-        // <= MAX_CLASS_PROPERTIES by construction.
+        // <= MAX_CLASS_PROPERTIES by construction. Covers TRUE class
+        // properties (ClassProperty.is_class_property) too, unchanged.
         for (int i = 0; i < parent->property_count; i++) {
             pt->properties[pt->property_count] = parent->properties[i];
             pt->property_count++;
         }
     }
+    pt->class_var_count = 0;
+    if (parent != NULL) {
+        // UNCHANGED struct-copy (same sym_idx, never re-added via
+        // add_var()) - this is what makes a class var's storage
+        // genuinely SHARED between the declaring class and every
+        // descendant, rather than an independent per-subclass copy the
+        // way an ordinary field gets (see ClassVar's own comment).
+        for (int i = 0; i < parent->class_var_count; i++) {
+            pt->class_vars[pt->class_var_count] = parent->class_vars[i];
+            pt->class_var_count++;
+        }
+    }
+
+    // Tracks the currently-active 'private'/'public' section - persists
+    // across ALL THREE of this field loop, the method loop, and the
+    // property loop below (one shared state, not reset in between),
+    // since this compiler's class grammar parses all fields first, then
+    // all methods, then all properties, unlike real Pascal's free
+    // interleaving of the two - so writing a 'private'/'public' section
+    // among the methods too works, just not interleaved with fields
+    // within one section. Defaults to public, so an existing class using
+    // neither keyword is completely unaffected. pointer_type_count
+    // itself (not yet incremented - pt above already points at
+    // &pointer_types[pointer_type_count]) is already this class's own
+    // future pointer_types[] index by construction, needed as
+    // declaring_class_ptr_idx for every field/method/property/class var
+    // this class declares itself (as opposed to inherits).
+    int current_is_private = 0;
+    while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+        if (token.type == TOKEN_CLASS) {
+            // 'class var Name: Type;' (a class var, handled here since
+            // it shares the field loop's own name-group/type syntax) vs.
+            // 'class procedure'/'class function' (method-loop territory)
+            // vs. 'class property' (property-loop territory) - all start
+            // with the same TOKEN_CLASS, so a one-token peek is required
+            // to tell them apart before committing. Uses the lexer's
+            // existing save/restore primitives (already used for a much
+            // bigger backtrack, a full unit re-parse - see load_unit()).
+            Token saved_token = token;
+            LexerPos saved_pos = lexer_save_pos();
+            next_token(); // peek past 'class'
+            if (token.type == TOKEN_VAR) {
+                match(TOKEN_VAR);
+                int group_line = token.line; // capture BEFORE parse_name_group() - NameGroup has no line field, and token has moved past the whole group by the time it returns
+                NameGroup g = parse_name_group();
+                if (g.is_array || g.is_record || g.is_array_of_record) {
+                    compile_error(group_line, "A class var must be a scalar type - array and record class vars aren't supported yet");
+                }
+                for (int i = 0; i < g.count; i++) {
+                    if (find_record_field(rt_idx, g.names[i]) != -1) {
+                        compile_error(group_line, "'%s' is already a field of class '%s'", g.names[i], class_name);
+                    }
+                    int dup = 0;
+                    for (int j = 0; j < pt->class_var_count; j++) {
+                        if (strcmp(pt->class_vars[j].name, g.names[i]) == 0) { dup = 1; break; }
+                    }
+                    if (dup) {
+                        compile_error(group_line, "Duplicate class variable '%s' in class '%s'", g.names[i], class_name);
+                    }
+                    if (pt->class_var_count >= MAX_CLASS_VARS) {
+                        compile_error(group_line, "Class '%s' has too many class variables (limit is %d)", class_name, MAX_CLASS_VARS);
+                    }
+                    char mangled[2 * MAX_NAME];
+                    snprintf(mangled, sizeof(mangled), "%s__%s", class_name, g.names[i]);
+                    int sym_idx = sym_count;
+                    add_var(mangled, g.type);
+                    sym_table[sym_idx].is_subrange = g.is_subrange;
+                    sym_table[sym_idx].subrange_lower = g.subrange_lower;
+                    sym_table[sym_idx].subrange_upper = g.subrange_upper;
+                    ClassVar *cv = &pt->class_vars[pt->class_var_count++];
+                    strcpy(cv->name, g.names[i]);
+                    cv->sym_idx = sym_idx;
+                    cv->type = g.type;
+                    cv->is_subrange = g.is_subrange;
+                    cv->subrange_lower = g.subrange_lower;
+                    cv->subrange_upper = g.subrange_upper;
+                    cv->is_private = current_is_private;
+                    cv->declaring_class_ptr_idx = pointer_type_count;
+                }
+                match(TOKEN_SEMI);
+                continue;
+            }
+            // Not 'class var' - restore the peek and hand off to the
+            // method loop below, which re-peeks this same TOKEN_CLASS
+            // for 'class procedure'/'class function'.
+            token = saved_token;
+            lexer_restore_pos(saved_pos);
+            break;
+        }
+        // Array-typed and nested-record fields are both accepted here -
+        // parse_record_field_group() already enforces every restriction
+        // that still applies (a nested field's own type must be array-
+        // field-free). class_field_heap_slots()/class_field_base_offset()
+        // account for either field kind's real heap-slot cost, and the
+        // MAX_RECORD_FIELDS + 1 overflow guard below (this function's own
+        // target_elem_size check) catches an oversized combination of
+        // either kind at compile time.
+        parse_record_field_group(rt, rt_idx, current_is_private, pointer_type_count);
+        match(TOKEN_SEMI);
+    }
+    record_type_count++;
+
     int inherited_method_count = pt->method_count;
     // Tracks which INHERITED slots this class has already overridden -
     // needed so overriding the SAME inherited method twice in one class
@@ -5829,14 +6260,41 @@ static void parse_class_declaration(const char *class_name, int line) {
     // it past inherited_method_count).
     int already_overridden[MAX_CLASS_METHODS] = {0};
 
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC) {
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
         if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
         if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+        int is_class_method_decl = 0;
+        if (token.type == TOKEN_CLASS) {
+            // 'class procedure'/'class function' (a TRUE class method) vs.
+            // 'class property' (property-loop territory) - one-token
+            // peek, same primitive the field loop's own TOKEN_CLASS
+            // branch already uses.
+            Token saved_token = token;
+            LexerPos saved_pos = lexer_save_pos();
+            next_token(); // peek past 'class'
+            if (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
+                is_class_method_decl = 1;
+                // token is now PROCEDURE/FUNCTION - fall through below,
+                // parse_proc_param_header() picks up from here.
+            } else if (token.type == TOKEN_PROPERTY) {
+                token = saved_token;
+                lexer_restore_pos(saved_pos);
+                break;
+            } else {
+                compile_error(token.line, "Expected 'procedure', 'function', or 'property' after 'class' here");
+            }
+        }
         int method_line = token.line;
         ProcParamHeader h = parse_proc_param_header();
+        h.is_class_method = is_class_method_decl;
         match(TOKEN_SEMI);
         if (find_record_field(rt_idx, h.name) != -1) {
             compile_error(method_line, "'%s' is already a field of class '%s'", h.name, class_name);
+        }
+        for (int i = 0; i < pt->class_var_count; i++) {
+            if (strcmp(pt->class_vars[i].name, h.name) == 0) {
+                compile_error(method_line, "'%s' is already a class variable of class '%s'", h.name, class_name);
+            }
         }
         snprintf(h.mangled_name, MAX_NAME, "%s__%s", class_name, h.name);
         h.is_inherited = 0;
@@ -5853,8 +6311,14 @@ static void parse_class_declaration(const char *class_name, int line) {
             }
             pt->methods[pt->method_count] = h;
             pt->method_count++;
-        } else if (existing_idx < inherited_method_count && !already_overridden[existing_idx]) {
+        } else if (existing_idx < inherited_method_count && !already_overridden[existing_idx]
+                   && !h.is_class_method && !pt->methods[existing_idx].is_class_method) {
             // An override - must match the inherited signature exactly.
+            // A TRUE class method is never overridable (no vtable slot,
+            // ever - see build_vtable_init_chain()'s own skip) - any
+            // collision involving one (new-vs-inherited-instance, new-
+            // vs-inherited-class, new-instance-vs-inherited-class) falls
+            // through to the plain "Duplicate method" error below instead.
             if (!proc_param_headers_match(&pt->methods[existing_idx], &h)) {
                 compile_error(method_line, "'%s.%s' overrides an inherited method with a different signature - an override's parameter/return types must match exactly", class_name, h.name);
             }
@@ -5870,9 +6334,21 @@ static void parse_class_declaration(const char *class_name, int line) {
     // class body, and by this point rt->fields[]/pt->methods[] are both
     // guaranteed fully populated (including any inherited entries copied in
     // above), so lookup order within THIS loop doesn't matter.
-    while (token.type == TOKEN_PROPERTY || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC) {
+    while (token.type == TOKEN_PROPERTY || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
         if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
         if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+        int is_class_property_decl = 0;
+        if (token.type == TOKEN_CLASS) {
+            // This is the LAST of the three declaration loops, so unlike
+            // the field/method loops' own TOKEN_CLASS branches, there's
+            // no further loop to hand off to if what follows isn't
+            // 'property' - a plain compile_error() is correct here.
+            match(TOKEN_CLASS);
+            if (token.type != TOKEN_PROPERTY) {
+                compile_error(token.line, "Expected 'property' after 'class' here");
+            }
+            is_class_property_decl = 1;
+        }
 
         int prop_line = token.line;
         match(TOKEN_PROPERTY);
@@ -5883,9 +6359,9 @@ static void parse_class_declaration(const char *class_name, int line) {
         strcpy(prop_name, token.text);
         match(TOKEN_IDENTIFIER);
 
-        // Properties share one flat namespace with fields and methods,
-        // exactly like methods already do with fields (see the method
-        // loop's own find_record_field() check above).
+        // Properties share one flat namespace with fields, methods, and
+        // class vars, exactly like methods already do with fields (see
+        // the method loop's own find_record_field() check above).
         if (find_record_field(rt_idx, prop_name) != -1) {
             compile_error(prop_line, "'%s' is already a field of class '%s'", prop_name, class_name);
         }
@@ -5897,6 +6373,11 @@ static void parse_class_declaration(const char *class_name, int line) {
         for (int i = 0; i < pt->property_count; i++) {
             if (strcmp(pt->properties[i].name, prop_name) == 0) {
                 compile_error(prop_line, "Duplicate property '%s' in class '%s'", prop_name, class_name);
+            }
+        }
+        for (int i = 0; i < pt->class_var_count; i++) {
+            if (strcmp(pt->class_vars[i].name, prop_name) == 0) {
+                compile_error(prop_line, "'%s' is already a class variable of class '%s'", prop_name, class_name);
             }
         }
 
@@ -5921,38 +6402,85 @@ static void parse_class_declaration(const char *class_name, int line) {
         prop.is_private = current_is_private;
         prop.declaring_class_ptr_idx = pointer_type_count;
         prop.has_write = 0;
+        prop.is_class_property = is_class_property_decl;
 
-        int rfi = find_record_field(rt_idx, read_name);
-        if (rfi != -1) {
-            RecordField *rf = &rt->fields[rfi];
-            if (rf->is_array || rf->is_record) {
-                compile_error(read_line, "Property '%s' read target '%s' must be a scalar field (array/nested-record fields aren't supported as a property target)", prop_name, read_name);
+        if (is_class_property_decl) {
+            int cvi = -1;
+            for (int i = 0; i < pt->class_var_count; i++) {
+                if (strcmp(pt->class_vars[i].name, read_name) == 0) { cvi = i; break; }
             }
-            if (rf->type != prop_type) {
-                compile_error(read_line, "Property '%s' read target field '%s' has a different type than the property itself", prop_name, read_name);
+            if (cvi != -1) {
+                if (pt->class_vars[cvi].type != prop_type) {
+                    compile_error(read_line, "Property '%s' read target class var '%s' has a different type than the property itself", prop_name, read_name);
+                }
+                prop.read_is_field = 1;
+                prop.read_idx = cvi;
+            } else {
+                int mi = -1;
+                for (int i = 0; i < pt->method_count; i++) {
+                    if (strcmp(pt->methods[i].name, read_name) == 0) { mi = i; break; }
+                }
+                if (mi == -1) {
+                    compile_error(read_line, "'%s' is not a class variable or class method of class '%s' (property '%s' read target)", read_name, class_name, prop_name);
+                }
+                ProcParamHeader *rh = &pt->methods[mi];
+                if (!rh->is_class_method) {
+                    compile_error(read_line, "Property '%s' read target '%s' must be a class method, not an instance method (or declare '%s' as an instance property instead)", prop_name, read_name, prop_name);
+                }
+                if (!rh->is_function) {
+                    compile_error(read_line, "Property '%s' read target '%s' must be a function (it's a procedure)", prop_name, read_name);
+                }
+                if (rh->param_count != 0) {
+                    compile_error(read_line, "Property '%s' read target '%s' must take no arguments (it takes %d)", prop_name, read_name, rh->param_count);
+                }
+                if (rh->return_type != prop_type) {
+                    compile_error(read_line, "Property '%s' read target function '%s' returns a different type than the property itself", prop_name, read_name);
+                }
+                prop.read_is_field = 0;
+                prop.read_idx = mi;
             }
-            prop.read_is_field = 1;
-            prop.read_idx = rfi;
         } else {
-            int mi = -1;
-            for (int i = 0; i < pt->method_count; i++) {
-                if (strcmp(pt->methods[i].name, read_name) == 0) { mi = i; break; }
+            int rfi = find_record_field(rt_idx, read_name);
+            if (rfi != -1) {
+                RecordField *rf = &rt->fields[rfi];
+                if (rf->is_array || rf->is_record) {
+                    compile_error(read_line, "Property '%s' read target '%s' must be a scalar field (array/nested-record fields aren't supported as a property target)", prop_name, read_name);
+                }
+                if (rf->type != prop_type) {
+                    compile_error(read_line, "Property '%s' read target field '%s' has a different type than the property itself", prop_name, read_name);
+                }
+                prop.read_is_field = 1;
+                prop.read_idx = rfi;
+            } else {
+                int mi = -1;
+                for (int i = 0; i < pt->method_count; i++) {
+                    if (strcmp(pt->methods[i].name, read_name) == 0) { mi = i; break; }
+                }
+                if (mi == -1) {
+                    compile_error(read_line, "'%s' is not a field or method of class '%s' (property '%s' read target)", read_name, class_name, prop_name);
+                }
+                ProcParamHeader *rh = &pt->methods[mi];
+                if (rh->is_class_method) {
+                    // Symmetric to the class-property guard above -
+                    // resolve_heap_deref_step()'s property-read branch
+                    // unconditionally splices 'self' into the getter
+                    // call, so an unchecked instance property backed by
+                    // a class method (no 'self' at slot 0) would corrupt
+                    // the stack at runtime, not just fail to compile.
+                    compile_error(read_line, "Property '%s' read target '%s' is a class method - declare '%s' as a 'class property' instead", prop_name, read_name, prop_name);
+                }
+                if (!rh->is_function) {
+                    compile_error(read_line, "Property '%s' read target '%s' must be a function (it's a procedure)", prop_name, read_name);
+                }
+                if (rh->param_count != 0) {
+                    compile_error(read_line, "Property '%s' read target '%s' must take no arguments (it takes %d)", prop_name, read_name, rh->param_count);
+                }
+                if (rh->return_type != prop_type) {
+                    compile_error(read_line, "Property '%s' read target function '%s' returns a different type than the property itself", prop_name, read_name);
+                }
+                prop.read_is_field = 0;
+                prop.read_idx = mi;
             }
-            if (mi == -1) {
-                compile_error(read_line, "'%s' is not a field or method of class '%s' (property '%s' read target)", read_name, class_name, prop_name);
-            }
-            ProcParamHeader *rh = &pt->methods[mi];
-            if (!rh->is_function) {
-                compile_error(read_line, "Property '%s' read target '%s' must be a function (it's a procedure)", prop_name, read_name);
-            }
-            if (rh->param_count != 0) {
-                compile_error(read_line, "Property '%s' read target '%s' must take no arguments (it takes %d)", prop_name, read_name, rh->param_count);
-            }
-            if (rh->return_type != prop_type) {
-                compile_error(read_line, "Property '%s' read target function '%s' returns a different type than the property itself", prop_name, read_name);
-            }
-            prop.read_is_field = 0;
-            prop.read_idx = mi;
         }
 
         if (token.type == TOKEN_WRITE) {
@@ -5965,40 +6493,83 @@ static void parse_class_declaration(const char *class_name, int line) {
             strcpy(write_name, token.text);
             match(TOKEN_IDENTIFIER);
 
-            int wfi = find_record_field(rt_idx, write_name);
-            if (wfi != -1) {
-                RecordField *wf = &rt->fields[wfi];
-                if (wf->is_array || wf->is_record) {
-                    compile_error(write_line, "Property '%s' write target '%s' must be a scalar field", prop_name, write_name);
+            if (is_class_property_decl) {
+                int cvi = -1;
+                for (int i = 0; i < pt->class_var_count; i++) {
+                    if (strcmp(pt->class_vars[i].name, write_name) == 0) { cvi = i; break; }
                 }
-                if (wf->type != prop_type) {
-                    compile_error(write_line, "Property '%s' write target field '%s' has a different type than the property itself", prop_name, write_name);
+                if (cvi != -1) {
+                    if (pt->class_vars[cvi].type != prop_type) {
+                        compile_error(write_line, "Property '%s' write target class var '%s' has a different type than the property itself", prop_name, write_name);
+                    }
+                    prop.write_is_field = 1;
+                    prop.write_idx = cvi;
+                } else {
+                    int mi = -1;
+                    for (int i = 0; i < pt->method_count; i++) {
+                        if (strcmp(pt->methods[i].name, write_name) == 0) { mi = i; break; }
+                    }
+                    if (mi == -1) {
+                        compile_error(write_line, "'%s' is not a class variable or class method of class '%s' (property '%s' write target)", write_name, class_name, prop_name);
+                    }
+                    ProcParamHeader *wh = &pt->methods[mi];
+                    if (!wh->is_class_method) {
+                        compile_error(write_line, "Property '%s' write target '%s' must be a class method, not an instance method", prop_name, write_name);
+                    }
+                    if (wh->is_function) {
+                        compile_error(write_line, "Property '%s' write target '%s' must be a procedure (it's a function)", prop_name, write_name);
+                    }
+                    if (wh->param_count != 1) {
+                        compile_error(write_line, "Property '%s' write target '%s' must take exactly one argument (it takes %d)", prop_name, write_name, wh->param_count);
+                    }
+                    if (wh->param_is_var[0]) {
+                        compile_error(write_line, "Property '%s' write target '%s' can't take its argument by 'var'", prop_name, write_name);
+                    }
+                    if (wh->param_types[0] != prop_type) {
+                        compile_error(write_line, "Property '%s' write target '%s' takes a different type than the property itself", prop_name, write_name);
+                    }
+                    prop.write_is_field = 0;
+                    prop.write_idx = mi;
                 }
-                prop.write_is_field = 1;
-                prop.write_idx = wfi;
             } else {
-                int mi = -1;
-                for (int i = 0; i < pt->method_count; i++) {
-                    if (strcmp(pt->methods[i].name, write_name) == 0) { mi = i; break; }
+                int wfi = find_record_field(rt_idx, write_name);
+                if (wfi != -1) {
+                    RecordField *wf = &rt->fields[wfi];
+                    if (wf->is_array || wf->is_record) {
+                        compile_error(write_line, "Property '%s' write target '%s' must be a scalar field", prop_name, write_name);
+                    }
+                    if (wf->type != prop_type) {
+                        compile_error(write_line, "Property '%s' write target field '%s' has a different type than the property itself", prop_name, write_name);
+                    }
+                    prop.write_is_field = 1;
+                    prop.write_idx = wfi;
+                } else {
+                    int mi = -1;
+                    for (int i = 0; i < pt->method_count; i++) {
+                        if (strcmp(pt->methods[i].name, write_name) == 0) { mi = i; break; }
+                    }
+                    if (mi == -1) {
+                        compile_error(write_line, "'%s' is not a field or method of class '%s' (property '%s' write target)", write_name, class_name, prop_name);
+                    }
+                    ProcParamHeader *wh = &pt->methods[mi];
+                    if (wh->is_class_method) {
+                        compile_error(write_line, "Property '%s' write target '%s' is a class method - declare '%s' as a 'class property' instead", prop_name, write_name, prop_name);
+                    }
+                    if (wh->is_function) {
+                        compile_error(write_line, "Property '%s' write target '%s' must be a procedure (it's a function)", prop_name, write_name);
+                    }
+                    if (wh->param_count != 1) {
+                        compile_error(write_line, "Property '%s' write target '%s' must take exactly one argument (it takes %d)", prop_name, write_name, wh->param_count);
+                    }
+                    if (wh->param_is_var[0]) {
+                        compile_error(write_line, "Property '%s' write target '%s' can't take its argument by 'var'", prop_name, write_name);
+                    }
+                    if (wh->param_types[0] != prop_type) {
+                        compile_error(write_line, "Property '%s' write target '%s' takes a different type than the property itself", prop_name, write_name);
+                    }
+                    prop.write_is_field = 0;
+                    prop.write_idx = mi;
                 }
-                if (mi == -1) {
-                    compile_error(write_line, "'%s' is not a field or method of class '%s' (property '%s' write target)", write_name, class_name, prop_name);
-                }
-                ProcParamHeader *wh = &pt->methods[mi];
-                if (wh->is_function) {
-                    compile_error(write_line, "Property '%s' write target '%s' must be a procedure (it's a function)", prop_name, write_name);
-                }
-                if (wh->param_count != 1) {
-                    compile_error(write_line, "Property '%s' write target '%s' must take exactly one argument (it takes %d)", prop_name, write_name, wh->param_count);
-                }
-                if (wh->param_is_var[0]) {
-                    compile_error(write_line, "Property '%s' write target '%s' can't take its argument by 'var'", prop_name, write_name);
-                }
-                if (wh->param_types[0] != prop_type) {
-                    compile_error(write_line, "Property '%s' write target '%s' takes a different type than the property itself", prop_name, write_name);
-                }
-                prop.write_is_field = 0;
-                prop.write_idx = mi;
             }
             prop.has_write = 1;
         }
@@ -6648,6 +7219,12 @@ static ASTNode *build_vtable_init_chain(void) {
         if (!pt->is_class) continue;
         for (int slot = 0; slot < pt->method_count; slot++) {
             ProcParamHeader *h = &pt->methods[slot];
+            if (h->is_class_method) continue; // never virtually dispatched -
+                                               // called via plain NODE_CALL,
+                                               // no vtable slot needed; skip
+                                               // so it never wastes a scarce
+                                               // MAX_CLASS_METHODS-bounded
+                                               // vm_vtables[] row.
             int mangled_idx = find_proc(h->mangled_name);
             if (mangled_idx == -1) continue; // no body anywhere - see comment above
             ASTNode *ref = create_node(NODE_PROC_REF);
@@ -7037,8 +7614,10 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
     int saved_function_idx = current_function_idx;
     int saved_proc_idx = current_proc_idx;
     int saved_class_ptr_idx = current_class_ptr_idx;
+    int saved_method_is_class_method = current_method_is_class_method;
     current_proc_idx = proc_idx;
     current_class_ptr_idx = class_ptr_idx;
+    current_method_is_class_method = h->is_class_method;
     nesting_depth++;
     if (nesting_depth >= MAX_NESTING_DEPTH) {
         compile_error(decl_line, "'%s.%s' is nested too deeply (limit is %d levels)", class_name, method_name, MAX_NESTING_DEPTH);
@@ -7047,11 +7626,24 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
     local_record_var_count = 0;
     declared_label_count = 0;
 
-    register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0);
-    for (int i = 0; i < h->param_count; i++) {
-        register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i]);
+    if (h->is_class_method) {
+        // A TRUE class method has no instance, so no 'self' parameter at
+        // slot 0 at all - real parameters start at slot 0 directly (see
+        // build_class_member_access()/try_resolve_class_qualified_
+        // access() - a class method call is a plain NODE_CALL through
+        // parse_call_arguments(), which has no self-offset logic of its
+        // own to match).
+        for (int i = 0; i < h->param_count; i++) {
+            register_class_method_param(proc_idx, i, h->param_names[i], h->param_types[i], h->param_is_var[i]);
+        }
+        proc_table[proc_idx].param_count = h->param_count;
+    } else {
+        register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0);
+        for (int i = 0; i < h->param_count; i++) {
+            register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i]);
+        }
+        proc_table[proc_idx].param_count = h->param_count + 1;
     }
-    proc_table[proc_idx].param_count = h->param_count + 1;
     proc_table[proc_idx].param_slot_count = current_local_count; // one frame slot per param here - always true, since method params are scalar-only (see this function's own comment)
 
     if (token.type == TOKEN_LABEL) {
@@ -7120,6 +7712,7 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
     current_proc_idx = saved_proc_idx;
     current_function_idx = saved_function_idx;
     current_class_ptr_idx = saved_class_ptr_idx;
+    current_method_is_class_method = saved_method_is_class_method;
 }
 
 // Registers the name (via add_proc) before parsing anything else, so a
@@ -8579,6 +9172,9 @@ static ASTNode *parse_new_statement(void) {
         }
         match(TOKEN_IDENTIFIER);
         ProcParamHeader *ctor_h = &ctor_pt->methods[method_idx];
+        if (ctor_h->is_class_method) {
+            compile_error(method_line, "'%s' is a class method and can't be used as a constructor - it has no instance to initialize", method_name);
+        }
         if (ctor_h->is_private && current_class_ptr_idx != ctor_h->declaring_class_ptr_idx) {
             // Same strict-private check as an ordinary method call - a
             // constructor isn't a special case (resolve_heap_deref_step()
@@ -9376,6 +9972,9 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_IDENTIFIER) {
+        ASTNode *class_qualified = try_resolve_class_qualified_access(1);
+        if (class_qualified) return class_qualified;
+
         if (find_const(token.text) != -1) {
             compile_error(token.line, "'%s' is a constant and cannot be assigned to", token.text);
         }
