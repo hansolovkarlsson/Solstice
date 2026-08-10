@@ -1427,10 +1427,60 @@ anyway, so this is where they land instead.
       this type are all explicit v1 gaps (the last one is its own
       separate, harder roadmap item just below, which needs this one
       first). See [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
-- [ ] Functions/procedures as return values — a function returning a
-      reference to another function/procedure; needs procedural types
-      above (standard Pascal restricts a function's return type to a
-      simple ordinal/real type, so this itself is non-standard too)
+- [x] Functions/procedures as return values — a function (or class
+      method) returning a reference to another top-level function/
+      procedure, as a named procedural type. Smaller than it looked:
+      `function GetHandler: TProc;` as a header already parsed fine
+      before this (`parse_scalar_type()` already had a procedural-type
+      branch, used generically everywhere including return types) - the
+      actual gaps, found by testing directly rather than guessing, were
+      both in `parser.c`, no new AST nodes/opcodes/`.bin` format changes
+      anywhere. Gap 1: assigning to a function's own name
+      (`GetHandler := Double;`) always parsed the RHS via the generic
+      `expression()`, which misparses a bare proc name as a zero-
+      argument call rather than a reference - fixed by routing a
+      procedural return type through `parse_proc_value()`, the same
+      specialized parser every other procedural-type assignment target
+      already used; this one shared branch in `statement()` covers a
+      class method's own return-value assignment for free, since method
+      bodies go through the identical code path. Gap 2: even once a
+      function could return one, nothing could call it and use the
+      result - `parse_proc_value()`/`parse_proc_argument()` both
+      treated any bare proc name as "take a reference," never "call it
+      and use its return value." Both gained an explicit-`(` check:
+      with parens, treat it as a call whose RETURN TYPE (not its own
+      callable shape) must match the target, building a plain
+      `NODE_CALL` instead of a `NODE_PROC_REF`; no parens keeps the
+      existing bare-reference behavior, unchanged. Deliberately NOT
+      signature-based inference - even a zero-argument function needs
+      explicit `()` here, since this context is inherently ambiguous
+      between "reference" and "call" (documented in
+      docs/LANGUAGE.md#procedural-types).
+
+      Testing surfaced a third, adjacent gap beyond the original two:
+      calling a CLASS METHOD (not just a plain function) that returns a
+      procedural value - e.g. `h := f.MakeHandler();` - hit "Undeclared
+      procedure/function 'f'", since `parse_proc_value()`'s single-
+      bare-identifier lookup has no notion of a dotted method-call
+      expression at all. Fixed with a fallback: when the identifier
+      isn't a plain top-level proc but IS a real known variable (just
+      not of the target type on its own), hand off to the general
+      `expression()` (which already knows how to parse and type-check a
+      method call, self-shorthand, etc. in full) instead of erroring -
+      gated specifically on "is this name known at all" so a genuinely
+      undeclared identifier still gets the original, more specific
+      `Undeclared procedure/function` message, not a generic fallback
+      one (caught via the full `examples/` regression sweep: an
+      existing test, `test_proctype_bad_undeclared.pas`, had its error
+      message silently degrade before this gating was added).
+      `parse_proc_argument()`'s own version of this fallback additionally
+      has to validate the signature manually, since it feeds into
+      `type_checker.c`'s generic per-argument check, which deliberately
+      skips validating a procedural parameter slot (trusting the parser
+      to have already checked it, via a shared `TYPE_INTEGER` placeholder
+      convention every branch in both functions uses for exactly this
+      reason). See `examples/test/proctype/test_proctype_return_*.pas`
+      and [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
 - [x] Static (persistent-across-calls) local variables — `static name:
       type;` reuses the exact "hidden mangled global" trick local arrays
       already use (which are already implicitly persistent), so every

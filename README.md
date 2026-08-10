@@ -357,7 +357,8 @@ correctly runs the subclass's own implementation
 (see [docs/LANGUAGE.md](docs/LANGUAGE.md#classes)). Also working: NAMED
 procedural types (`type TProc = procedure(x: integer);`) — a variable,
 local, or `var` parameter that holds a reference to a top-level
-procedure/function (or `nil`), assignable, comparable, and callable
+procedure/function (or `nil`), assignable, comparable, and callable,
+including a function (or class method) returning one as its own result
 (see [docs/LANGUAGE.md](docs/LANGUAGE.md#procedural-types)). Also
 working: units (`unit UnitName; interface ... implementation ... end.`,
 pulled into a compile via `uses UnitName;`) — a source-level `uses`

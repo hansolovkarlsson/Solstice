@@ -2411,6 +2411,7 @@ static ASTNode *expression(void);
 static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
+static ASTNode *parse_call_arguments(int proc_idx);
 static void subroutine_declaration(int is_function_decl, int header_only);
 static ASTNode *parse_case_label_value(void);
 static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx);
@@ -2898,9 +2899,81 @@ static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
     }
 
     int target_proc_idx = find_proc_visible(name);
-    if (target_proc_idx == -1) {
+    if (target_proc_idx == -1 && find_var_soft_visible(name) == -1) {
+        // Genuinely unknown by any mechanism - the original, more
+        // specific error (not the fallback's own generic one below).
         compile_error(line, "Undeclared procedure/function '%s'", name);
     }
+    if (target_proc_idx == -1) {
+        // A real global variable, just not (on its own) of this
+        // procedural type - could be a class instance expression whose
+        // method call returns a matching procedural value (e.g.
+        // 'f.MakeHandler()'), which this function has no special syntax
+        // of its own for. Falls back to a general expression() (already
+        // knows how to parse and type-check a method call, self-
+        // shorthand, etc. in full) - but unlike parse_proc_value()'s OWN
+        // fallback below, this result feeds into type_checker.c's
+        // generic per-argument check, which deliberately SKIPS
+        // validating a param_is_proc slot (trusting the parser to
+        // already have checked it, via the TYPE_INTEGER placeholder
+        // convention every other branch here uses) - so this validates
+        // the signature manually before applying that same placeholder.
+        ASTNode *node = expression();
+        int matches = node->expression_type >= TYPE_PROC_BASE;
+        if (matches) {
+            ProcParamHeader *ret_sig = &proc_types[node->expression_type - TYPE_PROC_BASE].sig;
+            matches = expected_is_function && proc_signatures_match(ret_sig->is_function, ret_sig->return_type, ret_sig->param_count,
+                                             ret_sig->param_types, ret_sig->param_is_var,
+                                             expected_is_function, expected_return_type, expected_param_count,
+                                             expected_param_types, expected_param_is_var);
+        }
+        if (!matches) {
+            compile_error(line, "Expression does not match the required signature for parameter %d of '%s'",
+                           param_index + 1, proc_table[proc_idx].name);
+        }
+        node->expression_type = TYPE_INTEGER; // meaningless beyond "one int" - see is_proc_param's comment
+        return node;
+    }
+    match(TOKEN_IDENTIFIER);
+
+    // Same explicit-'(' disambiguation as parse_proc_value() - see its
+    // own comment. Here "the required procedural type" is this
+    // parameter's own inline signature rather than a named proc_types[]
+    // entry, so - unlike parse_proc_value()'s exact-named-type equality
+    // (nominal typing, matching how every other procedural-type context
+    // already compares) - matching against an unnamed inline signature
+    // has nothing to compare BY NAME, so this checks the called
+    // function's return type's own underlying signature structurally,
+    // via the same proc_signatures_match() the non-call fallback below
+    // already uses against these exact expected_* fields.
+    if (token.type == TOKEN_LPAREN) {
+        int matches = expected_is_function && proc_table[target_proc_idx].is_function &&
+            proc_table[target_proc_idx].return_type >= TYPE_PROC_BASE;
+        if (matches) {
+            ProcParamHeader *ret_sig = &proc_types[proc_table[target_proc_idx].return_type - TYPE_PROC_BASE].sig;
+            matches = proc_signatures_match(ret_sig->is_function, ret_sig->return_type, ret_sig->param_count,
+                                             ret_sig->param_types, ret_sig->param_is_var,
+                                             expected_is_function, expected_return_type, expected_param_count,
+                                             expected_param_types, expected_param_is_var);
+        }
+        if (!matches) {
+            compile_error(line, "'%s(...)' does not return the required procedural type for parameter %d of '%s'",
+                           name, param_index + 1, proc_table[proc_idx].name);
+        }
+        ASTNode *node = create_node(NODE_CALL);
+        node->line = line;
+        node->data.var_idx = target_proc_idx;
+        node->left = parse_call_arguments(target_proc_idx);
+        // Matches NODE_PROC_REF's own placeholder just below (see its
+        // comment) - type_checker.c's generic per-argument check for a
+        // param_is_proc slot compares against param_types[i]'s own
+        // identical placeholder, deliberately never validating a
+        // procedural argument that way (real validation already happened
+        // above, at parse time).
+        node->expression_type = TYPE_INTEGER;
+        return node;
+    }
+
     if (proc_table[target_proc_idx].lexical_parent_idx != -1) {
         compile_error(line, "'%s' is a nested procedure/function - only a top-level one can be passed as a procedural/functional parameter (see docs/LANGUAGE.md)", name);
     }
@@ -2913,7 +2986,6 @@ static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
         compile_error(line, "'%s' does not match the required signature for parameter %d of '%s'",
                        name, param_index + 1, proc_table[proc_idx].name);
     }
-    match(TOKEN_IDENTIFIER);
     ASTNode *node = create_node(NODE_PROC_REF);
     node->line = line;
     node->data.var_idx = target_proc_idx;
@@ -2977,9 +3049,50 @@ static ASTNode *parse_proc_value(int proc_type_idx, int line) {
     }
 
     int target_proc_idx = find_proc_visible(name);
-    if (target_proc_idx == -1) {
+    if (target_proc_idx == -1 && find_var_soft_visible(name) == -1) {
+        // Genuinely unknown by any mechanism - the original, more
+        // specific error (not the fallback's own generic one below).
         compile_error(name_line, "Undeclared procedure/function '%s'", name);
     }
+    if (target_proc_idx == -1) {
+        // A real global variable, just not (on its own) of this
+        // procedural type - could be a class instance expression whose
+        // method call returns this procedural type (e.g.
+        // 'f.MakeHandler()'), which this function has no special syntax
+        // of its own for. Falls back to a general expression()
+        // (already knows how to parse and type-check a method call,
+        // self-shorthand, etc. in full) - the assignment's own generic
+        // type check (used for every OTHER procedural-type target
+        // already, e.g. an existing variable of this type) validates the
+        // result correctly, so nothing extra is needed here (unlike
+        // parse_proc_argument()'s own fallback, which has to validate
+        // manually - see its comment).
+        return expression();
+    }
+    match(TOKEN_IDENTIFIER);
+
+    // An explicit '(' here means "call this function and use its RETURN
+    // VALUE" (which must itself already be this exact procedural type),
+    // as opposed to the bare-name case below, "take a reference to this
+    // proc's own address" (whose own signature, not its return type,
+    // must match) - needed for a function that itself returns a
+    // procedural value. This context is inherently ambiguous between the
+    // two readings, so '(' is a deliberate, explicit disambiguator, not
+    // an inferred one - even a zero-argument function needs '()' here,
+    // unlike an ordinary expression context (see docs/LANGUAGE.md#procedural-types).
+    if (token.type == TOKEN_LPAREN) {
+        if (!proc_table[target_proc_idx].is_function ||
+            proc_table[target_proc_idx].return_type != (DataType)(TYPE_PROC_BASE + proc_type_idx)) {
+            compile_error(name_line, "'%s(...)' does not return the required procedural type '%s'", name, proc_types[proc_type_idx].name);
+        }
+        ASTNode *node = create_node(NODE_CALL);
+        node->line = name_line;
+        node->data.var_idx = target_proc_idx;
+        node->left = parse_call_arguments(target_proc_idx);
+        node->expression_type = proc_table[target_proc_idx].return_type;
+        return node;
+    }
+
     if (proc_table[target_proc_idx].lexical_parent_idx != -1) {
         compile_error(name_line, "'%s' is a nested procedure/function - only a top-level one can be assigned to a procedural type (see docs/LANGUAGE.md)", name);
     }
@@ -2991,7 +3104,6 @@ static ASTNode *parse_proc_value(int proc_type_idx, int line) {
                                 sig->param_types, sig->param_is_var)) {
         compile_error(name_line, "'%s' does not match the required signature for procedural type '%s'", name, proc_types[proc_type_idx].name);
     }
-    match(TOKEN_IDENTIFIER);
     ASTNode *node = create_node(NODE_PROC_REF);
     node->line = name_line;
     node->data.var_idx = target_proc_idx;
@@ -8339,10 +8451,24 @@ static ASTNode *statement(void) {
                 stmt->data.var_idx = proc_table[current_function_idx].return_slot;
                 stmt->expression_type = proc_table[current_function_idx].return_type;
                 match(TOKEN_ASSIGN);
-                stmt->left = wrap_range_check(expression(),
-                    proc_table[current_function_idx].return_is_subrange,
-                    proc_table[current_function_idx].return_subrange_lower,
-                    proc_table[current_function_idx].return_subrange_upper);
+                if (proc_table[current_function_idx].return_type >= TYPE_PROC_BASE) {
+                    // A procedural return type needs the same specialized
+                    // parser every other procedural-type assignment target
+                    // already uses - the generic expression() below would
+                    // misparse a bare proc name as a zero-argument CALL to
+                    // it, not a reference (see docs/LANGUAGE.md#procedural-types).
+                    stmt->left = parse_proc_value(proc_table[current_function_idx].return_type - TYPE_PROC_BASE, token.line);
+                } else {
+                    // return_is_subrange is never set for a procedural
+                    // return type (mirrors ProcParamHeader's own "method
+                    // return types are never subrange" precedent), so this
+                    // wrap is meaningless there anyway - only reached for
+                    // an ordinary scalar return type.
+                    stmt->left = wrap_range_check(expression(),
+                        proc_table[current_function_idx].return_is_subrange,
+                        proc_table[current_function_idx].return_subrange_lower,
+                        proc_table[current_function_idx].return_subrange_upper);
+                }
                 return stmt;
             }
             // Otherwise this is a recursive self-call used as a statement

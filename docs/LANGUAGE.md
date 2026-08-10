@@ -2866,12 +2866,47 @@ exactly like a pointer).
   itself, never an implicit call. Calling a zero-argument procedural
   value from inside a larger expression always needs explicit `()` to
   disambiguate from a value-read.
-- **Not implemented yet**: a record/class field of procedural type;
-  passing a procedural-type value as an argument to another procedure's
-  own parameter; and a function returning a procedural type as its
-  result (this last one needs its own further work — see
-  [docs/ROADMAP.md](../docs/ROADMAP.md)'s "Functions/procedures as
-  return values" item).
+- **A function (or class method) can return a named procedural type**
+  as its result:
+  ```pascal
+  type
+      TProc = function(x: integer): integer;
+  var
+      h: TProc;
+
+  function Double(x: integer): integer;
+  begin
+      Double := x * 2;
+  end;
+
+  function GetHandler: TProc;
+  begin
+      GetHandler := Double;      { bare reference - same rule as any
+                                    other procedural-type assignment }
+  end;
+
+  begin
+      h := GetHandler();         { explicit '()' required - see below }
+      writeln(h(5));              { 10 }
+  end.
+  ```
+  Assigning to the function's own name inside its body follows the
+  exact same bare-reference-vs-call rule as any other procedural-type
+  assignment target, described above. **Calling such a function needs
+  explicit `()` even with zero arguments** — `h := GetHandler;` (no
+  parens) is still read as "take a bare reference to `GetHandler`
+  itself" (and fails, since `GetHandler`'s own signature — no
+  arguments, returns `TProc` — doesn't match `TProc`'s shape), never as
+  an implicit call. This context is inherently ambiguous between the
+  two readings, so `()` is a deliberate, explicit disambiguator here,
+  unlike an ordinary expression context's usual "bare zero-arg call"
+  convention. The call's returned value can also be passed directly as
+  an argument to another procedural parameter (`Apply(GetHandler(), 5)`).
+  Chaining a further call directly off the result in one expression
+  (`GetHandler()(5)`) isn't supported yet — assign to a variable first.
+  Calling a *class method* that returns a procedural value
+  (`h := f.MakeHandler();`) works the same way.
+- **Not implemented yet**: a record/class field of procedural type.
 
 ## Functions
 
