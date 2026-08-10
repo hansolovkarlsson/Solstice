@@ -1889,6 +1889,69 @@ state) has no concept of concurrency — that would be a VM redesign, not
 a language feature. Logged here so none of these get mistaken for an
 oversight later.
 
+### Data types under consideration
+
+A survey of data types not yet in `pascalc`, alongside what's already
+implemented (see the Types table in
+[docs/LANGUAGE.md](LANGUAGE.md#types)): `integer`, `real` (32-bit float
+only), `boolean`, `string`, `char`, arrays (1D/2D/N-D), records
+(including variant records — non-overlapping, see
+[docs/LANGUAGE.md](LANGUAGE.md#variant-records)), enumerated types,
+subrange types, sets (capped at 32 elements), pointers, classes,
+procedural types, and `text` file I/O. Ordered by cost, same spirit as
+the OOP survey above — unscoped ideas, not committed work, and none has
+a design/plan yet.
+
+**Cheap-ish, clear value:**
+- [ ] Typed/binary files (`file of TRecord;`, `seek`/`filesize`) —
+      currently only `text` files exist; everything reads/writes as
+      text (see [docs/LANGUAGE.md](LANGUAGE.md#file-io)'s "What's not
+      supported yet"). A file's state is already table-driven (one
+      `FILE*` + filename per global file variable), so extending that to
+      binary fixed-record I/O looks like a moderate, self-contained
+      lift, not an architecture change.
+
+**Moderate — real architectural decisions:**
+- [ ] Dynamic arrays — already flagged as missing (no array
+      `copy`/slicing — see the root README's feature-status line). Runs
+      into the same wall generics does (see the OOP survey's own
+      Generics entry above): every array today has a compile-time-fixed
+      size baked into the single fixed `vm_array_mem[]` region, and this
+      VM has zero dynamic allocation anywhere. Doing this properly means
+      either a real allocator for arrays or at least a heap-style
+      freelist like classes already use for fixed-size blocks - a
+      genuine design decision, not a quick add.
+- [ ] `double`/extended-precision `real` — `real` is deliberately kept
+      to 32 bits specifically because it has to fit the same 4-byte-
+      `int`-sized slot every other scalar uses in `vm_vars[]`/
+      `vm_stack[]` (see [docs/LANGUAGE.md](LANGUAGE.md#real)); those
+      arrays are homogeneous ints. A `double` needs either a wider slot
+      for every variable (wasteful) or a separate real-only storage
+      region — a real architectural fork, similar in spirit to the
+      dynamic-arrays problem above.
+- [ ] C-style `union` — already logged as an idea further up this
+      document (Language extensions section); explicitly blocked on the
+      same thing variant records worked around instead of solving: this
+      compiler's records have no real memory layout at all (each field
+      is an independent hidden global/local, not contiguous storage —
+      see [docs/LANGUAGE.md](LANGUAGE.md#variant-records)'s "How this is
+      implemented"), so true overlapping storage needs that addressing
+      model built first.
+
+**Low value / already covered by something else:**
+- [ ] Sized integers (`byte`/`word`/`shortint`/`int64`) — a Pascal/
+      Delphi convention, but subrange types (`type TByte = 0..255;`)
+      already give bounds-checked restricted-range integers here, so
+      dedicated keywords would mostly be redundant sugar.
+
+**Large, already deprioritized for the same reasons as the OOP survey's
+own equivalent entries:** a `Variant` dynamically-typed type (cuts
+against this compiler's whole "resolve every type at compile time"
+design — same conclusion as the OOP survey's own `Variant` entry above,
+since it's the same type either way); generics/parameterized types (tied
+to the identical fixed-size-region tension as dynamic arrays above, but
+bigger — see the OOP survey's own Generics entry).
+
 ## Phase 3 — Additional front ends
 
 Next up after Phase 2: a **BASIC** compiler — not aiming for
