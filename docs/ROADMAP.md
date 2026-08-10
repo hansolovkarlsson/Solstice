@@ -1672,6 +1672,100 @@ anyway, so this is where they land instead.
       same-named static don't collide (mangled `__static_proc_name`) —
       see [docs/LANGUAGE.md](LANGUAGE.md#static-local-variables).
 
+### Object-oriented language features under consideration (Delphi-inspired)
+
+A survey of Delphi/Object Pascal features not yet tracked anywhere on
+this roadmap, compared against what classes-and-instances/units already
+built. Ordered by fit with the existing architecture (the shared
+`resolve_heap_deref_step()` field/method resolution, the runtime class
+tag, the vtable) rather than by Delphi-completeness — these are
+unscoped ideas, not committed work, and none has a design/plan yet.
+
+**Good fit — reuse existing machinery:**
+- [ ] Properties (`property Name: T read FField write SetField;`,
+      optionally indexed/`default`) — the single most "makes it feel
+      like Delphi" item left; fits the same shared dotted-name
+      resolution self-shorthand and `inherited` already route through.
+- [ ] `is`/`as` operators (safe type check/downcast) — cheap given the
+      runtime class tag and `class_type_is_subtype_of()` already built
+      for upcast compatibility; likely the lowest-cost item on this list.
+- [ ] Abstract methods/classes (`virtual; abstract;`) — formalizes the
+      already-known v1 gap ("no check yet that every declared method
+      gets a body") into an intentional, checked feature.
+- [ ] Sealed classes (`class sealed`) — a single flag check at class
+      declaration time.
+- [ ] Class methods/class variables/class properties (members on the
+      class itself, not an instance) — a class var is one shared global
+      per class; a class method needs no implicit `self`.
+
+**Moderate — needs some new machinery:**
+- [ ] `TObject` implicit root class + virtual destructor pattern
+      (`destructor Destroy; override;` / `Free`) — `dispose(c)` today
+      runs no user code first; needs an implicit root class and a
+      vtable call before the heap block is freed.
+- [ ] `try`/`finally` (guaranteed cleanup, runs whether or not an
+      exception occurred) — a natural, smaller follow-up to the
+      try/except/raise entry above, reusing the same `OP_TRY`-style
+      snapshot mechanism.
+- [ ] Typed exception handlers (`on E: SomeExceptionType do`) — needs an
+      actual exception-class hierarchy, which drags in most of classes'
+      own machinery a second time; explicitly cut when try/except
+      shipped.
+- [ ] Class references/metaclasses (`TClass = class of TObject;`,
+      virtual constructors via `AClass.Create`) — a new "class-typed
+      value" distinct from an instance.
+- [ ] `const`/`out` parameters — `const` sits next to the existing `var`
+      by-reference mechanism (`PUSH_LOCAL_REF`/`LOAD_REF`) without a
+      store path; `out` is nearly free once `var` already works.
+- [ ] Default/optional parameter values — pure call-site sugar, missing
+      trailing arguments get the default expression spliced in.
+- [ ] `for x in ... do` generalized beyond sets, to arrays and strings —
+      both already have compile-time-known bounds, the same shape the
+      set-only desugaring already relies on.
+- [ ] `with a, b do` (multiple targets in one `with`) — already a
+      documented gap; small, since `with_stack` is already a stack.
+- [ ] Unit `initialization`/`finalization` sections — units currently
+      have no run-on-load code; a bounded follow-up to units.
+- [ ] Compiler directives (`{$IFDEF}`/`{$ENDIF}`, `{$R+}`) — a
+      lexer/preprocessor-level feature, doesn't touch the AST/VM.
+
+**Large — architecture-changing, lower priority:**
+- [ ] Method overloading (`overload`) — this compiler's whole design
+      leans on a flat, non-overloaded namespace (`find_proc()`/
+      `add_proc()` hard-reject duplicates); overloading would touch
+      call resolution everywhere. It's exactly why constructors went
+      with `new(c, Init(args))` instead of Delphi's `Create`.
+- [ ] Operator overloading (`class operator Add(...)`) — really
+      overloading again, plus new codegen hooks at every binary-op site.
+- [ ] Generics (`TList<T>`) — the biggest lift on this list. No
+      templates/monomorphization machinery exists anywhere in this
+      pipeline, and the fixed-size-region memory model is in tension
+      with a general container type. Realistically a phase of its own.
+- [ ] Advanced records (methods/properties/operator overloads/visibility
+      on a `record`) — mostly falls out once properties/class-members/
+      operator-overloading land; not much new beyond those.
+- [ ] Class helpers / record helpers — niche; mostly a workaround for
+      Delphi's lack of free functions feeling OOP-y, which Pascal
+      doesn't need (it already has free procedures).
+- [ ] Open array / `array of const` parameters (variadic-style, what
+      powers `Format`) — mostly useful *because of*
+      generics/overloading; low standalone value.
+- [ ] `Variant` type (dynamically-typed value with implicit
+      conversions) — cuts against this compiler's whole "resolve type
+      at compile time" design. Low fit, low priority.
+
+**Considered, explicitly out of scope:** COM/interfaces with reference
+counting, `OleVariant`, packages/DLLs, RTTI attributes, and the
+VCL/component/message model (`TComponent`, published properties,
+message handlers) all exist in Delphi specifically to support
+Windows/COM interop and the VCL's design-time component architecture —
+none of that fits Ouroboros's own trajectory (a from-scratch VM, not
+Windows-hosted). Threading (`TThread`) is out for a different reason:
+SolVM's whole design (`run_vm()`'s single dispatch loop, global VM
+state) has no concept of concurrency — that would be a VM redesign, not
+a language feature. Logged here so none of these get mistaken for an
+oversight later.
+
 ## Phase 3 — Additional front ends
 
 Next up after Phase 2: a **BASIC** compiler — not aiming for
