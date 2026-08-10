@@ -138,6 +138,12 @@ typedef struct {
     FILE *handle;   // NULL if not currently open
     char filename[MAX_STRING_LEN]; // set by assign(); read by reset()/rewrite()
     int assigned;   // 1 once assign() has been called at least once
+    int record_size; // TYPE_TYPED_FILE only - how many raw ints make up
+                      // one record, cached from OP_TYPED_FILE_RESET/
+                      // REWRITE's own packed arg (see common.h) for
+                      // OP_FILE_SEEK/OP_FILE_SIZE/OP_TYPED_FILE_EOF to
+                      // read later. Meaningless (0) for a TYPE_FILE
+                      // (text) variable.
 } OpenFile;
 static OpenFile vm_open_files[MAX_SYMBOLS];
 
@@ -445,6 +451,25 @@ static FILE *vm_file_handle(int idx, const char *action) {
     vm_var_index(idx);
     if (sym_table[idx].type != TYPE_FILE) {
         fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
+        fatal_abort();
+    }
+    if (!vm_open_files[idx].handle) {
+        fprintf(stderr, "VM Runtime Error: File '%s' is not open (%s)\n", sym_table[idx].name, action);
+        fatal_abort();
+    }
+    return vm_open_files[idx].handle;
+}
+
+// Typed-file twin of vm_file_handle() above - checks TYPE_TYPED_FILE
+// instead of TYPE_FILE. A separate function rather than a shared one
+// with a type parameter, matching this file's own established
+// "duplicate a narrow, easy-to-read helper rather than generalize it"
+// convention (see e.g. is_typed_file_safe_scalar()'s own precedent in
+// parser.c for the identical reasoning on the compiler side).
+static FILE *vm_typed_file_handle(int idx, const char *action) {
+    vm_var_index(idx);
+    if (sym_table[idx].type != TYPE_TYPED_FILE) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not a typed file variable\n", sym_table[idx].name);
         fatal_abort();
     }
     if (!vm_open_files[idx].handle) {
@@ -1160,7 +1185,7 @@ void run_vm(void) {
 
             case OP_FILE_ASSIGN: {
                 int idx = vm_var_index(instr.arg);
-                if (sym_table[idx].type != TYPE_FILE) {
+                if (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE) {
                     fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
                     fatal_abort();
                 }
@@ -1195,7 +1220,7 @@ void run_vm(void) {
 
             case OP_FILE_CLOSE: {
                 int idx = vm_var_index(instr.arg);
-                if (sym_table[idx].type != TYPE_FILE) {
+                if (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE) {
                     fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
                     fatal_abort();
                 }
@@ -1205,6 +1230,81 @@ void run_vm(void) {
                 }
                 fclose(vm_open_files[idx].handle);
                 vm_open_files[idx].handle = NULL;
+                break;
+            }
+
+            case OP_TYPED_FILE_RESET:
+            case OP_TYPED_FILE_REWRITE: {
+                int file_sym_idx = instr.arg % MAX_SYMBOLS;
+                int record_size = instr.arg / MAX_SYMBOLS;
+                int idx = vm_var_index(file_sym_idx);
+                if (sym_table[idx].type != TYPE_TYPED_FILE) {
+                    fprintf(stderr, "VM Runtime Error: '%s' is not a typed file variable\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                if (!vm_open_files[idx].assigned) {
+                    fprintf(stderr, "VM Runtime Error: File '%s' was never assign()ed a filename\n", sym_table[idx].name);
+                    fatal_abort();
+                }
+                if (vm_open_files[idx].handle) fclose(vm_open_files[idx].handle); // reset/rewrite on an already-open file just reopens it, matching real Pascal
+                const char *mode = (instr.op == OP_TYPED_FILE_RESET) ? "rb" : "wb";
+                vm_open_files[idx].handle = fopen(vm_open_files[idx].filename, mode);
+                if (!vm_open_files[idx].handle) {
+                    fprintf(stderr, "VM Runtime Error: Cannot open file '%s' for %s (%s)\n",
+                            vm_open_files[idx].filename, (instr.op == OP_TYPED_FILE_RESET) ? "reading" : "writing", strerror(errno));
+                    fatal_abort();
+                }
+                vm_open_files[idx].record_size = record_size;
+                break;
+            }
+
+            case OP_READ_TYPED_FILE_INT: {
+                FILE *f = vm_typed_file_handle(instr.arg, "read");
+                int val;
+                if (fread(&val, sizeof(int), 1, f) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fatal_abort();
+                }
+                vm_push(&sp, val);
+                break;
+            }
+
+            case OP_WRITE_TYPED_FILE_INT: {
+                FILE *f = vm_typed_file_handle(instr.arg, "write");
+                int val = vm_pop(&sp);
+                fwrite(&val, sizeof(int), 1, f);
+                break;
+            }
+
+            case OP_FILE_SEEK: {
+                FILE *f = vm_typed_file_handle(instr.arg, "seek");
+                int n = vm_pop(&sp);
+                int idx = vm_var_index(instr.arg);
+                if (fseek(f, (long)n * vm_open_files[idx].record_size * (long)sizeof(int), SEEK_SET) != 0) {
+                    fprintf(stderr, "VM Runtime Error: 'seek' failed on file '%s' (%s)\n", sym_table[idx].name, strerror(errno));
+                    fatal_abort();
+                }
+                break;
+            }
+
+            case OP_FILE_SIZE: {
+                FILE *f = vm_typed_file_handle(instr.arg, "filesize");
+                int idx = vm_var_index(instr.arg);
+                long cur = ftell(f);
+                fseek(f, 0, SEEK_END);
+                long end = ftell(f);
+                fseek(f, cur, SEEK_SET);
+                vm_push(&sp, (int)(end / (vm_open_files[idx].record_size * (long)sizeof(int))));
+                break;
+            }
+
+            case OP_TYPED_FILE_EOF: {
+                FILE *f = vm_typed_file_handle(instr.arg, "eof");
+                long cur = ftell(f);
+                fseek(f, 0, SEEK_END);
+                long end = ftell(f);
+                fseek(f, cur, SEEK_SET);
+                vm_push(&sp, cur >= end);
                 break;
             }
 

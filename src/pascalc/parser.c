@@ -365,6 +365,69 @@ static int find_record_array_type(int sym_idx) {
     return -1;
 }
 
+// Maps a typed-file (TYPE_TYPED_FILE) Symbol - by its own sym_table[]
+// index, always global (see TYPE_TYPED_FILE's own comment in common.h) -
+// to which record_types[] entry (or bare scalar DataType) it holds, and
+// the record's total leaf count (how many raw ints make up one record -
+// record_type_leaf_count(record_type_idx), or 1 for a bare scalar). A
+// separate side table, mirroring record_arrays[] just above exactly,
+// rather than fields on Symbol itself, for the identical reason: this
+// state is only ever meaningful to parser.c (codegen bakes leaf_count
+// into OP_TYPED_FILE_RESET/REWRITE's own arg at compile time - see
+// codegen.c - so nothing downstream needs this table at all).
+#define MAX_TYPED_FILE_VARS 20
+typedef struct {
+    int sym_idx;
+    int is_record;
+    int record_type_idx;  // only meaningful if is_record
+    DataType scalar_type;  // only meaningful if !is_record
+    int leaf_count;
+} TypedFileVarDef;
+static TypedFileVarDef typed_file_vars[MAX_TYPED_FILE_VARS];
+static int typed_file_var_count = 0;
+
+// -1 if sym_idx doesn't name a typed-file variable.
+static int find_typed_file_var(int sym_idx) {
+    for (int i = 0; i < typed_file_var_count; i++) {
+        if (typed_file_vars[i].sym_idx == sym_idx) return i;
+    }
+    return -1;
+}
+
+// Whether t is a type whose raw int IS its actual portable value -
+// integer (also covers a subrange field: subrange-ness is a separate
+// is_subrange flag on RecordField, not a distinct DataType, so plain
+// TYPE_INTEGER already covers it), real, boolean, a specific enumerated
+// type, or set - as opposed to a string_pool[] index (string/char) or a
+// process-local address (pointer/procedural), neither of which means
+// anything once written to a file and read back in a different run.
+static int is_typed_file_safe_scalar(DataType t) {
+    return t == TYPE_INTEGER || t == TYPE_REAL || t == TYPE_BOOLEAN || t == TYPE_SET
+        || (t >= TYPE_ENUM_BASE && t < TYPE_ENUM_BASE + MAX_ENUM_TYPES);
+}
+
+// Whether every leaf of record_type_idx (recursively) is safe per
+// is_typed_file_safe_scalar() above, AND the record has no array-typed
+// field anywhere - matching the EXISTING independent restriction
+// parse_whole_record_assignment()/build_record_compare() each already
+// enforce for their own is_array checks (this compiler's records have
+// no memory layout of their own to serialize an array field's variable
+// element count into, the same underlying reason those two features cut
+// array fields).
+static int record_type_is_typed_file_safe(int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_array) return 0;
+        if (f->is_record) {
+            if (!record_type_is_typed_file_safe(f->record_type_idx)) return 0;
+        } else if (!is_typed_file_safe_scalar(f->type)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 // A specific pointer type is encoded as TYPE_POINTER_BASE + its
 // pointer_types[] index (see the comment in common.h) - a BOUNDED range
 // check, exactly like type_checker.c's own copy of this same helper
@@ -1093,14 +1156,17 @@ static int find_var(const char *name) {
 }
 
 // Soft lookup for a GLOBAL file variable specifically (files are always
-// global - see TYPE_FILE) - returns its sym_table[] index, or -1 if
-// `name` isn't a declared file variable at all (not an error - this is
-// used everywhere a leading 'read(f, ...)'/'write(f, ...)'/'eof(f)'/
-// 'assign(f, ...)' file argument needs to be *detected*, not required,
-// falling back to the ordinary stdin/stdout path when it's absent).
+// global - see TYPE_FILE/TYPE_TYPED_FILE) - returns its sym_table[]
+// index, or -1 if `name` isn't a declared file variable AT ALL (either
+// kind - not an error - this is used everywhere a leading 'read(f, ...)'/
+// 'write(f, ...)'/'eof(f)'/'assign(f, ...)' file argument needs to be
+// *detected*, not required, falling back to the ordinary stdin/stdout
+// path when it's absent). Callers that need to tell text and typed
+// files apart check sym_table[idx].type == TYPE_TYPED_FILE themselves
+// afterward.
 static int find_file_var_soft(const char *name) {
     int idx = find_var_soft_visible(name);
-    if (idx == -1 || sym_table[idx].type != TYPE_FILE) return -1;
+    if (idx == -1 || (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE)) return -1;
     return idx;
 }
 
@@ -2256,6 +2322,12 @@ static DataType parse_scalar_type(void) {
         // "Unknown type" error below) exists purely for a clearer,
         // specific error message.
         compile_error(token.line, "'text' can only declare a global file variable in the main program's own 'var' section - not as a parameter, local, record field, or array element type (see docs/LANGUAGE.md)");
+        return TYPE_UNKNOWN; // unreachable
+    }
+    if (token.type == TOKEN_FILE_TYPE) {
+        // Same restriction, same reasoning, as TOKEN_TEXT_TYPE just
+        // above - a typed file variable can only be global too.
+        compile_error(token.line, "'file of ...' can only declare a global file variable in the main program's own 'var' section - not as a parameter, local, record field, or array element type (see docs/LANGUAGE.md)");
         return TYPE_UNKNOWN; // unreachable
     }
     if (token.type == TOKEN_IDENTIFIER) {
@@ -4597,15 +4669,42 @@ static ASTNode *factor(void) {
             if (token.type == TOKEN_IDENTIFIER) {
                 int fidx = find_file_var_soft(token.text);
                 if (fidx != -1) {
+                    if (kind == TOKEN_EOLN && sym_table[fidx].type == TYPE_TYPED_FILE) {
+                        // No line concept in binary data - see the v1
+                        // scope cut in docs/LANGUAGE.md.
+                        compile_error(token.line, "'eoln' doesn't apply to a typed file - use 'eof' instead");
+                    }
                     match(TOKEN_IDENTIFIER);
                     ASTNode *file_ref = create_node(NODE_VARIABLE);
                     file_ref->data.var_idx = fidx;
-                    file_ref->expression_type = TYPE_FILE;
+                    file_ref->expression_type = sym_table[fidx].type; // TYPE_FILE or TYPE_TYPED_FILE
                     node->left = file_ref;
                 }
             }
             match(TOKEN_RPAREN);
         }
+        return node;
+    } else if (token.type == TOKEN_FILESIZE) {
+        // 'filesize(f)', a typed file only - unlike eof/eoln above, the
+        // file argument is MANDATORY (there's no stdin/stdout fallback
+        // that makes sense for "how many records"), so this needs no
+        // ->left indirection - the file's own sym_table[] index goes
+        // straight into data.var_idx.
+        match(TOKEN_FILESIZE);
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a typed file variable after 'filesize('");
+        }
+        int fidx = find_file_var_soft(token.text);
+        if (fidx == -1 || sym_table[fidx].type != TYPE_TYPED_FILE) {
+            compile_error(token.line, "'%s' is not a typed file variable", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_RPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = TOKEN_FILESIZE;
+        node->data.var_idx = fidx;
+        node->expression_type = TYPE_INTEGER;
         return node;
     } else if (token.type == TOKEN_PARAMCOUNT) {
         // 'ParamCount' - like eof/eoln above, real usage is almost
@@ -6288,6 +6387,47 @@ static void parse_var_section(void) {
             for (int i = 0; i < count; i++) {
                 add_var(temporary_names[i], TYPE_FILE);
             }
+        } else if (token.type == TOKEN_FILE_TYPE) {
+            // 'file of TRecord'/'file of integer' etc. - a typed
+            // (binary) file. Same "own branch here, own global-only
+            // restriction" reasoning as TOKEN_TEXT_TYPE just above -
+            // this is the ONLY place 'file of ...' is legal.
+            match(TOKEN_FILE_TYPE);
+            match(TOKEN_OF);
+            int type_line = token.line;
+            int rt_idx = (token.type == TOKEN_IDENTIFIER) ? find_record_type(token.text) : -1;
+            int is_record = (rt_idx != -1);
+            DataType scalar_type = TYPE_UNKNOWN;
+            if (is_record) {
+                match(TOKEN_IDENTIFIER);
+                if (!record_type_is_typed_file_safe(rt_idx)) {
+                    compile_error(type_line, "Record type '%s' can't be used as a typed file's element type - no array, string, char, pointer, or procedural-typed fields allowed (their raw storage isn't meaningful once written to a file)", record_types[rt_idx].name);
+                }
+            } else {
+                // Reuses parse_scalar_type() directly - it already
+                // resolves every non-record scalar/enum/subrange/alias/
+                // pointer/procedural type name (and rejects 'text'/
+                // 'file' with its own clear error), exactly the same
+                // resolution a 'file of X' element type needs.
+                scalar_type = parse_scalar_type();
+                if (!is_typed_file_safe_scalar(scalar_type)) {
+                    compile_error(type_line, "This type can't be used as a typed file's element type - only integer, real, boolean, an enumerated type, a subrange, or a set are allowed");
+                }
+            }
+            int leaf_count = is_record ? record_type_leaf_count(rt_idx) : 1;
+            for (int i = 0; i < count; i++) {
+                add_var(temporary_names[i], TYPE_TYPED_FILE);
+                int sym_idx = sym_count - 1;
+                if (typed_file_var_count >= MAX_TYPED_FILE_VARS) {
+                    compile_error(type_line, "Too many typed file variables (limit is %d)", MAX_TYPED_FILE_VARS);
+                }
+                TypedFileVarDef *tf = &typed_file_vars[typed_file_var_count++];
+                tf->sym_idx = sym_idx;
+                tf->is_record = is_record;
+                tf->record_type_idx = rt_idx;
+                tf->scalar_type = scalar_type;
+                tf->leaf_count = leaf_count;
+            }
         } else {
             DataType target_type = parse_scalar_type();
             int is_subrange = scalar_type_is_subrange;
@@ -6569,6 +6709,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     record_type_count = 0;
     record_var_count = 0;
     record_array_count = 0;
+    typed_file_var_count = 0;
     pointer_type_count = 0;
     proc_type_count = 0;
     const_def_count = 0;
@@ -7731,6 +7872,182 @@ static DataType read_target_type(ASTNode *target) {
     return sym_table[target->data.var_idx].type;
 }
 
+// Recursively builds the chain of NODE_ASSIGN/NODE_LOCAL_ASSIGN nodes
+// for a NESTED-record field of a typed-file read(f, X) - mirrors
+// build_record_copy()'s own base+offset recursive walk exactly (same
+// running 'offset' counter, same reasoning: a nested record's own
+// fields are laid out contiguously right after dest_base, so no second
+// field_idx_array is needed once recursing past the top level). The
+// "source" side is a NODE_TYPED_FILE_READ_LEAF (one raw int read from
+// the file) instead of another record's own field.
+static void build_typed_file_read_chain(int record_type_idx, int file_sym_idx, int dest_is_local, int dest_base, int dest_levels_up, ASTNode **head, ASTNode **tail) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    int offset = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_typed_file_read_chain(f->record_type_idx, file_sym_idx, dest_is_local, dest_base + offset, dest_levels_up, head, tail);
+        } else {
+            ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
+            leaf->data.var_idx = file_sym_idx;
+            leaf->expression_type = f->type;
+            // A typed-file read ingests untrusted external bytes -
+            // unlike an ordinary same-type record copy (build_record_
+            // copy(), whose source is already known-valid), a subrange-
+            // typed destination leaf needs a genuine range check here.
+            ASTNode *value = f->is_subrange ? wrap_range_check(leaf, 1, f->subrange_lower, f->subrange_upper) : leaf;
+            ASTNode *assign = record_field_assign_node(dest_is_local, dest_base + offset, dest_levels_up, value);
+            if (!*head) *head = assign; else (*tail)->next = assign;
+            *tail = assign;
+        }
+        offset += f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
+    }
+}
+
+// Write twin of build_typed_file_read_chain() above - one
+// NODE_TYPED_FILE_WRITE_LEAF per leaf field, source value read via
+// record_field_read_node() (an ordinary field read).
+static void build_typed_file_write_chain(int record_type_idx, int file_sym_idx, int src_is_local, int src_base, int src_levels_up, ASTNode **head, ASTNode **tail) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    int offset = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_typed_file_write_chain(f->record_type_idx, file_sym_idx, src_is_local, src_base + offset, src_levels_up, head, tail);
+        } else {
+            ASTNode *value = record_field_read_node(src_is_local, src_base + offset, src_levels_up);
+            ASTNode *leaf = create_node(NODE_TYPED_FILE_WRITE_LEAF);
+            leaf->data.var_idx = file_sym_idx;
+            leaf->left = value;
+            leaf->expression_type = f->type;
+            if (!*head) *head = leaf; else (*tail)->next = leaf;
+            *tail = leaf;
+        }
+        offset += f->is_record ? record_type_leaf_count(f->record_type_idx) : 1;
+    }
+}
+
+// Resolves the single target of a typed-file read(f, X)/write(f, X) - X
+// is either a whole record variable of the file's own record type, or
+// (for a bare-scalar-element file) a plain scalar variable of the
+// file's own scalar type - global or local, but never rec.field/arr[i]/
+// a general expression (the v1 scope cut - see docs/LANGUAGE.md).
+// Fills *is_local/*levels_up and either (*is_record=1) *record_type_idx
+// plus *field_idx_array, or (*is_record=0) *scalar_idx - matching
+// find_any_record_var_outward()'s own output shape for the record case,
+// and find_local_outward()/find_var_soft_visible()'s for the scalar
+// case. compile_error()s on any mismatch (not found, wrong kind, wrong
+// type).
+static void resolve_typed_file_target(TypedFileVarDef *tf, const char *stmt_name, int *is_local, int *levels_up, int *is_record, int *record_type_idx, const int **field_idx_array, int *scalar_idx) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'%s' expects a plain variable name", stmt_name);
+    }
+    int rt_idx_found;
+    if (find_any_record_var_outward(token.text, levels_up, is_local, &rt_idx_found, field_idx_array)) {
+        if (!tf->is_record || rt_idx_found != tf->record_type_idx) {
+            compile_error(token.line, "'%s' is the wrong type for this typed file", token.text);
+        }
+        *is_record = 1;
+        *record_type_idx = rt_idx_found;
+        match(TOKEN_IDENTIFIER);
+        return;
+    }
+    int local_idx = find_local_outward(token.text, levels_up);
+    if (local_idx != -1) {
+        if (tf->is_record || local_at(local_idx, *levels_up)->type != tf->scalar_type) {
+            compile_error(token.line, "'%s' is the wrong type for this typed file", token.text);
+        }
+        *is_local = 1;
+        *is_record = 0;
+        *scalar_idx = local_idx;
+        match(TOKEN_IDENTIFIER);
+        return;
+    }
+    int sym_idx = find_var_soft_visible(token.text);
+    if (sym_idx == -1) {
+        compile_error(token.line, "'%s' is not a declared variable", token.text);
+    }
+    if (tf->is_record || sym_table[sym_idx].type != tf->scalar_type) {
+        compile_error(token.line, "'%s' is the wrong type for this typed file", token.text);
+    }
+    *is_local = 0;
+    *is_record = 0;
+    *scalar_idx = sym_idx;
+    match(TOKEN_IDENTIFIER);
+}
+
+// 'read(f, X)', a typed file only - see resolve_typed_file_target()
+// above for X's own restrictions. Builds one NODE_ASSIGN/NODE_LOCAL_
+// ASSIGN per leaf field (or a single one, for a bare-scalar-element
+// file), wrapped in a NODE_COMPOUND (matching whole-record assignment's
+// own multi-node desugaring convention) only when there's more than one
+// - a single target is returned bare, matching parse_read_statement()'s
+// own convention just below.
+static ASTNode *parse_typed_file_read(TypedFileVarDef *tf) {
+    int is_local, levels_up, is_record, record_type_idx, scalar_idx = -1;
+    const int *field_idx_array = NULL;
+    resolve_typed_file_target(tf, "read", &is_local, &levels_up, &is_record, &record_type_idx, &field_idx_array, &scalar_idx);
+    if (!is_record) {
+        ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
+        leaf->data.var_idx = tf->sym_idx;
+        leaf->expression_type = tf->scalar_type;
+        return record_field_assign_node(is_local, scalar_idx, levels_up, leaf);
+    }
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    ASTNode *head = NULL, *tail = NULL;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_typed_file_read_chain(f->record_type_idx, tf->sym_idx, is_local, field_idx_array[i], levels_up, &head, &tail);
+            continue;
+        }
+        ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
+        leaf->data.var_idx = tf->sym_idx;
+        leaf->expression_type = f->type;
+        ASTNode *value = f->is_subrange ? wrap_range_check(leaf, 1, f->subrange_lower, f->subrange_upper) : leaf;
+        ASTNode *assign = record_field_assign_node(is_local, field_idx_array[i], levels_up, value);
+        if (!head) head = assign; else tail->next = assign;
+        tail = assign;
+    }
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = head; // NULL for a (degenerate) empty record
+    return compound;
+}
+
+// Write twin of parse_typed_file_read() above.
+static ASTNode *parse_typed_file_write(TypedFileVarDef *tf) {
+    int is_local, levels_up, is_record, record_type_idx, scalar_idx = -1;
+    const int *field_idx_array = NULL;
+    resolve_typed_file_target(tf, "write", &is_local, &levels_up, &is_record, &record_type_idx, &field_idx_array, &scalar_idx);
+    if (!is_record) {
+        ASTNode *value = record_field_read_node(is_local, scalar_idx, levels_up);
+        ASTNode *leaf = create_node(NODE_TYPED_FILE_WRITE_LEAF);
+        leaf->data.var_idx = tf->sym_idx;
+        leaf->left = value;
+        leaf->expression_type = tf->scalar_type;
+        return leaf;
+    }
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    ASTNode *head = NULL, *tail = NULL;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            build_typed_file_write_chain(f->record_type_idx, tf->sym_idx, is_local, field_idx_array[i], levels_up, &head, &tail);
+            continue;
+        }
+        ASTNode *value = record_field_read_node(is_local, field_idx_array[i], levels_up);
+        ASTNode *leaf = create_node(NODE_TYPED_FILE_WRITE_LEAF);
+        leaf->data.var_idx = tf->sym_idx;
+        leaf->left = value;
+        leaf->expression_type = f->type;
+        if (!head) head = leaf; else tail->next = leaf;
+        tail = leaf;
+    }
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = head;
+    return compound;
+}
+
 // 'read(a[, b, c...])' / 'readln(a[, b, c...])' - a comma-separated list
 // of read targets (see parse_read_target() above). 'read' and 'readln'
 // differ only in whether the LAST target consumes the rest of the input
@@ -7767,6 +8084,21 @@ static ASTNode *parse_read_statement(int is_readln) {
     if (token.type == TOKEN_IDENTIFIER) {
         int fidx = find_file_var_soft(token.text);
         if (fidx != -1) {
+            if (sym_table[fidx].type == TYPE_TYPED_FILE) {
+                // A typed file read is a GENUINELY separate mechanism
+                // (raw binary transfer, single target only - see
+                // parse_typed_file_read()) - branch off entirely rather
+                // than falling into the multi-target text-read loop
+                // below, which doesn't apply to it at all.
+                if (is_readln) {
+                    compile_error(token.line, "'readln' doesn't apply to a typed file - use 'read' instead");
+                }
+                match(TOKEN_IDENTIFIER);
+                match(TOKEN_COMMA);
+                ASTNode *result = parse_typed_file_read(&typed_file_vars[find_typed_file_var(fidx)]);
+                match(TOKEN_RPAREN);
+                return result;
+            }
             file_sym_idx = fidx;
             match(TOKEN_IDENTIFIER);
             if (token.type != TOKEN_COMMA) {
@@ -7843,7 +8175,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_IF || t == TOKEN_WHILE || t == TOKEN_REPEAT || t == TOKEN_FOR || t == TOKEN_BEGIN ||
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
-           t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE ||
+           t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
            t == TOKEN_TRY || t == TOKEN_RAISE ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
@@ -9394,6 +9726,42 @@ static ASTNode *statement(void) {
         ASTNode *stmt = create_node(NODE_FILE_OP);
         stmt->op = kind;
         stmt->data.var_idx = fidx;
+        if ((kind == TOKEN_RESET || kind == TOKEN_REWRITE) && sym_table[fidx].type == TYPE_TYPED_FILE) {
+            // Bakes the file's own record_size in at PARSE time (right
+            // is otherwise unused on NODE_FILE_OP) rather than having
+            // codegen.c look it up itself - typed_file_vars[] is
+            // parser.c-local, the same reason pointer_types[]/
+            // record_types[] stay parser.c-local too (see their own
+            // comments) - nothing outside this file ever needs to look
+            // a typed file up by this index. See codegen.c's
+            // TOKEN_RESET/TOKEN_REWRITE branch.
+            ASTNode *record_size_lit = create_node(NODE_NUMBER);
+            record_size_lit->data.num_value = typed_file_vars[find_typed_file_var(fidx)].leaf_count;
+            record_size_lit->expression_type = TYPE_INTEGER;
+            stmt->right = record_size_lit;
+        }
+        return stmt;
+    }
+
+    if (token.type == TOKEN_SEEK) {
+        // 'seek(f, n)', a typed file only - jumps to record n (0-based).
+        // See NODE_FILE_OP/OP_FILE_SEEK.
+        match(TOKEN_SEEK);
+        match(TOKEN_LPAREN);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "'seek' expects a typed file variable");
+        }
+        int fidx = find_file_var_soft(token.text);
+        if (fidx == -1 || sym_table[fidx].type != TYPE_TYPED_FILE) {
+            compile_error(token.line, "'%s' is not a typed file variable", token.text);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_COMMA);
+        ASTNode *stmt = create_node(NODE_FILE_OP);
+        stmt->op = TOKEN_SEEK;
+        stmt->data.var_idx = fidx;
+        stmt->left = expression(); // record index - must be integer, checked in type_checker.c
+        match(TOKEN_RPAREN);
         return stmt;
     }
 
@@ -9444,6 +9812,21 @@ static ASTNode *statement(void) {
                 if (token.type == TOKEN_IDENTIFIER) {
                     int fidx = find_file_var_soft(token.text);
                     if (fidx != -1) {
+                        if (sym_table[fidx].type == TYPE_TYPED_FILE) {
+                            // A typed file write is a GENUINELY separate
+                            // mechanism (raw binary transfer, single
+                            // target only) - branch off entirely, same
+                            // reasoning as parse_read_statement()'s own
+                            // typed-file branch.
+                            if (kind == TOKEN_WRITELN) {
+                                compile_error(token.line, "'writeln' doesn't apply to a typed file - use 'write' instead");
+                            }
+                            match(TOKEN_IDENTIFIER);
+                            match(TOKEN_COMMA);
+                            ASTNode *result = parse_typed_file_write(&typed_file_vars[find_typed_file_var(fidx)]);
+                            match(TOKEN_RPAREN);
+                            return result;
+                        }
                         match(TOKEN_IDENTIFIER);
                         ASTNode *file_ref = create_node(NODE_VARIABLE);
                         file_ref->data.var_idx = fidx;

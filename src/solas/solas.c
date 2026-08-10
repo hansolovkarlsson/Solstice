@@ -245,6 +245,13 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"FILE_RESET",   OP_FILE_RESET,   OPERAND_VAR},
     {"FILE_REWRITE", OP_FILE_REWRITE, OPERAND_VAR},
     {"FILE_CLOSE",   OP_FILE_CLOSE,   OPERAND_VAR},
+    {"TYPED_FILE_RESET",   OP_TYPED_FILE_RESET,   OPERAND_IMMEDIATE}, // operand = packed record_size * MAX_SYMBOLS + file sym idx
+    {"TYPED_FILE_REWRITE", OP_TYPED_FILE_REWRITE, OPERAND_IMMEDIATE}, // same packing as TYPED_FILE_RESET
+    {"READ_TYPED_FILE_INT",  OP_READ_TYPED_FILE_INT,  OPERAND_VAR},
+    {"WRITE_TYPED_FILE_INT", OP_WRITE_TYPED_FILE_INT, OPERAND_VAR},
+    {"FILE_SEEK",  OP_FILE_SEEK,  OPERAND_VAR},
+    {"FILE_SIZE",  OP_FILE_SIZE,  OPERAND_VAR},
+    {"TYPED_FILE_EOF", OP_TYPED_FILE_EOF, OPERAND_VAR},
     {"PRINT_FILE",      OP_PRINT_FILE,      OPERAND_VAR},
     {"PRINT_STR_FILE",  OP_PRINT_STR_FILE,  OPERAND_VAR},
     {"PRINT_BOOL_FILE", OP_PRINT_BOOL_FILE, OPERAND_VAR},
@@ -877,7 +884,8 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "real") == 0) type = TYPE_REAL;
                 else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
                 else if (strcasecmp(type_str, "text") == 0) type = TYPE_FILE;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', 'set', or 'text')", type_str); return; }
+                else if (strcasecmp(type_str, "typedfile") == 0) type = TYPE_TYPED_FILE;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', 'set', 'text', or 'typedfile')", type_str); return; }
                 add_var(line_no, name, type);
             } else if (strcasecmp(directive, "array") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];

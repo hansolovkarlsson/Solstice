@@ -793,14 +793,76 @@ separate set of file-specific builtin names to learn.
   a later, non-ISO-7185 Pascal extension, out of scope for now.
   `rewrite` is the only way to open a file for writing, and it always
   truncates.
-- **Only text files** — no `file of T` (typed/binary files), no
-  `seek`/`filesize`/random access. Everything reads/writes as text,
-  exactly like `read`/`write` on standard input/output already do.
 - **A file variable can't be assigned, compared, or used with any other
   operator** (`f := g;`, `f = g`, ...) — standard Pascal doesn't define
   any of these for files either. A file's real state doesn't live in
   its own storage slot the way every other type's does (see below), so
   copying that slot wouldn't do anything meaningful anyway.
+
+### Typed (binary) files
+
+```pascal
+type
+    TRecord = record
+        id: integer;
+        score: real;
+    end;
+var
+    f: file of TRecord;
+    r: TRecord;
+begin
+    assign(f, 'data.bin');
+    rewrite(f);
+    r.id := 42;
+    r.score := 3.14;
+    write(f, r);           { writes r's raw values, not formatted text }
+    close(f);
+
+    reset(f);
+    read(f, r);             { reads one record's worth of raw values back }
+    seek(f, 0);              { jump directly to record 0 - random access }
+    writeln(filesize(f));   { how many records are in the file - 1 }
+end.
+```
+
+`var f: file of T;` — a binary file storing a sequence of fixed-size
+records of type `T` (a record type, or a bare scalar like `integer`).
+Unlike `text`, `read(f, x)`/`write(f, x)` transfer `x`'s raw values
+directly (one call, one whole record) rather than formatting/parsing
+text — `read`/`write` on a typed file take exactly one argument beyond
+`f` (not `text`'s comma-separated multi-target list).
+
+- **`seek(f, n)`** jumps directly to record `n` (0-based) — the one
+  thing a typed file can do that a text file, with no fixed record size
+  to jump by, never could.
+- **`filesize(f)`** returns the file's total record count.
+- **`eof(f)`** works the same as for a `text` file. **`eoln`/`readln`/
+  `writeln` don't apply to a typed file at all** — a compile error, since
+  binary records have no line concept.
+- `T`'s fields (recursively, for a record) must be `integer`/`real`/
+  `boolean`/an enumerated type/a subrange/a `set` — no array-typed
+  fields, and no `string`/`char`/pointer/procedural-typed fields either.
+  Reason: those latter types' raw storage is a `string_pool[]` index or a
+  process-local address in this compiler, neither of which means
+  anything once written to a file and read back in a different run — the
+  scalars above are all genuinely portable raw values (an `integer`, or
+  a `real`'s own bit pattern, means the same thing regardless of which
+  run wrote it).
+- `read(f, x)`/`write(f, x)`'s argument must be a plain variable name
+  (global or local) of the file's own element type — not `rec.field`,
+  not `arr[i]`, not a general expression.
+
+**Not implemented yet:**
+
+- **The failure/error surface stays minimal** — reading past the end of
+  a typed file is a fatal `VM Runtime Error`, not a catchable condition.
+- **`read`/`write` targeting anything other than a plain variable** —
+  see the restriction above.
+- **`type TFileType = file of TRecord;`** — a named, reusable typed-file
+  type alias. `file of T` is only legal written out inline in a `var`
+  declaration, exactly like `text`.
+- **A typed file variable as a parameter, local, record field, or array
+  element** — global only, same restriction `text` already has.
 
 ### How this is implemented
 
@@ -808,7 +870,19 @@ A file variable's real state (the underlying C `FILE*`, and the
 filename `assign()` bound it to) lives in a fixed-size table indexed by
 the variable's own symbol index — safe only because it's always global,
 so that index never changes. No dynamic allocation, matching everything
-else in this VM.
+else in this VM. A typed file additionally caches its own record size
+(how many raw ints make up one record) in that same table, set once when
+`reset`/`rewrite` opens it — `seek`/`filesize`/`eof` all read it back
+from there rather than needing it re-supplied at every call site.
+
+`read(f, rec)`/`write(f, rec)` are compiled entirely at COMPILE TIME into
+one raw-int transfer per leaf field of `rec` (recursing into a nested
+record, exactly like whole-record assignment already does) — there is no
+runtime "copy a whole record" opcode anywhere in this compiler, for
+records OR for typed files; every record-shaped operation is unrolled
+into N ordinary field-level operations ahead of time. A `file of integer`
+(a bare scalar element type) is simply the one-leaf case of the exact
+same mechanism.
 
 ## Real
 

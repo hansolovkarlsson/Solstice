@@ -144,6 +144,13 @@ static const char *opcode_name(Opcode op) {
         case OP_FILE_RESET:   return "file_reset";
         case OP_FILE_REWRITE: return "file_rewrite";
         case OP_FILE_CLOSE:   return "file_close";
+        case OP_TYPED_FILE_RESET:   return "typed_file_reset";
+        case OP_TYPED_FILE_REWRITE: return "typed_file_rewrite";
+        case OP_READ_TYPED_FILE_INT:  return "read_typed_file_int";
+        case OP_WRITE_TYPED_FILE_INT: return "write_typed_file_int";
+        case OP_FILE_SEEK: return "file_seek";
+        case OP_FILE_SIZE: return "file_size";
+        case OP_TYPED_FILE_EOF: return "typed_file_eof";
         case OP_PRINT_FILE:      return "print_file";
         case OP_PRINT_STR_FILE:  return "print_str_file";
         case OP_PRINT_BOOL_FILE: return "print_bool_file";
@@ -216,6 +223,16 @@ static const char *type_name(DataType type) {
     // to "integer" here for exactly the same reason - a pointer
     // variable's runtime representation genuinely IS a plain int (a
     // vm_heap_mem[] offset, or -1 for nil).
+    // TYPE_TYPED_FILE sits PAST TYPE_ENUM_BASE too (TYPE_PROC_BASE +
+    // MAX_PROC_TYPES) but is checked explicitly here, BEFORE the catch-
+    // all below - unlike enum/pointer/procedural types, a typed file's
+    // real runtime state (vm_open_files[], see vm.c) genuinely IS
+    // VM-level, not a pascalc-frontend-only concept degrading to
+    // "integer" - so desole CAN print it accurately, and must, or a
+    // solas/desole round-trip would silently misdeclare it as a plain
+    // integer (and every new typed-file opcode's own TYPE_TYPED_FILE
+    // check would then reject it after reassembly).
+    if (type == TYPE_TYPED_FILE) return "typedfile";
     if (type >= TYPE_ENUM_BASE) return "integer";
     switch (type) {
         case TYPE_INTEGER: return "integer";
@@ -256,7 +273,9 @@ static int is_var_ref(Opcode op) {
                                                               // the READ TARGET's index, still
                                                               // a sym_table[] reference either way
         || op == OP_SKIP_PENDING_NEWLINE_FILE
-        || op == OP_LOAD_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD_CHAR;
+        || op == OP_LOAD_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD_CHAR
+        || op == OP_READ_TYPED_FILE_INT || op == OP_WRITE_TYPED_FILE_INT
+        || op == OP_FILE_SEEK || op == OP_FILE_SIZE || op == OP_TYPED_FILE_EOF;
 }
 
 // True for opcodes whose arg is a plain immediate value with no lookup -
@@ -280,6 +299,7 @@ static int is_immediate(Opcode op) {
         || op == OP_LOAD_HEAP_ARRAY_FIELD || op == OP_STORE_HEAP_ARRAY_FIELD || op == OP_STORE_HEAP_ARRAY_FIELD_CHAR // operand = combined offset (field offset - array lower bound)
         || op == OP_LOAD_VTABLE_SLOT || op == OP_STORE_VTABLE_SLOT // operand = method slot / precomputed flat vm_vtables[] index
         || op == OP_IS_INSTANCE || op == OP_STORE_CLASS_PARENT // operand = target/own class_id
+        || op == OP_TYPED_FILE_RESET || op == OP_TYPED_FILE_REWRITE // operand = packed record_size * MAX_SYMBOLS + file sym idx
         || op == OP_PUSH_STATIC_LINK // operand = hop count
         || op == OP_LOAD_ENCLOSING || op == OP_STORE_ENCLOSING || op == OP_PUSH_ENCLOSING_REF; // operand = packed (levels_up, slot)
 }

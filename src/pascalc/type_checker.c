@@ -894,11 +894,35 @@ void type_check(ASTNode *node) {
         case NODE_FILE_OP:
             // reset/rewrite/close's file-variable argument was already
             // validated at parse time (find_file_var_soft() only ever
-            // returns a genuine TYPE_FILE symbol) - only assign's second
-            // argument (the filename, an arbitrary expression) still
-            // needs a real type check here.
+            // returns a genuine TYPE_FILE/TYPE_TYPED_FILE symbol) - only
+            // assign's second argument (the filename, an arbitrary
+            // expression) and seek's index argument still need a real
+            // type check here.
             if (node->op == TOKEN_FILE_ASSIGN && !is_string_type(node->left->expression_type)) {
                 fprintf(stderr, "%s:%d: Type Error: 'assign' requires a string or char filename\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (node->op == TOKEN_SEEK && node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: 'seek' requires an integer record index\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_TYPED_FILE_WRITE_LEAF:
+            // NODE_TYPED_FILE_READ_LEAF needs no case at all - its
+            // expression_type is set (at parse time) to be identical to
+            // its wrapping assignment's own destination type, so the
+            // GENERIC NODE_ASSIGN/NODE_LOCAL_ASSIGN check above already
+            // validates it for free. This one DOES need an explicit
+            // check: for the record-leaf case node->left's type is
+            // already known-equal to node->expression_type at parse
+            // time (redundant-but-harmless here), but for a bare-scalar-
+            // element file it's load-bearing - see
+            // resolve_typed_file_target() in parser.c.
+            if (node->left->expression_type != node->expression_type) {
+                fprintf(stderr, "%s:%d: Type Error: 'write' to a typed file expects the file's own element type\n",
                         get_current_filename(), node->line);
                 fatal_abort();
             }

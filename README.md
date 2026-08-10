@@ -278,7 +278,13 @@ optional leading file argument on `read`/`readln`/`write`/`writeln`/
 `eof`/`eoln` — `write(f, x)` instead of a separate set of file-specific
 builtin names) — a file variable is global only, not a parameter or
 local, the one deliberate scope cut behind the whole feature (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#file-io)). Also working: records as
+[docs/LANGUAGE.md](docs/LANGUAGE.md#file-io)). Also working: typed
+(binary) files (`var f: file of TRecord;`, `seek`/`filesize`) — `read`/
+`write` transfer a record's raw values directly rather than formatted
+text, compiled entirely at compile time into one raw-int transfer per
+field, the same "no runtime record-copy opcode" idiom whole-record
+assignment already uses (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-binary-files)). Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus
 whole-element copy to/from another array element or a plain record

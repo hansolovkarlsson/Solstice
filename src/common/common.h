@@ -186,6 +186,12 @@ typedef enum {
                       // OP_IS_INSTANCE.
     TOKEN_AS,         // 'obj as TFoo' - checked downcast. See NODE_AS_CAST/
                       // OP_IS_INSTANCE (reused) + OP_RAISE.
+    TOKEN_FILE_TYPE,  // the 'file' keyword ('var f: file of TRecord;') -
+                      // see TYPE_TYPED_FILE.
+    TOKEN_SEEK,       // the 'seek' builtin procedure ('seek(f, n)') - a
+                      // typed file only. See OP_FILE_SEEK.
+    TOKEN_FILESIZE,   // the 'filesize' builtin function ('filesize(f)') -
+                      // a typed file only. See OP_FILE_SIZE.
     TOKEN_EOF
 } TokenType;
 
@@ -333,6 +339,26 @@ typedef enum {
                 // plain global/local variable exactly like any scalar -
                 // assignable, copyable, callable through, and comparable
                 // to nil.
+    TYPE_TYPED_FILE = TYPE_PROC_BASE + MAX_PROC_TYPES, // 'file of TRecord'/
+                // 'file of integer' etc. - a binary, fixed-record-size
+                // file. Unlike TYPE_PROC_BASE/TYPE_POINTER_BASE/
+                // TYPE_ENUM_BASE above, this is a single FLAT value (like
+                // TYPE_FILE), not an offset range - no two typed-file
+                // variables are ever compared/assigned to each other
+                // (same blanket ban TYPE_FILE already has), so there's no
+                // per-declaration dedup need an offset range exists for.
+                // Which record/scalar type a given typed-file variable
+                // holds, and its leaf count (record_size), lives in a
+                // parser.c-local side table (TypedFileVarDef) keyed by
+                // sym_table[] index instead - see parser.c. GLOBAL ONLY,
+                // same restriction as TYPE_FILE and for the same reason.
+                // Real state lives in vm_open_files[] (see vm.c),
+                // extended with a record_size field - same indexing
+                // convention as TYPE_FILE's own vm_open_files[] use.
+                // Explicitly assigned (not left to auto-increment) since
+                // it must sit strictly past TYPE_PROC_BASE's own range,
+                // mirroring TYPE_PROC_BASE's own explicit assignment just
+                // above for the identical reason.
 } DataType;
 
 // One declared enumerated type ('type TColor = (Red, Green, Blue);') -
@@ -1160,7 +1186,7 @@ typedef enum {
                   // vm_class_parent[] upward from that tag (own class,
                   // parent, grandparent, ...) until arg is found (push 1)
                   // or the walk reaches the -1 root sentinel (push 0).
-    OP_STORE_CLASS_PARENT // Populates one vm_class_parent[] slot at
+    OP_STORE_CLASS_PARENT, // Populates one vm_class_parent[] slot at
                   // program startup (NODE_CLASS_PARENT_INIT_ENTRY in
                   // codegen.c, emitted once per class, ahead of any user
                   // code - see parser.c's build_class_parent_init_chain()
@@ -1168,6 +1194,51 @@ typedef enum {
                   // arg = this class's own class_id. Pops a parent
                   // class_id (or -1 for none); stores it into
                   // vm_class_parent[arg].
+    OP_TYPED_FILE_RESET, OP_TYPED_FILE_REWRITE, // Binary-mode twins of
+                  // OP_FILE_RESET/OP_FILE_REWRITE, for a TYPE_TYPED_FILE
+                  // variable (fopen mode "rb"/"wb" instead of "r"/"w").
+                  // arg is a PACKED value - record_size * MAX_SYMBOLS +
+                  // file_sym_idx - both halves already known at compile
+                  // time (mirrors OP_STORE_VTABLE_SLOT's own precomputed-
+                  // flat-index precedent exactly, reusing the existing
+                  // MAX_SYMBOLS constant as the radix rather than adding
+                  // a new one). Caches record_size into the (extended)
+                  // vm_open_files[idx].record_size for OP_FILE_SEEK/
+                  // OP_FILE_SIZE/OP_TYPED_FILE_EOF to read later.
+    OP_READ_TYPED_FILE_INT, // arg = file sym idx (plain, unpacked - see
+                  // OP_TYPED_FILE_RESET above for why reset/rewrite's arg
+                  // is packed and this one isn't: this opcode has no
+                  // second compile-time constant of its own to carry).
+                  // Reads exactly one raw int from the file's current
+                  // position and pushes it - the leaf-level building
+                  // block typed-file read(f, rec) is compiled into N of,
+                  // one per record field, each immediately followed by
+                  // the SAME plain STORE/LOCAL_STORE opcode an ordinary
+                  // scalar assignment already uses (see NODE_TYPED_FILE_
+                  // READ_LEAF in codegen.c) - no record-aware runtime
+                  // opcode exists anywhere, matching how this compiler's
+                  // OTHER record operations (whole-record assignment,
+                  // argument passing, comparison) are already unrolled
+                  // entirely at compile time.
+    OP_WRITE_TYPED_FILE_INT, // arg = file sym idx. Pops one raw int and
+                  // writes it to the file's current position - the write
+                  // twin of OP_READ_TYPED_FILE_INT, same one-leaf-at-a-
+                  // time role (see NODE_TYPED_FILE_WRITE_LEAF).
+    OP_FILE_SEEK, // 'seek(f, n)', a typed file only. arg = file sym idx.
+                  // Pops n (the target record index, 0-based); seeks to
+                  // byte offset n * vm_open_files[idx].record_size *
+                  // sizeof(int) from the start of the file.
+    OP_FILE_SIZE, // 'filesize(f)', a typed file only. arg = file sym
+                  // idx. Pushes the file's total record count (current
+                  // end-of-file byte position, divided by record_size *
+                  // sizeof(int)) - doesn't disturb the file's current
+                  // read/write position.
+    OP_TYPED_FILE_EOF // 'eof(f)' on a typed file - a GENUINELY separate
+                  // opcode from OP_EOF_FILE (text mode's byte-level
+                  // fgetc+ungetc peek isn't meaningful for binary
+                  // records). arg = file sym idx. Pushes whether the
+                  // current position has reached the end of file (a
+                  // position/size comparison, not a peek-and-rewind).
 } Opcode;
 
 typedef struct {
@@ -1823,7 +1894,7 @@ typedef enum {
                        // = TYPE_POINTER_BASE + that index (the cast
                        // result's new static type). extra/op unused.
                        // See OP_IS_INSTANCE/OP_RAISE.
-    NODE_CLASS_PARENT_INIT_ENTRY // One entry of the startup class-
+    NODE_CLASS_PARENT_INIT_ENTRY, // One entry of the startup class-
                        // parent-init chain (build_class_parent_init_
                        // chain() in parser.c) - populates vm_class_
                        // parent[], mirroring NODE_VTABLE_INIT_ENTRY's own
@@ -1836,6 +1907,35 @@ typedef enum {
                        // class's own class_id (OP_STORE_CLASS_PARENT's
                        // arg). Chained via ->next, one entry per class
                        // (not per method, unlike NODE_VTABLE_INIT_ENTRY).
+    NODE_TYPED_FILE_READ_LEAF, // Reads exactly ONE raw int from a typed
+                       // file's current position - the leaf-level
+                       // building block a typed-file read(f, rec) is
+                       // compiled into N of (one per record field),
+                       // reusing the SAME record_field_assign_node()
+                       // wrapping an ordinary field write already uses -
+                       // this node is just the "value" side of that
+                       // assignment. data.var_idx = the file's own
+                       // sym_table[] index. expression_type = the
+                       // DESTINATION leaf's own type (set identical to
+                       // its wrapping assignment's target type, so the
+                       // EXISTING generic NODE_ASSIGN/NODE_LOCAL_ASSIGN
+                       // type check already covers this for free - no
+                       // type_checker.c case needed). left/right/extra/op
+                       // unused. See OP_READ_TYPED_FILE_INT.
+    NODE_TYPED_FILE_WRITE_LEAF // Writes exactly ONE raw int to a typed
+                       // file's current position - the leaf-level
+                       // building block a typed-file write(f, rec) is
+                       // compiled into N of. left = the source value
+                       // (built via record_field_read_node(), an
+                       // ordinary field/variable read). data.var_idx =
+                       // the file's own sym_table[] index.
+                       // expression_type = the expected leaf type (NOT
+                       // necessarily identical to node->left's own type
+                       // until type_checker.c confirms it - see that
+                       // file's own case for why this one DOES need
+                       // explicit validation, unlike the read leaf
+                       // above). Chained via ->next. See
+                       // OP_WRITE_TYPED_FILE_INT.
 } NodeType;
 
 typedef struct ASTNode {

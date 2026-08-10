@@ -224,6 +224,9 @@ void next_token(void) {
         else if (strcasecmp(token.text, "property") == 0) token.type = TOKEN_PROPERTY;
         else if (strcasecmp(token.text, "is") == 0) token.type = TOKEN_IS;
         else if (strcasecmp(token.text, "as") == 0) token.type = TOKEN_AS;
+        else if (strcasecmp(token.text, "file") == 0) token.type = TOKEN_FILE_TYPE;
+        else if (strcasecmp(token.text, "seek") == 0) token.type = TOKEN_SEEK;
+        else if (strcasecmp(token.text, "filesize") == 0) token.type = TOKEN_FILESIZE;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

@@ -335,6 +335,21 @@ static int has_as_cast_side_effect(ASTNode *node) {
     return has_as_cast_side_effect(node->left) || has_as_cast_side_effect(node->right) || has_as_cast_side_effect(node->extra);
 }
 
+// A NODE_TYPED_FILE_READ_LEAF reads (and advances past) exactly one raw
+// int from a typed file's current position - an observable runtime
+// effect of its own (it desynchronizes every SUBSEQUENT read from the
+// file if skipped), same reasoning as the four helpers above. Without
+// this, 'read(f, someGlobalRecord)' with an otherwise-unread destination
+// would have its assignment - and the file read embedded inside it -
+// silently deleted, corrupting every later read's position. (Local
+// record/scalar targets are unaffected - NODE_LOCAL_ASSIGN isn't
+// touched by this pass at all.)
+static int has_typed_file_read_side_effect(ASTNode *node) {
+    if (!node) return 0;
+    if (node->type == NODE_TYPED_FILE_READ_LEAF) return 1;
+    return has_typed_file_read_side_effect(node->left) || has_typed_file_read_side_effect(node->right) || has_typed_file_read_side_effect(node->extra);
+}
+
 static void mark_used_variables(ASTNode *node) {
     if (!node) return;
 
@@ -382,7 +397,8 @@ static ASTNode *sweep_dead_assignments(ASTNode *node) {
             && !has_range_check(node->left) && !has_range_check(node->right)
             && !has_set_side_effect(node->left) && !has_set_side_effect(node->right)
             && !has_heap_alloc_side_effect(node->left) && !has_heap_alloc_side_effect(node->right)
-            && !has_as_cast_side_effect(node->left) && !has_as_cast_side_effect(node->right)) {
+            && !has_as_cast_side_effect(node->left) && !has_as_cast_side_effect(node->right)
+            && !has_typed_file_read_side_effect(node->left) && !has_typed_file_read_side_effect(node->right)) {
             if (verbose_mode) {
                 printf("[DCE Optimization] Removing dead assignment to unreferenced variable: %s\n",
                        sym_table[var_idx].name);

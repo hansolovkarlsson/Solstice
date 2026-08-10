@@ -327,11 +327,12 @@ void print_ast(ASTNode *node, int indent) {
         case NODE_FILE_OP: {
             const char *op_name = node->op == TOKEN_FILE_ASSIGN ? "Assign"
                                  : node->op == TOKEN_RESET ? "Reset"
-                                 : node->op == TOKEN_REWRITE ? "Rewrite" : "Close";
+                                 : node->op == TOKEN_REWRITE ? "Rewrite"
+                                 : node->op == TOKEN_SEEK ? "Seek" : "Close";
             printf("[%s] -> File: %s\n", op_name, sym_table[node->data.var_idx].name);
             if (node->left) {
                 print_indent(indent + 1);
-                printf("Filename:\n");
+                printf(node->op == TOKEN_SEEK ? "Record index:\n" : "Filename:\n");
                 print_ast(node->left, indent + 2);
             }
             if (node->next) {
@@ -339,6 +340,18 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
         }
+
+        case NODE_TYPED_FILE_READ_LEAF:
+            printf("[Typed File Read Leaf] -> File: %s\n", sym_table[node->data.var_idx].name);
+            break;
+
+        case NODE_TYPED_FILE_WRITE_LEAF:
+            printf("[Typed File Write Leaf] -> File: %s\n", sym_table[node->data.var_idx].name);
+            print_ast(node->left, indent + 1);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
 
         case NODE_CASE:
             printf("[Case]\n");

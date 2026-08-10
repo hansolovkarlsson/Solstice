@@ -523,6 +523,77 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       file-parameter binding for it to mean anything - any identifiers
       are accepted, not just `input`/`output`. See
       docs/LANGUAGE.md#program-structure.
+- [x] Typed (binary) files — `var f: file of TRecord;`, `read(f, rec)`/
+      `write(f, rec)` transferring one record's raw values per call
+      (not formatted text), plus new `seek(f, n)`/`filesize(f)` builtins
+      for random access. `T`'s fields (recursively, for a record) are
+      restricted to `integer`/`real`/`boolean`/enum/subrange/`set` - not
+      `string`/`char`/pointer/procedural, whose raw storage (a
+      `string_pool[]` index or a process-local address) isn't meaningful
+      once written to a file and read back in a different run - and no
+      array-typed fields, matching the SAME existing independent
+      restriction whole-record assignment/comparison each already
+      enforce for their own `is_array` checks.
+
+      Extends `text`'s own `vm_open_files[]` table (one new
+      `record_size` field, cached once at `reset`/`rewrite` time) rather
+      than inventing a second file-state mechanism - `assign`/`close`
+      are reused completely unchanged across both file kinds (their
+      `TYPE_FILE`-only guard just widened to accept `TYPE_TYPED_FILE`
+      too); `reset`/`rewrite` needed genuinely new opcodes
+      (`OP_TYPED_FILE_RESET`/`REWRITE`, `fopen` mode `"rb"`/`"wb"`
+      instead of `"r"`/`"w"`), with `arg` PACKING both the file's
+      `sym_table[]` index and its record size (`record_size *
+      MAX_SYMBOLS + file_sym_idx`) - both already known at compile time,
+      mirroring `OP_STORE_VTABLE_SLOT`'s own precomputed-flat-index
+      precedent exactly.
+
+      `read`/`write`'s record transfer follows this compiler's own
+      established "every record-shaped operation is unrolled entirely
+      at COMPILE TIME into N ordinary field-level operations, never a
+      runtime record-copy opcode" idiom (the same one whole-record
+      assignment/argument-passing/comparison already use) - two new
+      leaf-level opcodes, `OP_READ_TYPED_FILE_INT`/
+      `OP_WRITE_TYPED_FILE_INT`, transfer exactly one raw int each,
+      invoked once per leaf field by a parse-time walk reusing
+      `record_field_read_node()`/`record_field_assign_node()` and the
+      same base+offset recursion `build_record_copy()` already
+      established for nested records. A `file of integer` (bare scalar
+      element type) is simply the one-leaf case of the identical
+      mechanism - no special-casing needed. `read`/`write`'s target must
+      be a plain variable name (global or local) - not `rec.field`, not
+      `arr[i]`, not multiple targets, a deliberate v1 scope cut.
+
+      `eof(f)` on a typed file needed a genuinely SEPARATE opcode
+      (`OP_TYPED_FILE_EOF`) from text mode's `OP_EOF_FILE` - the latter
+      is a byte-level `fgetc`+`ungetc` peek, not meaningful for binary
+      records; the typed variant instead compares the current file
+      position against the end-of-file position (a `ftell`/`fseek`
+      dance that also powers `OP_FILE_SIZE`, without disturbing the
+      file's own read/write position). `eoln`/`readln`/`writeln` are a
+      compile error on a typed file - no line concept in binary data.
+
+      Two real bugs caught during implementation, both easy to miss:
+      (1) a dead-code-elimination hazard - `read(f, someGlobalRecord)`
+      with an otherwise-unread destination would have had its
+      assignment, and the file read embedded inside it, silently
+      deleted by `sweep_dead_assignments()`, desynchronizing every
+      subsequent read from the file's actual position; fixed with a
+      fifth side-effect predicate (`has_typed_file_read_side_effect()`),
+      matching `has_as_cast_side_effect()`'s own exact shape, wired into
+      the existing `NODE_ASSIGN` DCE guard. (2) `desole`'s `type_name()`
+      has a `>= TYPE_ENUM_BASE` catch-all (degrading pascalc-frontend-
+      only concepts like enum/pointer types to `"integer"`, since
+      `desole` never links `parser.c`) that would have silently
+      swallowed `TYPE_TYPED_FILE` too (it sits past that same boundary,
+      being `TYPE_PROC_BASE + MAX_PROC_TYPES`) - fixed with an explicit
+      check before the catch-all, since a typed file's runtime state
+      genuinely IS VM-level (unlike enum/pointer), so `desole` CAN and
+      must print it accurately for a `solas`/`desole` round-trip to
+      stay correct. See `examples/test/typedfile/test_typedfile_*.pas`
+      (7 positive cases including a dedicated DCE-hazard regression
+      test, and 4 compile-time error cases) and
+      [docs/LANGUAGE.md](LANGUAGE.md#typed-binary-files).
 
 ### Language — procedures/functions & diagnostics
 
@@ -1901,15 +1972,6 @@ subrange types, sets (capped at 32 elements), pointers, classes,
 procedural types, and `text` file I/O. Ordered by cost, same spirit as
 the OOP survey above — unscoped ideas, not committed work, and none has
 a design/plan yet.
-
-**Cheap-ish, clear value:**
-- [ ] Typed/binary files (`file of TRecord;`, `seek`/`filesize`) —
-      currently only `text` files exist; everything reads/writes as
-      text (see [docs/LANGUAGE.md](LANGUAGE.md#file-io)'s "What's not
-      supported yet"). A file's state is already table-driven (one
-      `FILE*` + filename per global file variable), so extending that to
-      binary fixed-record I/O looks like a moderate, self-contained
-      lift, not an architecture change.
 
 **Moderate — real architectural decisions:**
 - [ ] Dynamic arrays — already flagged as missing (no array
