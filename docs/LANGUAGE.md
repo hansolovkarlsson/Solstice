@@ -2561,6 +2561,92 @@ end.
   the scoping note. `protected`/`strict private` visibility levels
   also don't exist — only `private`/`public` (see above).
 
+### Properties
+
+```pascal
+type
+    TCircle = class
+    private
+        FRadius: real;
+        procedure SetRadius(r: real);
+    public
+        function GetArea: real;
+        property Radius: real read FRadius write SetRadius;
+        property Area: real read GetArea;
+    end;
+
+procedure TCircle.SetRadius;
+begin
+    FRadius := r;
+end;
+
+function TCircle.GetArea;
+begin
+    GetArea := 3.14159 * FRadius * FRadius;
+end;
+
+var c: TCircle;
+begin
+    new(c);
+    c.Radius := 5.0;             { calls SetRadius(5.0) }
+    writeln(c.Radius:0:2);       { reads FRadius directly - 5.00 }
+    writeln(c.Area:0:2);         { calls GetArea - 78.54 }
+end.
+```
+
+- `property Name: Type read ReadTarget [write WriteTarget];` — a named
+  member that reads and writes like a field at the call site, while
+  actually routing through a field or a method.
+- `ReadTarget` is either a field (a direct read, no call) or a
+  zero-argument function (a *getter*, called with no `()` needed) whose
+  return type matches the property's declared type exactly.
+- `WriteTarget`, if present, is either a field (a direct write) or a
+  one-argument, non-`var` procedure (a *setter*) whose parameter type
+  matches the property's declared type exactly. Omitting `write`
+  entirely makes the property read-only — assigning to it is a compile
+  error.
+- No widening between a target's own declared type and the property's
+  declared type (exact match required at declaration time) — contrast
+  with an ordinary assignment through the property itself, which *does*
+  widen an integer literal/expression to `real` exactly like a plain
+  `real` field would.
+- **Property visibility governs access to the property itself** — the
+  underlying field's/method's own `private`/`public` is not consulted
+  once reached through the property. A `public` property may front a
+  `private` field or setter (see the worked example above: `FRadius`
+  and `SetRadius` are both `private`, but `Radius` itself is `public`).
+- **Self-shorthand** (a bare `Radius`/`Radius := x` inside another
+  method of the same class) works exactly like it does for an ordinary
+  field or method.
+- **Inheritance**: a subclass sees every property its ancestors
+  declared, exactly like fields and methods. Unlike a method, a
+  property can't be overridden in a subclass — redeclaring an inherited
+  property's name is a duplicate-declaration compile error.
+- **Section ordering**: properties are parsed as a third group, after
+  all fields and all methods (see `private`/`public`'s own "Section
+  ordering" note above) — a property's read/write target must be a
+  field or method already declared earlier in the same class body.
+- `inherited` does not apply to a property directly — there's no
+  "inherited property access" syntax. A property's read/write always
+  routes through whichever method (or field) it names on *this* class;
+  reaching an ancestor's own implementation of that method still means
+  spelling out `inherited MethodName(...)` directly, not through the
+  property.
+
+**Not implemented yet:**
+
+- **Indexed properties** (`property Items[i: integer]: T read GetItem
+  write SetItem;`) — an array-like property backed by a parameterized
+  getter/setter.
+- **`default` array property** — using an object directly with `[]`
+  indexing via one designated indexed property.
+- **Class-level properties** — properties on the class itself, not an
+  instance (class-level fields/methods don't exist yet either).
+- **Property overriding** in a subclass.
+- **`protected`-level visibility** — a property's own visibility is
+  only ever strict `private`/`public`, matching the class visibility
+  model as a whole (see above).
+
 ## Procedures
 
 ```pascal

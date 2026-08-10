@@ -176,6 +176,12 @@ typedef enum {
     TOKEN_EXCEPT,     // the 'except' half of a 'try' statement.
     TOKEN_RAISE,      // 'raise <message>;' - see NODE_RAISE/OP_RAISE.
     TOKEN_EXCEPTMESSAGE, // the 'ExceptMessage' builtin - see OP_EXCEPT_MSG.
+    TOKEN_PROPERTY,   // 'property Name: Type read ReadTarget [write WriteTarget];'
+                      // inside a 'class ... end;' body - see ClassProperty in
+                      // parser.c. 'read'/'write' reuse the existing,
+                      // unconditionally-reserved TOKEN_READ/TOKEN_WRITE tokens
+                      // (already used for read/readln/write/writeln I/O) - no
+                      // new token needed for either.
     TOKEN_EOF
 } TokenType;
 

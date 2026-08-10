@@ -466,6 +466,76 @@ typedef struct {
                                // RecordField.declaring_class_ptr_idx.
 } ProcParamHeader;
 
+#define MAX_CLASS_PROPERTIES 16 // no vm.c coupling needed (unlike
+                                 // MAX_CLASS_METHODS/MAX_RECORD_FIELDS) - a
+                                 // property has no runtime representation of
+                                 // its own at all; it always resolves, at
+                                 // PARSE time (see resolve_heap_deref_step()),
+                                 // into an already-existing field offset or
+                                 // an already-existing method's own vtable
+                                 // slot. Stays local to parser.c.
+
+// One 'property Name: Type read ReadTarget [write WriteTarget];' entry.
+// Like RecordField/ProcParamHeader, this is pure compile-time metadata -
+// resolve_heap_deref_step() is the only place that ever reads it, and it
+// always resolves a property access into an ALREADY EXISTING field offset
+// or method-call node shape - see that function's own comment. read_idx/
+// write_idx stay valid across inheritance for the same reason
+// ProcParamHeader.mangled_name/method_idx do (see parse_class_declaration()'s
+// inheritance comment): a subclass's rt->fields[]/pt->methods[] always
+// starts with an exact, order-preserving copy of its parent's, so an index
+// recorded while parsing an ancestor class stays correct, unchanged, in
+// every descendant's own tables too - this struct is simply struct-copied
+// into a descendant's pt->properties[], needing no per-copy index fixup.
+typedef struct {
+    char name[MAX_NAME];
+    DataType type;          // the property's own declared type - required to
+                             // match its read target's type (the field's own
+                             // type, or the getter's return type) and, if
+                             // present, its write target's type (the field's
+                             // own type, or the setter's sole parameter's
+                             // type) EXACTLY (no widening) - checked once, at
+                             // property-declaration time.
+    int read_is_field;      // 1 = ReadTarget names a field (rt->fields[
+                             // read_idx], a direct read, no call); 0 =
+                             // ReadTarget names a getter function
+                             // (pt->methods[read_idx], called with zero
+                             // arguments).
+    int read_idx;            // rt->fields[]/pt->methods[] index, per
+                             // read_is_field.
+    int has_write;           // 0 for a read-only property (no 'write' clause
+                             // at all, e.g. 'property Area: real read
+                             // GetArea;') - assigning to one is a compile
+                             // error, checked in resolve_heap_deref_step().
+    int write_is_field;      // only meaningful if has_write; 1 = WriteTarget
+                             // names a field (direct write); 0 = WriteTarget
+                             // names a setter procedure (called with the
+                             // assigned value as its one argument).
+    int write_idx;           // only meaningful if has_write; rt->fields[]/
+                             // pt->methods[] index, per write_is_field.
+    int is_private;          // the PROPERTY's OWN visibility - gates access
+                             // to the property itself. The underlying
+                             // field's/method's own is_private is
+                             // DELIBERATELY not consulted once accessed
+                             // through the property (standard Delphi
+                             // convention: a public property can front a
+                             // private field/method).
+    int declaring_class_ptr_idx; // pointer_types[] index of whichever
+                             // class's own 'class ... end;' first declared
+                             // this property - same convention as
+                             // RecordField.declaring_class_ptr_idx/
+                             // ProcParamHeader.declaring_class_ptr_idx,
+                             // needed because inheritance flattens a copy of
+                             // every ancestor property into a descendant's
+                             // own pt->properties[]. Properties can't be
+                             // overridden in v1 (see the property-parsing
+                             // loop's duplicate-name check) - unlike a
+                             // method, there's no is_inherited flag, since
+                             // "copied, not yet overridden" never needs
+                             // distinguishing from "declared fresh" for a
+                             // property.
+} ClassProperty;
+
 #define MAX_POINTER_DECLS MAX_POINTER_TYPES
 // MAX_CLASS_METHODS now lives in common.h - vm.c's vm_vtables[] needs it
 // too (see that array's own comment). Headers only, per the classes-and-
@@ -503,6 +573,12 @@ typedef struct {
     ProcParamHeader methods[MAX_CLASS_METHODS]; // only meaningful if is_class -
                                   // headers only; see the comment above
                                   // MAX_CLASS_METHODS
+    int property_count;          // only meaningful if is_class
+    ClassProperty properties[MAX_CLASS_PROPERTIES]; // only meaningful if
+                                  // is_class - see ClassProperty's own
+                                  // comment; flattened across inheritance
+                                  // exactly like 'methods' above, but never
+                                  // overridden (add-only, like fields).
     int parent_class_ptr_idx;    // only meaningful if is_class - this
                                   // class's OWN parent's pointer_types[]
                                   // index ('class TFoo(TBase) ... end;'),
@@ -3424,6 +3500,27 @@ typedef struct {
     ASTNode *array_index; // only meaningful if is_array_field - the
                         // index expression, already range-checked
                         // against the field's declared array bounds.
+    int is_property_setter; // true if this step is a property whose WRITE
+                        // target is a setter PROCEDURE (as opposed to a
+                        // field) - a FOURTH possible outcome, but unlike
+                        // the three above it's never itself complete: the
+                        // setter's one argument is the value expression
+                        // that appears AFTER ':=', which this function
+                        // hasn't parsed yet (it doesn't even know ':=' is
+                        // coming - that's the write-context CALLER's job,
+                        // same as for an ordinary field write). Only ever
+                        // set when is_statement_context was 1 - a property
+                        // read (expression context) always resolves the
+                        // getter into a complete call itself, see
+                        // is_method_call. result_type is the PROPERTY's
+                        // own declared type (identical to the setter's
+                        // param type by construction - checked once, at
+                        // property-declaration time). See
+                        // build_property_setter_call().
+    int setter_method_idx; // only meaningful if is_property_setter -
+                        // pt->methods[] index of the setter procedure
+                        // (also its vtable slot, exactly like an ordinary
+                        // method call's method_idx/NODE_VIRTUAL_CALL).
 } HeapDerefStep;
 
 // Whether 'name' is a field or method of class_ptr_idx - the check that
@@ -3437,6 +3534,9 @@ static int class_has_member(int class_ptr_idx, const char *name) {
     PointerTypeDef *pt = &pointer_types[class_ptr_idx];
     if (find_record_field(pt->target_record_type_idx, name) != -1) {
         return 1;
+    }
+    for (int i = 0; i < pt->property_count; i++) {
+        if (strcmp(pt->properties[i].name, name) == 0) return 1;
     }
     for (int i = 0; i < pt->method_count; i++) {
         if (strcmp(pt->methods[i].name, name) == 0) return 1;
@@ -3540,6 +3640,8 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
     step.call_node = NULL;
     step.is_array_field = 0;
     step.array_index = NULL;
+    step.is_property_setter = 0;
+    step.setter_method_idx = -1;
     DataType base_type = base->expression_type;
     PointerTypeDef *pt = &pointer_types[base_type - TYPE_POINTER_BASE];
     if (pt->target_is_record) {
@@ -3557,6 +3659,88 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             char name[MAX_NAME];
             strcpy(name, token.text);
             int name_line = token.line;
+
+            // Property lookup, before the ordinary method lookup below -
+            // property names are guaranteed disjoint from field/method
+            // names (enforced at property-declaration time in
+            // parse_class_declaration()), so the order between this and
+            // the method-lookup block below doesn't matter for
+            // correctness, only readability.
+            int prop_idx = -1;
+            for (int i = 0; i < pt->property_count; i++) {
+                if (strcmp(pt->properties[i].name, name) == 0) { prop_idx = i; break; }
+            }
+            if (prop_idx != -1) {
+                match(TOKEN_IDENTIFIER);
+                ClassProperty *prop = &pt->properties[prop_idx];
+                if (prop->is_private && current_class_ptr_idx != prop->declaring_class_ptr_idx) {
+                    // The PROPERTY's own visibility gates access here - the
+                    // underlying field's/method's own is_private is
+                    // deliberately NOT consulted once reached through the
+                    // property (a public property may front a private
+                    // field/method - standard Delphi convention).
+                    compile_error(name_line, "'%s' is a private property of class '%s' and can't be accessed here", name, pointer_types[prop->declaring_class_ptr_idx].name);
+                }
+                RecordTypeDef *target_rt = &record_types[pt->target_record_type_idx];
+
+                if (is_statement_context) {
+                    // A property reached in statement/write context is
+                    // always headed for ':=' - there's no "call a property
+                    // like a bare procedure" concept, matching how an
+                    // ordinary field reached in statement context always
+                    // heads for ':=' too (see build_heap_deref_write_statement()).
+                    if (!prop->has_write) {
+                        compile_error(name_line, "'%s' is a read-only property of class '%s' and can't be assigned to", name, pt->name);
+                    }
+                    if (prop->write_is_field) {
+                        RecordField *f = &target_rt->fields[prop->write_idx];
+                        step.field_offset = class_field_base_offset(target_rt, prop->write_idx);
+                        step.result_type = f->type;
+                        step.is_subrange = f->is_subrange;
+                        step.subrange_lower = f->subrange_lower;
+                        step.subrange_upper = f->subrange_upper;
+                        return step;
+                    }
+                    step.is_property_setter = 1;
+                    step.setter_method_idx = prop->write_idx;
+                    step.result_type = prop->type;
+                    return step;
+                }
+
+                // Read/expression context.
+                if (prop->read_is_field) {
+                    RecordField *f = &target_rt->fields[prop->read_idx];
+                    step.field_offset = class_field_base_offset(target_rt, prop->read_idx);
+                    step.result_type = f->type;
+                    step.is_subrange = f->is_subrange;
+                    step.subrange_lower = f->subrange_lower;
+                    step.subrange_upper = f->subrange_upper;
+                    return step;
+                }
+                // Getter - build the call exactly like the ordinary
+                // method-call block below does, just keyed by the
+                // property's own read_idx. Arity/return-type were already
+                // validated to be zero-arg/exact-match at property-
+                // declaration time, so parse_class_method_call_arguments()
+                // (which tolerates a missing '(' for a zero-arg call) needs
+                // no special-casing here.
+                ProcParamHeader *rh = &pt->methods[prop->read_idx];
+                int mangled_idx = find_proc(rh->mangled_name);
+                if (mangled_idx == -1) {
+                    compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, rh->name);
+                }
+                ASTNode *call = create_node(NODE_VIRTUAL_CALL);
+                call->line = name_line;
+                call->data.num_value = prop->read_idx;
+                call->expression_type = rh->return_type;
+                call->left = base;
+                call->right = parse_class_method_call_arguments(mangled_idx);
+                step.is_method_call = 1;
+                step.call_node = call;
+                step.result_type = call->expression_type;
+                return step;
+            }
+
             int method_idx = -1;
             for (int i = 0; i < pt->method_count; i++) {
                 if (strcmp(pt->methods[i].name, name) == 0) { method_idx = i; break; }
@@ -3787,6 +3971,14 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
             *out_step = step;
             return NULL;
         }
+        if (step.is_property_setter) {
+            // Terminal, like a method call - build_property_setter_call()
+            // (the caller's job, see its own comment) still needs 'base'
+            // itself (unlike is_method_call, where the call node already
+            // has it spliced in), so return it rather than NULL.
+            *out_step = step;
+            return base;
+        }
         if (step.is_array_field) {
             // Terminal, like a method call - must return here, BEFORE
             // the '^'-continuation check below, since step.field_offset
@@ -3843,6 +4035,65 @@ static ASTNode *build_heap_deref_write_statement(ASTNode *base, HeapDerefStep st
     stmt->extra = offset_lit;
     stmt->expression_type = step.result_type;
     return stmt;
+}
+
+// Builds the NODE_VIRTUAL_CALL for a property write whose write target is a
+// setter PROCEDURE (step.is_property_setter) - the write-context twin of
+// build_heap_deref_write_statement() for the ordinary-field-terminal case.
+// Parses ':=' and the value expression itself (the setter's one argument),
+// exactly like build_heap_deref_write_statement() does for a plain field -
+// this can't reuse parse_class_method_call_arguments() (it expects
+// '(args)' immediately after the name, not a ':=' and a bare expression
+// appearing afterward).
+static ASTNode *build_property_setter_call(ASTNode *base, HeapDerefStep step, int line) {
+    PointerTypeDef *pt = &pointer_types[base->expression_type - TYPE_POINTER_BASE];
+    ProcParamHeader *h = &pt->methods[step.setter_method_idx];
+    int mangled_idx = find_proc(h->mangled_name);
+    if (mangled_idx == -1) {
+        compile_error(line, "'%s.%s' doesn't have a body yet", pt->name, h->name);
+    }
+    match(TOKEN_ASSIGN);
+    // slot 1, not 0: the mangled setter's own param_count includes 'self'
+    // at slot 0 (see parse_class_method_call_arguments()'s own comment) -
+    // the setter's single user-visible parameter is always slot 1, since
+    // property declaration time already validated it takes exactly one.
+    ASTNode *value = step.result_type >= TYPE_PROC_BASE
+        ? parse_proc_value(step.result_type - TYPE_PROC_BASE, token.line)
+        : expression();
+    if (step.result_type < TYPE_PROC_BASE) {
+        DataType expected = step.result_type;
+        DataType actual = value->expression_type;
+        int expected_stringy = (expected == TYPE_STRING || expected == TYPE_CHAR);
+        int actual_stringy = (actual == TYPE_STRING || actual == TYPE_CHAR);
+        if (!(expected_stringy && actual_stringy) && expected != actual) {
+            if (actual == TYPE_INTEGER && expected == TYPE_REAL) {
+                // Implicit int->real widening, matching an ordinary
+                // assignment's own rule (try_widen_for_assignment() in
+                // type_checker.c) - duplicated narrowly here, the same way
+                // parse_indirect_call()/build_procvar_call() already do,
+                // since NODE_VIRTUAL_CALL has no type_checker.c case for
+                // this to defer to (see docs/ROADMAP.md's Properties entry).
+                ASTNode *wrapper = create_node(NODE_INT_TO_REAL);
+                wrapper->left = value;
+                wrapper->expression_type = TYPE_REAL;
+                wrapper->line = value->line;
+                value = wrapper;
+            } else {
+                compile_error(line, "Cannot assign this expression to property '%s' - wrong type", h->name);
+            }
+        }
+        value = wrap_range_check(value, proc_table[mangled_idx].param_is_subrange[1],
+            proc_table[mangled_idx].param_subrange_lower[1], proc_table[mangled_idx].param_subrange_upper[1]);
+    }
+
+    ASTNode *call = create_node(NODE_VIRTUAL_CALL);
+    call->line = line;
+    call->data.num_value = step.setter_method_idx;
+    call->expression_type = TYPE_UNKNOWN; // a setter is always a procedure
+    call->left = base;
+    call->right = value;
+    call->op = TOKEN_PROCEDURE; // statement context - matches every other call-statement's own convention
+    return call;
 }
 
 // Builds the synthetic 'self'-read node any unqualified self-shorthand
@@ -4015,10 +4266,20 @@ static ASTNode *parse_self_shorthand_write(void) {
         step.call_node->op = TOKEN_PROCEDURE; // statement context: discard an unused function result
         return step.call_node;
     }
+    if (step.is_property_setter) {
+        return build_property_setter_call(base, step, line);
+    }
     if (!step.is_array_field && token.type == TOKEN_CARET) {
         base = parse_heap_deref_write(make_heap_field_access(base, step, line), line, &step);
         if (step.is_method_call) {
             return step.call_node;
+        }
+        if (step.is_property_setter) {
+            // Defensive - a setter step is terminal, so this second check
+            // should never actually fire (mirrors the same double-check
+            // pattern for is_method_call just above), but keeps this
+            // function correct if that invariant ever changes.
+            return build_property_setter_call(base, step, line);
         }
     }
     return build_heap_deref_write_statement(base, step);
@@ -5380,6 +5641,19 @@ static void parse_class_declaration(const char *class_name, int line) {
             pt->method_count++;
         }
     }
+    pt->property_count = 0;
+    if (parent != NULL) {
+        // Properties follow FIELDS' inheritance rule, not methods' - add-
+        // only, never overridden in v1 (see the property-parsing loop's own
+        // duplicate-name check below) - so, unlike the method copy above,
+        // no is_inherited marking is needed here. Same overflow reasoning
+        // as the field/method copies: parent->property_count is already
+        // <= MAX_CLASS_PROPERTIES by construction.
+        for (int i = 0; i < parent->property_count; i++) {
+            pt->properties[pt->property_count] = parent->properties[i];
+            pt->property_count++;
+        }
+    }
     int inherited_method_count = pt->method_count;
     // Tracks which INHERITED slots this class has already overridden -
     // needed so overriding the SAME inherited method twice in one class
@@ -5423,6 +5697,153 @@ static void parse_class_declaration(const char *class_name, int line) {
         } else {
             compile_error(method_line, "Duplicate method '%s' in class '%s'", h.name, class_name);
         }
+    }
+
+    // Properties come AFTER fields and methods above - a property's
+    // read/write target may be a field or method declared anywhere in this
+    // class body, and by this point rt->fields[]/pt->methods[] are both
+    // guaranteed fully populated (including any inherited entries copied in
+    // above), so lookup order within THIS loop doesn't matter.
+    while (token.type == TOKEN_PROPERTY || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+
+        int prop_line = token.line;
+        match(TOKEN_PROPERTY);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a property name after 'property'");
+        }
+        char prop_name[MAX_NAME];
+        strcpy(prop_name, token.text);
+        match(TOKEN_IDENTIFIER);
+
+        // Properties share one flat namespace with fields and methods,
+        // exactly like methods already do with fields (see the method
+        // loop's own find_record_field() check above).
+        if (find_record_field(rt_idx, prop_name) != -1) {
+            compile_error(prop_line, "'%s' is already a field of class '%s'", prop_name, class_name);
+        }
+        for (int i = 0; i < pt->method_count; i++) {
+            if (strcmp(pt->methods[i].name, prop_name) == 0) {
+                compile_error(prop_line, "'%s' is already a method of class '%s'", prop_name, class_name);
+            }
+        }
+        for (int i = 0; i < pt->property_count; i++) {
+            if (strcmp(pt->properties[i].name, prop_name) == 0) {
+                compile_error(prop_line, "Duplicate property '%s' in class '%s'", prop_name, class_name);
+            }
+        }
+
+        match(TOKEN_COLON);
+        DataType prop_type = parse_scalar_type();
+
+        if (token.type != TOKEN_READ) {
+            compile_error(token.line, "Expected 'read' in property '%s' declaration", prop_name);
+        }
+        match(TOKEN_READ);
+        if (token.type != TOKEN_IDENTIFIER) {
+            compile_error(token.line, "Expected a field or function name after 'read'");
+        }
+        char read_name[MAX_NAME];
+        int read_line = token.line;
+        strcpy(read_name, token.text);
+        match(TOKEN_IDENTIFIER);
+
+        ClassProperty prop;
+        strcpy(prop.name, prop_name);
+        prop.type = prop_type;
+        prop.is_private = current_is_private;
+        prop.declaring_class_ptr_idx = pointer_type_count;
+        prop.has_write = 0;
+
+        int rfi = find_record_field(rt_idx, read_name);
+        if (rfi != -1) {
+            RecordField *rf = &rt->fields[rfi];
+            if (rf->is_array || rf->is_record) {
+                compile_error(read_line, "Property '%s' read target '%s' must be a scalar field (array/nested-record fields aren't supported as a property target)", prop_name, read_name);
+            }
+            if (rf->type != prop_type) {
+                compile_error(read_line, "Property '%s' read target field '%s' has a different type than the property itself", prop_name, read_name);
+            }
+            prop.read_is_field = 1;
+            prop.read_idx = rfi;
+        } else {
+            int mi = -1;
+            for (int i = 0; i < pt->method_count; i++) {
+                if (strcmp(pt->methods[i].name, read_name) == 0) { mi = i; break; }
+            }
+            if (mi == -1) {
+                compile_error(read_line, "'%s' is not a field or method of class '%s' (property '%s' read target)", read_name, class_name, prop_name);
+            }
+            ProcParamHeader *rh = &pt->methods[mi];
+            if (!rh->is_function) {
+                compile_error(read_line, "Property '%s' read target '%s' must be a function (it's a procedure)", prop_name, read_name);
+            }
+            if (rh->param_count != 0) {
+                compile_error(read_line, "Property '%s' read target '%s' must take no arguments (it takes %d)", prop_name, read_name, rh->param_count);
+            }
+            if (rh->return_type != prop_type) {
+                compile_error(read_line, "Property '%s' read target function '%s' returns a different type than the property itself", prop_name, read_name);
+            }
+            prop.read_is_field = 0;
+            prop.read_idx = mi;
+        }
+
+        if (token.type == TOKEN_WRITE) {
+            match(TOKEN_WRITE);
+            if (token.type != TOKEN_IDENTIFIER) {
+                compile_error(token.line, "Expected a field or procedure name after 'write'");
+            }
+            char write_name[MAX_NAME];
+            int write_line = token.line;
+            strcpy(write_name, token.text);
+            match(TOKEN_IDENTIFIER);
+
+            int wfi = find_record_field(rt_idx, write_name);
+            if (wfi != -1) {
+                RecordField *wf = &rt->fields[wfi];
+                if (wf->is_array || wf->is_record) {
+                    compile_error(write_line, "Property '%s' write target '%s' must be a scalar field", prop_name, write_name);
+                }
+                if (wf->type != prop_type) {
+                    compile_error(write_line, "Property '%s' write target field '%s' has a different type than the property itself", prop_name, write_name);
+                }
+                prop.write_is_field = 1;
+                prop.write_idx = wfi;
+            } else {
+                int mi = -1;
+                for (int i = 0; i < pt->method_count; i++) {
+                    if (strcmp(pt->methods[i].name, write_name) == 0) { mi = i; break; }
+                }
+                if (mi == -1) {
+                    compile_error(write_line, "'%s' is not a field or method of class '%s' (property '%s' write target)", write_name, class_name, prop_name);
+                }
+                ProcParamHeader *wh = &pt->methods[mi];
+                if (wh->is_function) {
+                    compile_error(write_line, "Property '%s' write target '%s' must be a procedure (it's a function)", prop_name, write_name);
+                }
+                if (wh->param_count != 1) {
+                    compile_error(write_line, "Property '%s' write target '%s' must take exactly one argument (it takes %d)", prop_name, write_name, wh->param_count);
+                }
+                if (wh->param_is_var[0]) {
+                    compile_error(write_line, "Property '%s' write target '%s' can't take its argument by 'var'", prop_name, write_name);
+                }
+                if (wh->param_types[0] != prop_type) {
+                    compile_error(write_line, "Property '%s' write target '%s' takes a different type than the property itself", prop_name, write_name);
+                }
+                prop.write_is_field = 0;
+                prop.write_idx = mi;
+            }
+            prop.has_write = 1;
+        }
+
+        match(TOKEN_SEMI);
+
+        if (pt->property_count >= MAX_CLASS_PROPERTIES) {
+            compile_error(prop_line, "Class '%s' has too many properties (limit is %d)", class_name, MAX_CLASS_PROPERTIES);
+        }
+        pt->properties[pt->property_count] = prop;
+        pt->property_count++;
     }
 
     // class_field_base_offset(rt, rt->field_count) is 1 (the hidden
@@ -7659,7 +8080,7 @@ static ASTNode *parse_new_statement(void) {
         }
         HeapDerefStep step;
         base = parse_heap_deref_write(base, line, &step);
-        if (step.is_method_call || !is_pointer_type(step.result_type)) {
+        if (step.is_method_call || step.is_property_setter || !is_pointer_type(step.result_type)) {
             compile_error(line, "'new' expects a pointer target");
         }
         if (pointer_types[step.result_type - TYPE_POINTER_BASE].is_class) {
@@ -8100,6 +8521,7 @@ static ASTNode *parse_global_assignment(int idx) {
         HeapDerefStep step;
         base = parse_heap_deref_write(base, line, &step);
         if (step.is_method_call) return step.call_node;
+        if (step.is_property_setter) return build_property_setter_call(base, step, line);
         return build_heap_deref_write_statement(base, step);
     }
     if (is_proc_type(sym_table[idx].type)) {
@@ -8646,6 +9068,7 @@ static ASTNode *statement(void) {
                     HeapDerefStep step;
                     base = parse_heap_deref_write(base, line, &step);
                     if (step.is_method_call) return step.call_node;
+                    if (step.is_property_setter) return build_property_setter_call(base, step, line);
                     return build_heap_deref_write_statement(base, step);
                 }
                 match(TOKEN_ASSIGN);
@@ -8790,6 +9213,7 @@ static ASTNode *statement(void) {
                 HeapDerefStep step;
                 base = parse_heap_deref_write(base, line, &step);
                 if (step.is_method_call) return step.call_node;
+                if (step.is_property_setter) return build_property_setter_call(base, step, line);
                 return build_heap_deref_write_statement(base, step);
             }
             ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);

@@ -1253,6 +1253,75 @@ primitives instead of each reinventing them.
       newly-confirmed, not newly-introduced. See
       `examples/test/class/test_class_visibility_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#privatepublic).
+- [x] Properties — `property Name: Type read ReadTarget [write
+      WriteTarget];`, a named class member that reads/writes like a
+      field at the call site while actually routing through a field or
+      a method. `ReadTarget` is a field (direct read) or a zero-arg
+      function (a getter); `WriteTarget` (optional - omitting it makes
+      the property read-only) is a field (direct write) or a one-arg,
+      non-`var` procedure (a setter). Both targets' types must match the
+      property's own declared type exactly (no widening at declaration
+      time).
+
+      Pure compile-time sugar with zero runtime footprint - no new
+      `NodeType`, no new `Opcode`, and no `type_checker.c`/
+      `optimizer.c`/`codegen.c`/`vm.c`/`solas.c`/`desole.c` changes at
+      all. A property resolves entirely inside the one existing shared
+      choke point every class field/method access already goes through,
+      `resolve_heap_deref_step()`, into the exact same node shapes a
+      hand-written access would produce (`NODE_HEAP_FIELD_ACCESS`/
+      `NODE_HEAP_FIELD_ASSIGN` for a field-backed side,
+      `NODE_VIRTUAL_CALL` for a method-backed side) - so a property
+      access is indistinguishable, post-parse, from one written by hand.
+
+      A new per-class `ClassProperty` table (`PointerTypeDef.properties[]`,
+      mirroring `RecordField`/`ProcParamHeader`'s own shape - name,
+      declared type, read/write target kind + index, `is_private`/
+      `declaring_class_ptr_idx`) is parsed as a THIRD group in
+      `parse_class_declaration()`, after all fields and all methods (a
+      property's target may be declared anywhere earlier in the same
+      class body). Properties are inheritance-flattened exactly like
+      fields - copied into every descendant, add-only, never overridden
+      in v1 (unlike a method).
+
+      The one genuine new mechanism: a setter-backed write's single
+      argument appears syntactically AFTER `:=` (`obj.Radius := 5.0;`),
+      not in a parenthesized list right after the name the way an
+      ordinary method call's arguments do, so the existing
+      `parse_class_method_call_arguments()` couldn't be reused as-is for
+      that one case. Solved with one new `HeapDerefStep` outcome flag
+      (`is_property_setter`/`setter_method_idx`) - structurally the same
+      kind of terminal, write-context-only outcome `is_method_call`/
+      `is_array_field` already are - and a new helper,
+      `build_property_setter_call()`, that parses `:=` and the value
+      expression itself (replicating the int-&gt;real widening + range-
+      check treatment an ordinary field assignment already gets via
+      `type_checker.c`'s `try_widen_for_assignment()`, since
+      `NODE_VIRTUAL_CALL` has no `type_checker.c` case of its own to
+      defer to - the same reason `parse_indirect_call()`/
+      `build_procvar_call()` already duplicate that narrow check
+      in-line). Wired into every write-context call site that resolves
+      a heap-deref step (5 total, including `new(...)`'s own pointer-
+      chain walk, which needed a defensive guard so `new()` against a
+      setter-backed property fails cleanly instead of misreading a
+      garbage field offset).
+
+      Visibility is property-level, independent of the backing field's/
+      method's own - a `public` property may front a `private` field or
+      setter (verified with a dedicated test). No `is_property_setter`/
+      new struct needed any `type_checker.c`/`optimizer.c` case; both
+      confirmed to need zero changes by direct reading.
+
+      Scope cuts for v1 (see [docs/LANGUAGE.md](LANGUAGE.md#properties)'s
+      "Not implemented yet"): no indexed properties, no `default` array
+      property, no class-level properties, no property overriding in a
+      subclass, no `protected` visibility. See
+      `examples/test/property/test_property_*.pas` (7 positive cases -
+      field-backed read/write, field-backed write, getter-only read-
+      only, self-shorthand, inheritance, a public property fronting
+      private members, setter int-&gt;real widening - and 14 error cases
+      covering every rejection path) and
+      [docs/LANGUAGE.md](LANGUAGE.md#properties).
 - [ ] Possibly add a C-style `union` concept — true overlapping storage
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
@@ -1682,10 +1751,6 @@ tag, the vtable) rather than by Delphi-completeness — these are
 unscoped ideas, not committed work, and none has a design/plan yet.
 
 **Good fit — reuse existing machinery:**
-- [ ] Properties (`property Name: T read FField write SetField;`,
-      optionally indexed/`default`) — the single most "makes it feel
-      like Delphi" item left; fits the same shared dotted-name
-      resolution self-shorthand and `inherited` already route through.
 - [ ] `is`/`as` operators (safe type check/downcast) — cheap given the
       runtime class tag and `class_type_is_subtype_of()` already built
       for upcast compatibility; likely the lowest-cost item on this list.

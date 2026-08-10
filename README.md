@@ -395,6 +395,10 @@ VM's own built-in runtime errors (division by zero, array bounds, and
 so on) stay always-fatal, not catchable, matching the "you write it, you
 catch it" boundary this feature draws (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#try--except--raise)).
+Also working: properties (`property Name: T read F write SetF;`), a
+field- or method-backed named accessor resolved entirely at compile
+time into an ordinary field access or method call — no new opcodes (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#properties)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.
