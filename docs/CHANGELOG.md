@@ -2439,6 +2439,64 @@ open) stays there.
       DiamondA, Base` sequence, and independently-optional sections) and
       [docs/LANGUAGE.md](LANGUAGE.md#initialization-and-finalization).
 
+- [x] Compiler directives (`{$DEFINE}`/`{$UNDEF}`/`{$IFDEF}`/
+      `{$IFNDEF}`/`{$ELSE}`/`{$ENDIF}`) — the smallest feature shipped
+      yet: entirely inside `lexer.c`, not even a new `TokenType`.
+      Directives never produce tokens - a false `{$IFDEF}` branch is
+      consumed as raw characters inside the lexer's own `{` handling
+      before `next_token()` ever returns to its caller - so `parser.c`,
+      `type_checker.c`, `optimizer.c`, `codegen.c`, `vm.c`, and
+      `ast_printer.c` needed zero changes. `{$IFDEF FOO}` already
+      silently vanished as an ordinary no-op comment before this shipped
+      (nothing in `examples/` relied on that), so recognizing `{$` as
+      something other than a plain comment was a safe behavior change.
+
+      **The `LexerPos` save/restore struct already used for `uses`-based
+      unit loading absorbed the new nesting state for free**: `{$IFDEF}`
+      nesting (`ifdef_depth`/`ifdef_in_else[]`) is per-file - reset
+      inside `init_lexer()` itself, which already runs once per file
+      (main program and every unit) - and rides along inside `LexerPos`,
+      so `load_unit()` needed zero edits; its existing generic
+      `lexer_save_pos()`/`lexer_restore_pos()` calls around a nested
+      unit's own lex pass just carry the extra fields automatically.
+      `{$DEFINE}`d symbols, by contrast, are a *separate* table that
+      `init_lexer()` deliberately does NOT reset - only a new
+      `lexer_reset_defines()`, called once per whole compile from
+      `parse_ast()` (mirroring every other per-compile reset already
+      there), clears it - so a symbol `{$DEFINE}`d by the main program
+      stays visible to a used unit's own `{$IFDEF}`s and vice versa,
+      matching real Pascal's "lasts the rest of the compile" semantics
+      for defines, while nesting itself stays correctly scoped per file.
+
+      A false `{$IFDEF}`/dead `{$ELSE}` branch is skipped by a new
+      `skip_conditional()` scanner that looks for the next literal `{$`
+      marker (deliberately not string/comment-aware, matching this
+      lexer's pre-existing choice not to special-case strings inside
+      plain `{ }` comments either) and tracks its own local nesting
+      counter to find the `{$ELSE}`/`{$ENDIF}` matching its own level -
+      replicating the existing `current_line++` bump on every `\n` it
+      scans over, so line numbers after a skipped block stay correct,
+      same discipline the two pre-existing comment-skip loops already
+      have.
+
+      **Deliberate v1 scope cut, not a gap**: only the six directives
+      above do anything; any other `{$...}` (`{$R+}`, `{$Q-}`, etc.) is
+      recognized as directive syntax and silently accepted as a no-op,
+      not wired to real behavior - actually implementing `$R+`/`$R-`
+      range-check toggling would mean conditionally gating `codegen.c`'s
+      existing subrange bounds-check emission, which would no longer be
+      a purely lexer-level change, contradicting the ROADMAP's own
+      framing for this feature. Also cut: `{$ELSEIF}` chaining (nest
+      another `{$IFDEF}` inside `{$ELSE}` instead), `{$INCLUDE}` file
+      inclusion, and a `-D` command-line flag to pre-define a symbol
+      (`{$DEFINE}` from source is the only way in v1). See
+      `examples/test/directives/test_directives_*.pas` (8 positive
+      cases including nested conditionals, cross-`uses`-boundary define
+      persistence, and proof that a dead branch's invalid syntax causes
+      no error; 5 error cases: unterminated, stray `$ELSE`/`$ENDIF`,
+      duplicate `$ELSE`, and nesting past the 16-level limit) and
+      [docs/LANGUAGE.md](LANGUAGE.md#compiler-directives).
+
 ## Known issues (found via AddressSanitizer)
 
 Both surfaced by a proactive ASan/UBSan sweep during the virtual

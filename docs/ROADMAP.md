@@ -110,9 +110,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 - [ ] Class references/metaclasses (`TClass = class of TObject;`,
       virtual constructors via `AClass.Create`) — a new "class-typed
       value" distinct from an instance.
-- [ ] Compiler directives (`{$IFDEF}`/`{$ENDIF}`, `{$R+}`) — a
-      lexer/preprocessor-level feature, doesn't touch the AST/VM.
-
 **Large — architecture-changing, lower priority:**
 
 - [ ] Method overloading (`overload`) — this compiler's whole design

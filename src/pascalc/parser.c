@@ -7771,6 +7771,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     loading_unit_count = 0;
     current_unit_name[0] = '\0';
     current_section_is_implementation = 0;
+    lexer_reset_defines();
     init_lexer(source);
     match(TOKEN_PROGRAM);
     match(TOKEN_IDENTIFIER);

@@ -12,6 +12,24 @@ static const char *src;
 Token token;
 static int current_line = 1;
 
+// Symbols defined via {$DEFINE}/{$UNDEF}, checked by {$IFDEF}/
+// {$IFNDEF}. NOT reset by init_lexer() - see lexer_reset_defines()'s
+// own doc comment in lexer.h for why.
+#define MAX_DEFINED_SYMBOLS 64
+static char defined_symbols[MAX_DEFINED_SYMBOLS][MAX_NAME];
+static int defined_symbol_count = 0;
+
+// {$IFDEF}/{$IFNDEF} nesting - one entry per currently-open, currently-
+// ACTIVE conditional. A conditional whose branch is being skipped is
+// fully consumed by skip_conditional() below before control ever
+// returns to next_token(), so it never needs its own entry here - only
+// branches actually being lexed do. ifdef_in_else[i] is set once that
+// level's {$ELSE} has been taken, to catch a duplicate {$ELSE}. Reset
+// inside init_lexer() itself (unlike defined_symbols[] above) since
+// nesting is per-file - see lexer.h's LexerPos doc comment.
+static int ifdef_in_else[MAX_IFDEF_DEPTH];
+static int ifdef_depth = 0;
+
 static void lexer_error(const char *fmt, ...) {
     fprintf(stderr, "%s:%d: Compile Error: ", get_current_filename(), current_line);
     va_list args;
@@ -22,9 +40,126 @@ static void lexer_error(const char *fmt, ...) {
     fatal_abort();
 }
 
+void lexer_reset_defines(void) {
+    defined_symbol_count = 0;
+}
+
+static int is_symbol_defined(const char *name) {
+    for (int i = 0; i < defined_symbol_count; i++) {
+        if (strcasecmp(defined_symbols[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+static void define_symbol(const char *name) {
+    if (is_symbol_defined(name)) return; // idempotent, matches real Pascal
+    if (defined_symbol_count >= MAX_DEFINED_SYMBOLS) {
+        lexer_error("Too many '$DEFINE'd symbols in this compile (limit is %d)", MAX_DEFINED_SYMBOLS);
+    }
+    strcpy(defined_symbols[defined_symbol_count++], name);
+}
+
+static void undef_symbol(const char *name) {
+    for (int i = 0; i < defined_symbol_count; i++) {
+        if (strcasecmp(defined_symbols[i], name) == 0) {
+            for (int j = i; j < defined_symbol_count - 1; j++) {
+                strcpy(defined_symbols[j], defined_symbols[j + 1]);
+            }
+            defined_symbol_count--;
+            return;
+        }
+    }
+}
+
+// Skips spaces/tabs/newlines between a directive keyword and its
+// argument (e.g. the space in '{$IFDEF FOO}'), bumping current_line for
+// any embedded newline, same as every other whitespace/comment skip in
+// this file.
+static void skip_directive_ws(void) {
+    while (*src == ' ' || *src == '\t' || *src == '\n' || *src == '\r') {
+        if (*src == '\n') current_line++;
+        src++;
+    }
+}
+
+// Reads a directive keyword or {$DEFINE}/{$IFDEF}-style symbol name
+// into 'out' (bounded exactly like the ordinary identifier scanner
+// below). Leaves out[0] == '\0' if the next character isn't
+// identifier-like, for the caller's own "expected a symbol name" check.
+static void read_directive_word(char *out, size_t outsz) {
+    char *p = out;
+    char *end = out + outsz - 1;
+    while (isalnum((unsigned char)*src) || *src == '_') {
+        if (p >= end) lexer_error("Directive name too long (limit is %d characters)", (int)outsz - 1);
+        *p++ = *src++;
+    }
+    *p = '\0';
+}
+
+// The ordinary '{ ... }' comment scan, factored out since it's also
+// needed after every recognized directive's argument and inside
+// skip_conditional() below.
+static void skip_to_closing_brace(void) {
+    while (*src && *src != '}') {
+        if (*src == '\n') current_line++;
+        src++;
+    }
+    if (*src == '}') src++;
+}
+
+// Scans raw source for the next literal '{$' marker (deliberately not
+// string/comment-aware - the same simplicity this lexer already accepts
+// for plain '{ }' comments, which don't understand strings inside them
+// either), tracking a LOCAL nesting counter for any {$IFDEF}/{$IFNDEF}
+// it passes over so it finds the marker matching its own level, not a
+// nested one. Any {$DEFINE}/{$UNDEF} passed over while skipping is
+// deliberately NOT applied - side effects inside a dead branch don't
+// happen, matching real Pascal.
+//
+// Returns 1 if it stopped at a level-0 {$ELSE} (only possible when
+// stop_at_else is true), 0 if it stopped at a level-0 {$ENDIF}. EOF, or
+// a level-0 {$ELSE} when stop_at_else is false (a duplicate {$ELSE}),
+// is a lexer_error().
+static int skip_conditional(int stop_at_else) {
+    int nesting = 0;
+    for (;;) {
+        if (!*src) {
+            lexer_error("Unterminated '$IFDEF'/'$IFNDEF' (missing '$ENDIF')");
+        }
+        if (src[0] == '{' && src[1] == '$') {
+            src += 2;
+            skip_directive_ws();
+            char word[MAX_NAME];
+            read_directive_word(word, sizeof(word));
+            if (strcasecmp(word, "IFDEF") == 0 || strcasecmp(word, "IFNDEF") == 0) {
+                nesting++;
+                skip_to_closing_brace();
+            } else if (strcasecmp(word, "ELSE") == 0) {
+                skip_to_closing_brace();
+                if (nesting == 0) {
+                    if (!stop_at_else) {
+                        lexer_error("Duplicate '$ELSE' for the same '$IFDEF'/'$IFNDEF'");
+                    }
+                    return 1;
+                }
+            } else if (strcasecmp(word, "ENDIF") == 0) {
+                skip_to_closing_brace();
+                if (nesting == 0) return 0;
+                nesting--;
+            } else {
+                skip_to_closing_brace();
+            }
+            continue;
+        }
+        if (*src == '\n') current_line++;
+        src++;
+    }
+}
+
 void init_lexer(const char *source) {
     src = source;
     current_line = 1;
+    ifdef_depth = 0;
     next_token();
 }
 
@@ -32,12 +167,16 @@ LexerPos lexer_save_pos(void) {
     LexerPos pos;
     pos.src = src;
     pos.current_line = current_line;
+    pos.ifdef_depth = ifdef_depth;
+    memcpy(pos.ifdef_in_else, ifdef_in_else, sizeof(int) * ifdef_depth);
     return pos;
 }
 
 void lexer_restore_pos(LexerPos pos) {
     src = pos.src;
     current_line = pos.current_line;
+    ifdef_depth = pos.ifdef_depth;
+    memcpy(ifdef_in_else, pos.ifdef_in_else, sizeof(int) * ifdef_depth);
 }
 
 void next_token(void) {
@@ -49,6 +188,66 @@ void next_token(void) {
     token.line = current_line;
 
     if (*src == '{') {
+        if (*(src + 1) == '$') {
+            src += 2;
+            skip_directive_ws();
+            char word[MAX_NAME];
+            read_directive_word(word, sizeof(word));
+
+            if (strcasecmp(word, "DEFINE") == 0) {
+                skip_directive_ws();
+                char sym[MAX_NAME];
+                read_directive_word(sym, sizeof(sym));
+                if (!sym[0]) lexer_error("Expected a symbol name after '$DEFINE'");
+                skip_to_closing_brace();
+                define_symbol(sym);
+            } else if (strcasecmp(word, "UNDEF") == 0) {
+                skip_directive_ws();
+                char sym[MAX_NAME];
+                read_directive_word(sym, sizeof(sym));
+                if (!sym[0]) lexer_error("Expected a symbol name after '$UNDEF'");
+                skip_to_closing_brace();
+                undef_symbol(sym);
+            } else if (strcasecmp(word, "IFDEF") == 0 || strcasecmp(word, "IFNDEF") == 0) {
+                int negate = (strcasecmp(word, "IFNDEF") == 0);
+                skip_directive_ws();
+                char sym[MAX_NAME];
+                read_directive_word(sym, sizeof(sym));
+                if (!sym[0]) lexer_error("Expected a symbol name after '$IFDEF'/'$IFNDEF'");
+                skip_to_closing_brace();
+                int cond = is_symbol_defined(sym);
+                if (negate) cond = !cond;
+                if (ifdef_depth >= MAX_IFDEF_DEPTH) {
+                    lexer_error("'$IFDEF'/'$IFNDEF' nested too deeply (limit is %d)", MAX_IFDEF_DEPTH);
+                }
+                ifdef_in_else[ifdef_depth++] = 0;
+                if (!cond) {
+                    if (skip_conditional(1)) ifdef_in_else[ifdef_depth - 1] = 1;
+                    else ifdef_depth--;
+                }
+            } else if (strcasecmp(word, "ELSE") == 0) {
+                skip_to_closing_brace();
+                if (ifdef_depth == 0) lexer_error("'$ELSE' without a matching '$IFDEF'/'$IFNDEF'");
+                if (ifdef_in_else[ifdef_depth - 1]) lexer_error("Duplicate '$ELSE' for the same '$IFDEF'/'$IFNDEF'");
+                // The 'if' branch was just lexed actively, so the
+                // 'else' branch is always dead - skip straight to this
+                // level's own $ENDIF.
+                skip_conditional(0);
+                ifdef_depth--;
+            } else if (strcasecmp(word, "ENDIF") == 0) {
+                skip_to_closing_brace();
+                if (ifdef_depth == 0) lexer_error("'$ENDIF' without a matching '$IFDEF'/'$IFNDEF'");
+                ifdef_depth--;
+            } else {
+                // Any other {$...} directive ({$R+}, {$Q-}, etc.) -
+                // accepted, silently ignored, exactly like a plain
+                // comment. Deliberate v1 scope cut - see
+                // docs/LANGUAGE.md#compiler-directives.
+                skip_to_closing_brace();
+            }
+            next_token();
+            return;
+        }
         while (*src && *src != '}') {
             if (*src == '\n') current_line++;
             src++;
@@ -76,6 +275,9 @@ void next_token(void) {
     }
 
     if (!*src) {
+        if (ifdef_depth > 0) {
+            lexer_error("Unterminated '$IFDEF'/'$IFNDEF' (missing '$ENDIF')");
+        }
         token.type = TOKEN_EOF;
         token.text[0] = '\0';
         return;

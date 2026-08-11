@@ -62,6 +62,72 @@ x := 1; { so is this }
 y := 2; // this too, to end of line
 ```
 
+## Compiler directives
+
+A `{$...}` block — a curly-brace comment whose first character is `$` —
+is a compiler directive, not an ordinary comment:
+
+```pascal
+{$DEFINE DEBUG}
+...
+{$IFDEF DEBUG}
+    writeln('debug build');
+{$ELSE}
+    writeln('release build');
+{$ENDIF}
+```
+
+- **`{$DEFINE symbol}`** adds `symbol` to the set of defined symbols for
+  the rest of the compile; **`{$UNDEF symbol}`** removes it.
+  `{$DEFINE}`ing an already-defined symbol is harmless, not an error.
+- **`{$IFDEF symbol} ... {$ENDIF}`** includes the enclosed source only
+  if `symbol` is currently defined; **`{$IFNDEF symbol} ... {$ENDIF}`**
+  is the inverse — included only if `symbol` is *not* defined. An
+  optional **`{$ELSE}`** splits either into a true-branch/false-branch
+  pair, exactly one of which is ever included.
+- **The excluded branch is never lexed, not just skipped at run time** —
+  it's as if that text weren't in the file at all. A syntax error, an
+  undeclared identifier, anything at all inside a false branch causes no
+  compile error:
+  ```pascal
+  {$IFDEF NEVER_DEFINED}
+      this is not even valid Pascal +++ ;;;
+  {$ENDIF}
+  writeln('compiles fine - the line above was never seen');
+  ```
+- **`{$IFDEF}`/`{$IFNDEF}` nest** — `{$IFDEF A} ... {$IFDEF B} ...
+  {$ENDIF} ... {$ENDIF}`, each `{$ENDIF}`/`{$ELSE}` referring to the
+  innermost still-open one. An outer false condition suppresses
+  everything inside it, including any nested `{$IFDEF}`, regardless of
+  the inner condition — nesting is capped at 16 levels deep.
+- **`{$DEFINE}`/`{$UNDEF}` last the whole compile, across `uses`
+  boundaries** — a symbol the main program defines before its `uses`
+  clause is visible to a used unit's own `{$IFDEF}`s, and a symbol a
+  unit defines is visible back in the program (or another unit) after
+  it, matching real Pascal. `{$IFDEF}`/`{$ENDIF}` *nesting*, in
+  contrast, is per-file: each file (the main program, and each unit)
+  must close every `{$IFDEF}` it opens before its own end.
+- **Directive keywords and symbol names are case-insensitive**, matching
+  every other keyword/identifier in this language.
+- **Any other `{$...}` directive** (`{$R+}`, `{$R-}`, `{$Q-}`, etc.) is
+  recognized as directive syntax and silently accepted as a no-op — see
+  "What's not supported yet" below.
+
+### What's not supported yet
+
+- Only `{$DEFINE}`, `{$UNDEF}`, `{$IFDEF}`, `{$IFNDEF}`, `{$ELSE}`, and
+  `{$ENDIF}` actually do anything. Every other directive — range
+  checking (`{$R+}`/`{$R-}`), overflow checking (`{$Q+}`/`{$Q-}`), and
+  so on — is accepted (so it doesn't error) but has no effect. Wiring up
+  real `$R+`/`$R-` semantics would mean conditionally emitting this
+  compiler's existing subrange bounds checks, a `codegen.c` change, not
+  a purely lexer-level one.
+- No `{$ELSEIF}`/`{$ELSIF}` chaining — nest another `{$IFDEF}` inside an
+  `{$ELSE}` for the same effect.
+- No `{$INCLUDE}`/`{$I file}` file inclusion.
+- No command-line flag to pre-define a symbol before compilation starts
+  — `{$DEFINE}` from source is the only way to define one.
+
 ## Types
 
 | Type | Keyword | Literal examples | Notes |

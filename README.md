@@ -392,7 +392,11 @@ raw hexdump mode, and `.macro`/`.endmacro` macro support in `solas`
 any label the macro body defines itself — see
 [docs/ASSEMBLER.md](docs/ASSEMBLER.md#macros)). Also working, in Pascal
 source: `(* ... *)` as an alternate comment style alongside `{ }` and
-`//` (see [docs/LANGUAGE.md](docs/LANGUAGE.md#comments)), and
+`//` (see [docs/LANGUAGE.md](docs/LANGUAGE.md#comments)); compiler
+directives — `{$DEFINE}`/`{$UNDEF}` and `{$IFDEF}`/`{$IFNDEF}`/`{$ELSE}`/
+`{$ENDIF}` conditional compilation, entirely lexer-level (a false branch
+is never even lexed) — see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#compiler-directives); and
 `ParamCount`/`ParamStr` for command-line argument access (Turbo
 Pascal/Free Pascal's own convention — standard Pascal never defined
 this) — `solvm program.bin arg1 arg2` forwards `arg1`/`arg2` through to
