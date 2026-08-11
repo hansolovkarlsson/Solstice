@@ -2182,6 +2182,48 @@ typedef struct {
                                     // check_uninitialized_locals() in
                                     // parser.c). Mutually exclusive with
                                     // param_is_const.
+    int param_has_default[MAX_PARAMS]; // 1 if this parameter has a
+                                    // default value ('= <const-expr>'),
+                                    // only ever set on a TRAILING run of
+                                    // parameters (every parameter after
+                                    // the first one with a default must
+                                    // also have one), never alongside
+                                    // param_is_var/param_is_const/
+                                    // param_is_out (a by-reference
+                                    // parameter has no caller-side
+                                    // lvalue to splice a default's
+                                    // address into), and never on an
+                                    // array/record or subrange-typed
+                                    // parameter. A call site that omits
+                                    // a trailing argument gets a fresh
+                                    // literal node spliced into the
+                                    // argument list in its place (see
+                                    // make_default_value_node() in
+                                    // parser.c) - purely a parse-time
+                                    // concern, so codegen.c/type_checker.c
+                                    // never need to know a given argument
+                                    // node came from a default rather
+                                    // than the caller's own source text.
+    DataType param_default_type[MAX_PARAMS]; // only meaningful when
+                                    // param_has_default is set - the
+                                    // default's own resolved literal type
+                                    // (e.g. TYPE_INTEGER for '= 5' even
+                                    // on a 'real' parameter; widening to
+                                    // the parameter's declared type
+                                    // happens for free via the ordinary
+                                    // per-call try_widen_for_assignment
+                                    // check, exactly like a real
+                                    // caller-supplied int argument would
+                                    // be widened).
+    int param_default_value[MAX_PARAMS]; // only meaningful when
+                                    // param_has_default is set; same
+                                    // encoding as parser.c's own
+                                    // ConstDef.value - a raw int
+                                    // (TYPE_INTEGER/TYPE_BOOLEAN), a
+                                    // float bit pattern (TYPE_REAL, via
+                                    // float_to_bits), or a
+                                    // string_pool[] index
+                                    // (TYPE_STRING/TYPE_CHAR).
     int param_is_proc[MAX_PARAMS]; // 1 if this parameter is itself a
                                     // procedure/function header, written
                                     // inline ('function f(n: integer):

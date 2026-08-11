@@ -436,7 +436,12 @@ parameter (shallow: writing through a `const` pointer/class parameter's
 own field is still legal, only reassigning the parameter itself is
 rejected), `out` is runtime-identical to `var` with an added "never
 assigned" warning (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#const-parameters)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#const-parameters)). Also working:
+default parameter values (`procedure Foo(x: integer; y: integer =
+10);`) — a trailing run of parameters may have a compile-time-constant
+default; a call omitting trailing arguments gets the default spliced in
+(see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#default-parameter-values)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

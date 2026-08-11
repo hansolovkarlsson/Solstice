@@ -3519,6 +3519,100 @@ other restriction `const`/`var` already have (addressable-variable
 arguments only, no whole records/array elements, not inside a
 procedural/functional signature).
 
+### Default parameter values
+
+```pascal
+procedure foo(x: integer; y: integer = 10);
+begin
+    writeln(x + y);
+end;
+
+begin
+    foo(5);      { y defaults to 10 -> 15 }
+    foo(5, 20);  { y explicit -> 25 }
+end.
+```
+
+A trailing parameter can be given a default value with `= <const-expr>`.
+A call that omits trailing arguments gets the declared default spliced
+in as if the caller had typed it - pure call-site sugar; nothing about
+codegen or type-checking needs to know the difference.
+
+The default must be a **compile-time constant expression** - a literal,
+an arithmetic/boolean expression over literals, or a reference to an
+earlier `const` (never a parameter, local variable, or function call):
+
+```pascal
+const limit = 42;
+procedure foo(x: integer = limit);       { fine - references an earlier const }
+procedure bar(y: integer = 3 * 10);      { fine - folds to 30 }
+```
+
+Restrictions:
+
+- **Trailing only.** Once one parameter has a default, every parameter
+  after it must also have one.
+- **One name per default.** `x: integer = 5` is fine; `x, y: integer =
+  5` is a compile error - ambiguous whether both get `5` or just `y`.
+  Give each its own group if only one needs a default.
+- **Not on `var`/`const`/`out` parameters.** All three are passed by
+  reference in this compiler (an address, not a value) - a default has
+  no caller-side variable to take the address of. This is stricter than
+  some other Pascal dialects, which allow defaults on `const` because
+  their `const` isn't always by-reference under the hood; here it always
+  is, so the restriction follows directly from the implementation, not
+  from a language-design choice.
+- **Not on array/record parameters** - there's no array/record literal
+  syntax to write a default with.
+- **Not on subrange-typed parameters** (`type TRange = 1..10; procedure
+  p(x: TRange = 5)`) - a documented v1 scope cut, not a silent gap.
+- **Not inside a procedural/functional parameter's own inline signature
+  or a named procedural type** - the same restriction `const`/`out`
+  already have; only a real procedure/function/method declaration gets
+  a body to compile defaults against.
+
+**A default lives on the forward declaration when one exists** - a
+completing body never re-lists parameters at all (this compiler's
+existing forward-declaration convention), so there's nothing to
+redeclare or contradict:
+
+```pascal
+procedure greet(name: string; times: integer = 2); forward;
+
+procedure greet;  { no parameter list here - same as any forward completion }
+var i: integer;
+begin
+    for i := 1 to times do
+        writeln(name);
+end;
+```
+
+**A class method override may declare its own, different default** from
+the method it overrides. Which default applies is resolved **statically**
+- against whichever type the call site's own expression is declared as
+- exactly like C++/Java default arguments, even though the method body
+that actually runs is still chosen dynamically (every instance method in
+this compiler is always virtually dispatched - see
+[Classes](#classes)):
+
+```pascal
+type
+    TBase = class
+        procedure greet(n: integer = 1);
+    end;
+    TChild = class(TBase)
+        procedure greet(n: integer = 9);
+    end;
+var b: TBase;
+    c: TChild;
+begin
+    new(c);
+    c.greet;    { c is statically TChild -> default 9, runs TChild's body }
+    b := c;
+    b.greet;    { b is statically TBase -> default 1, still runs TChild's body }
+end.
+```
+
 ### Forward declarations
 
 ```pascal

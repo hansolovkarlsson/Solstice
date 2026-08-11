@@ -525,6 +525,32 @@ typedef struct {
                                // named procedural type).
     int param_is_out[MAX_PARAMS];  // 'out' - same scope restriction as
                                // param_is_const above.
+    int param_has_default[MAX_PARAMS]; // 1 if this parameter has a
+                               // default value ('= <const-expr>'), only
+                               // ever set on a TRAILING run of
+                               // parameters, never alongside
+                               // param_is_var/param_is_const/
+                               // param_is_out (no caller-side lvalue to
+                               // splice a default's address into for a
+                               // by-reference parameter), and never on
+                               // an array/record or subrange-typed
+                               // parameter. Same allow_const_out-gated
+                               // scope restriction as param_is_const/
+                               // param_is_out above.
+    DataType param_default_type[MAX_PARAMS]; // the default's own
+                               // resolved literal type (e.g. TYPE_INTEGER
+                               // for '= 5' even on a 'real' parameter -
+                               // int-to-real widening happens for free
+                               // at each call site's ordinary
+                               // try_widen_for_assignment check, exactly
+                               // like a real caller-supplied int
+                               // argument would).
+    int param_default_value[MAX_PARAMS]; // only meaningful when
+                               // param_has_default is set; same encoding
+                               // as ConstDef.value - a raw int
+                               // (INTEGER/BOOLEAN), a float bit pattern
+                               // (REAL, via float_to_bits), or a
+                               // string_pool[] index (STRING/CHAR).
     char param_names[MAX_PARAMS][MAX_NAME]; // unused by a functional/
                                // procedural parameter itself (only the
                                // structural signature - count/types/
@@ -1253,6 +1279,33 @@ ASTNode *create_node(NodeType type) {
     node->type = type;
     node->expression_type = TYPE_UNKNOWN;
     node->line = token.line;
+    return node;
+}
+
+// Builds a fresh literal AST leaf node from a folded default parameter
+// value (type/value pair stored the same way as parser.c's own ConstDef)
+// - used to splice a default in for an omitted trailing call argument.
+// Mirrors the identifier-resolves-to-a-const substitution in
+// primary_expression(), except 'line' must be passed explicitly: by the
+// time a call's argument list has been fully parsed, token.line (which
+// create_node() would otherwise stamp) points well past the call itself.
+static ASTNode *make_default_value_node(DataType type, int value, int line) {
+    ASTNode *node;
+    if (type == TYPE_REAL) {
+        node = create_node(NODE_REAL_NUMBER);
+        node->data.num_value = value;
+    } else if (type == TYPE_BOOLEAN) {
+        node = create_node(NODE_BOOLEAN);
+        node->data.num_value = value;
+    } else if (type == TYPE_STRING || type == TYPE_CHAR) {
+        node = create_node(NODE_STRING);
+        node->data.var_idx = value;
+    } else { // TYPE_INTEGER
+        node = create_node(NODE_NUMBER);
+        node->data.num_value = value;
+    }
+    node->expression_type = type;
+    node->line = line;
     return node;
 }
 
@@ -2714,8 +2767,18 @@ static NameGroup parse_name_group(void) {
 // through entirely separate structs for comparatively little value (a
 // deliberate, documented v1 scope cut - see docs/ROADMAP.md's
 // const/out entry). Callers pass 1 only for a class method header.
+static ASTNode *expression(void); // forward-declared early - needed
+                                   // right below to parse a default
+                                   // parameter value's expression
+                                   // ('= <const-expr>'); the ordinary
+                                   // forward declaration further down
+                                   // this file is unreachable from here.
 static void parse_proc_signature_tail(ProcParamHeader *h, int allow_const_out) {
     h->param_count = 0;
+    int seen_default = 0; // once any parameter has a default, every
+                           // parameter after it (across all remaining
+                           // groups) must also have one - see
+                           // docs/LANGUAGE.md.
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
@@ -2752,6 +2815,41 @@ static void parse_proc_signature_tail(ProcParamHeader *h, int allow_const_out) {
                 if (scalar_type_is_subrange) {
                     compile_error(token.line, "A subrange type isn't supported inside a procedure/function signature yet - use its base type 'integer' (see docs/LANGUAGE.md)");
                 }
+                int has_default = 0, default_value = 0;
+                DataType default_type = TYPE_UNKNOWN;
+                if (token.type == TOKEN_EQ) {
+                    if (!allow_const_out) {
+                        compile_error(token.line, "default parameter values aren't supported here yet - only on procedure/function/method declarations (see docs/LANGUAGE.md)");
+                    }
+                    if (is_var) {
+                        compile_error(token.line, "'var'/'const'/'out' parameters cannot have default values (see docs/LANGUAGE.md)");
+                    }
+                    if (name_count != 1) {
+                        compile_error(token.line, "a default value can only be given for a single parameter, not a shared 'name, name: type' group (see docs/LANGUAGE.md)");
+                    }
+                    match(TOKEN_EQ);
+                    int default_line = token.line;
+                    ASTNode *value = expression();
+                    type_check(value);
+                    value = optimize_ast(value);
+                    if (value->type != NODE_NUMBER && value->type != NODE_REAL_NUMBER
+                        && value->type != NODE_BOOLEAN && value->type != NODE_STRING) {
+                        compile_error(default_line, "default value for parameter '%s' is not a compile-time constant expression", names[0]);
+                    }
+                    if (t == TYPE_REAL && value->expression_type == TYPE_INTEGER) {
+                        value->expression_type = TYPE_REAL;
+                        value->data.num_value = float_to_bits((float)value->data.num_value);
+                    } else if (!((t == TYPE_STRING || t == TYPE_CHAR) && (value->expression_type == TYPE_STRING || value->expression_type == TYPE_CHAR))
+                               && value->expression_type != t) {
+                        compile_error(default_line, "default value for parameter '%s' doesn't match its declared type", names[0]);
+                    }
+                    has_default = 1;
+                    default_type = value->expression_type;
+                    default_value = (value->type == NODE_STRING) ? value->data.var_idx : value->data.num_value;
+                    seen_default = 1;
+                } else if (seen_default) {
+                    compile_error(token.line, "parameter '%s' must have a default value - once one parameter has a default, every parameter after it must too (see docs/LANGUAGE.md)", names[0]);
+                }
                 for (int i = 0; i < name_count; i++) {
                     if (h->param_count >= MAX_PARAMS) {
                         compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
@@ -2760,6 +2858,9 @@ static void parse_proc_signature_tail(ProcParamHeader *h, int allow_const_out) {
                     h->param_is_var[h->param_count] = is_var;
                     h->param_is_const[h->param_count] = is_const;
                     h->param_is_out[h->param_count] = is_out;
+                    h->param_has_default[h->param_count] = has_default;
+                    h->param_default_type[h->param_count] = default_type;
+                    h->param_default_value[h->param_count] = default_value;
                     strcpy(h->param_names[h->param_count], names[i]);
                     h->param_count++;
                 }
@@ -3522,6 +3623,10 @@ static ASTNode *parse_call_arguments(int proc_idx) {
     ASTNode *arg_head = NULL;
     ASTNode *arg_tail = NULL;
     int arg_count = 0;
+    int call_line = token.line; // captured before any argument parsing -
+                                 // by the time a default needs splicing
+                                 // in below, token.line has moved well
+                                 // past the whole call.
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
@@ -3558,9 +3663,25 @@ static ASTNode *parse_call_arguments(int proc_idx) {
         }
         match(TOKEN_RPAREN);
     }
-    if (arg_count != proc_table[proc_idx].param_count) {
-        compile_error(token.line, "'%s' expects %d argument(s), got %d",
-                       proc_table[proc_idx].name, proc_table[proc_idx].param_count, arg_count);
+    int param_count = proc_table[proc_idx].param_count;
+    int min_required = param_count;
+    for (int i = 0; i < param_count; i++) {
+        if (proc_table[proc_idx].param_has_default[i]) { min_required = i; break; }
+    }
+    if (arg_count < min_required || arg_count > param_count) {
+        if (min_required == param_count) {
+            compile_error(token.line, "'%s' expects %d argument(s), got %d",
+                           proc_table[proc_idx].name, param_count, arg_count);
+        } else {
+            compile_error(token.line, "'%s' expects between %d and %d argument(s), got %d",
+                           proc_table[proc_idx].name, min_required, param_count, arg_count);
+        }
+    }
+    for (int i = arg_count; i < param_count; i++) {
+        ASTNode *def = make_default_value_node(proc_table[proc_idx].param_default_type[i],
+                                                proc_table[proc_idx].param_default_value[i], call_line);
+        if (!arg_head) arg_head = def; else arg_tail->next = def;
+        arg_tail = def;
     }
     return arg_head;
 }
@@ -3740,6 +3861,10 @@ static ASTNode *parse_class_method_call_arguments(int mangled_proc_idx) {
     ASTNode *arg_tail = NULL;
     int user_param_count = proc_table[mangled_proc_idx].param_count - 1; // excluding self
     int arg_count = 0;
+    int call_line = token.line; // captured before any argument parsing -
+                                 // by the time a default needs splicing
+                                 // in below, token.line has moved well
+                                 // past the whole call.
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
@@ -3765,9 +3890,25 @@ static ASTNode *parse_class_method_call_arguments(int mangled_proc_idx) {
         }
         match(TOKEN_RPAREN);
     }
-    if (arg_count != user_param_count) {
-        compile_error(token.line, "'%s' expects %d argument(s), got %d",
-                       proc_table[mangled_proc_idx].unmangled_name, user_param_count, arg_count);
+    int min_required = user_param_count;
+    for (int i = 0; i < user_param_count; i++) {
+        if (proc_table[mangled_proc_idx].param_has_default[i + 1]) { min_required = i; break; } // +1 to skip self at slot 0
+    }
+    if (arg_count < min_required || arg_count > user_param_count) {
+        if (min_required == user_param_count) {
+            compile_error(token.line, "'%s' expects %d argument(s), got %d",
+                           proc_table[mangled_proc_idx].unmangled_name, user_param_count, arg_count);
+        } else {
+            compile_error(token.line, "'%s' expects between %d and %d argument(s), got %d",
+                           proc_table[mangled_proc_idx].unmangled_name, min_required, user_param_count, arg_count);
+        }
+    }
+    for (int i = arg_count; i < user_param_count; i++) {
+        int slot = i + 1; // +1 to skip self at slot 0
+        ASTNode *def = make_default_value_node(proc_table[mangled_proc_idx].param_default_type[slot],
+                                                proc_table[mangled_proc_idx].param_default_value[slot], call_line);
+        if (!arg_head) arg_head = def; else arg_tail->next = def;
+        arg_tail = def;
     }
     return arg_head;
 }
@@ -7846,7 +7987,7 @@ static void check_uninitialized_locals(int proc_idx, ASTNode *body, int decl_lin
 // when the header itself is parsed - see ProcParamHeader), so this
 // never needs the array/record/procedural-parameter branches
 // subroutine_declaration()'s own parameter loop has to handle.
-static void register_class_method_param(int proc_idx, int slot, const char *name, DataType type, int is_var, int is_const, int is_out) {
+static void register_class_method_param(int proc_idx, int slot, const char *name, DataType type, int is_var, int is_const, int is_out, int has_default, DataType default_type, int default_value) {
     if (is_var) {
         add_local_var_param(name, type, 0, 0, 0, is_const, is_out);
     } else {
@@ -7867,6 +8008,16 @@ static void register_class_method_param(int proc_idx, int slot, const char *name
     proc_table[proc_idx].param_is_var[slot] = is_var;
     proc_table[proc_idx].param_is_const[slot] = is_const;
     proc_table[proc_idx].param_is_out[slot] = is_out;
+    // Explicitly written every call, even when has_default is 0 - like
+    // every other field above, proc_table[] only resets param_count
+    // between compiles in a long-lived host process (see add_proc()'s
+    // comment), so leaving these untouched on the "no default" path
+    // would let a stale param_has_default/param_default_* value leak in
+    // from an unrelated procedure that previously occupied this same
+    // slot in an earlier compile.
+    proc_table[proc_idx].param_has_default[slot] = has_default;
+    proc_table[proc_idx].param_default_type[slot] = default_type;
+    proc_table[proc_idx].param_default_value[slot] = default_value;
     proc_table[proc_idx].param_is_proc[slot] = 0;
     proc_table[proc_idx].param_proc_is_function[slot] = 0;
     proc_table[proc_idx].param_proc_return_type[slot] = TYPE_UNKNOWN;
@@ -7924,6 +8075,9 @@ static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_
     proc_table[proc_idx].param_is_var[0] = 0;
     proc_table[proc_idx].param_is_const[0] = 0;
     proc_table[proc_idx].param_is_out[0] = 0;
+    proc_table[proc_idx].param_has_default[0] = 0; // 'self' can never have a default
+    proc_table[proc_idx].param_default_type[0] = TYPE_UNKNOWN;
+    proc_table[proc_idx].param_default_value[0] = 0;
     proc_table[proc_idx].param_is_array_ref[0] = 0;
     proc_table[proc_idx].param_is_2d[0] = 0;
     proc_table[proc_idx].param_is_nd[0] = 0;
@@ -7952,6 +8106,9 @@ static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_
         proc_table[proc_idx].param_is_var[slot] = h->param_is_var[i];
         proc_table[proc_idx].param_is_const[slot] = h->param_is_const[i];
         proc_table[proc_idx].param_is_out[slot] = h->param_is_out[i];
+        proc_table[proc_idx].param_has_default[slot] = h->param_has_default[i];
+        proc_table[proc_idx].param_default_type[slot] = h->param_default_type[i];
+        proc_table[proc_idx].param_default_value[slot] = h->param_default_value[i];
         proc_table[proc_idx].param_is_subrange[slot] = 0;
         proc_table[proc_idx].param_subrange_lower[slot] = 0;
         proc_table[proc_idx].param_subrange_upper[slot] = 0;
@@ -8079,13 +8236,13 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
         // parse_call_arguments(), which has no self-offset logic of its
         // own to match).
         for (int i = 0; i < h->param_count; i++) {
-            register_class_method_param(proc_idx, i, h->param_names[i], h->param_types[i], h->param_is_var[i], h->param_is_const[i], h->param_is_out[i]);
+            register_class_method_param(proc_idx, i, h->param_names[i], h->param_types[i], h->param_is_var[i], h->param_is_const[i], h->param_is_out[i], h->param_has_default[i], h->param_default_type[i], h->param_default_value[i]);
         }
         proc_table[proc_idx].param_count = h->param_count;
     } else {
-        register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0, 0, 0);
+        register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0, 0, 0, 0, TYPE_UNKNOWN, 0);
         for (int i = 0; i < h->param_count; i++) {
-            register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i], h->param_is_const[i], h->param_is_out[i]);
+            register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i], h->param_is_const[i], h->param_is_out[i], h->param_has_default[i], h->param_default_type[i], h->param_default_value[i]);
         }
         proc_table[proc_idx].param_count = h->param_count + 1;
     }
@@ -8298,6 +8455,13 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
         int param_proc_param_count[MAX_PARAMS];
         DataType param_proc_param_types[MAX_PARAMS][MAX_PARAMS];
         int param_proc_param_is_var[MAX_PARAMS][MAX_PARAMS];
+        int param_has_default[MAX_PARAMS];
+        DataType param_default_type[MAX_PARAMS];
+        int param_default_value[MAX_PARAMS];
+        int seen_default = 0; // once any parameter has a default, every
+                               // parameter after it (across all
+                               // remaining groups) must also have one -
+                               // see docs/LANGUAGE.md.
 
         if (token.type == TOKEN_LPAREN) {
             match(TOKEN_LPAREN);
@@ -8337,7 +8501,16 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                             param_proc_param_types[param_count][i] = h.param_types[i];
                             param_proc_param_is_var[param_count][i] = h.param_is_var[i];
                         }
+                        param_has_default[param_count] = 0;
+                        param_default_type[param_count] = TYPE_UNKNOWN;
+                        param_default_value[param_count] = 0;
                         param_count++;
+                        if (token.type == TOKEN_EQ) {
+                            compile_error(token.line, "default parameter values aren't supported for procedural/functional parameters yet (see docs/LANGUAGE.md)");
+                        }
+                        if (seen_default) {
+                            compile_error(token.line, "parameter '%s' must have a default value - once one parameter has a default, every parameter after it must too (see docs/LANGUAGE.md)", h.name);
+                        }
                         if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
                         break;
                     }
@@ -8371,6 +8544,44 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         match(TOKEN_OUT);
                     }
                     NameGroup g = parse_name_group();
+                    int has_default = 0, default_value = 0;
+                    DataType default_type = TYPE_UNKNOWN;
+                    if (token.type == TOKEN_EQ) {
+                        if (is_var_group) {
+                            compile_error(token.line, "'var'/'const'/'out' parameters cannot have default values (see docs/LANGUAGE.md)");
+                        }
+                        if (g.is_array || g.is_record || g.is_array_of_record) {
+                            compile_error(token.line, "default values aren't supported for array/record parameters yet (see docs/LANGUAGE.md)");
+                        }
+                        if (g.is_subrange) {
+                            compile_error(token.line, "default values aren't supported for subrange-typed parameters yet - use the base type instead (see docs/LANGUAGE.md)");
+                        }
+                        if (g.count != 1) {
+                            compile_error(token.line, "a default value can only be given for a single parameter, not a shared 'name, name: type' group (see docs/LANGUAGE.md)");
+                        }
+                        match(TOKEN_EQ);
+                        int default_line = token.line;
+                        ASTNode *value = expression();
+                        type_check(value);
+                        value = optimize_ast(value);
+                        if (value->type != NODE_NUMBER && value->type != NODE_REAL_NUMBER
+                            && value->type != NODE_BOOLEAN && value->type != NODE_STRING) {
+                            compile_error(default_line, "default value for parameter '%s' is not a compile-time constant expression", g.names[0]);
+                        }
+                        if (g.type == TYPE_REAL && value->expression_type == TYPE_INTEGER) {
+                            value->expression_type = TYPE_REAL;
+                            value->data.num_value = float_to_bits((float)value->data.num_value);
+                        } else if (!((g.type == TYPE_STRING || g.type == TYPE_CHAR) && (value->expression_type == TYPE_STRING || value->expression_type == TYPE_CHAR))
+                                   && value->expression_type != g.type) {
+                            compile_error(default_line, "default value for parameter '%s' doesn't match its declared type", g.names[0]);
+                        }
+                        has_default = 1;
+                        default_type = value->expression_type;
+                        default_value = (value->type == NODE_STRING) ? value->data.var_idx : value->data.num_value;
+                        seen_default = 1;
+                    } else if (seen_default) {
+                        compile_error(token.line, "parameter '%s' must have a default value - once one parameter has a default, every parameter after it must too (see docs/LANGUAGE.md)", g.count > 0 ? g.names[0] : "?");
+                    }
                     for (int i = 0; i < g.count; i++) {
                         if (param_count >= MAX_PARAMS) {
                             compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
@@ -8425,6 +8636,9 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         param_is_proc[param_count] = 0;
                         param_proc_is_function[param_count] = 0;
                         param_proc_param_count[param_count] = 0;
+                        param_has_default[param_count] = has_default;
+                        param_default_type[param_count] = default_type;
+                        param_default_value[param_count] = default_value;
                         param_count++;
                     }
                     if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
@@ -8469,6 +8683,9 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
             proc_table[proc_idx].param_is_var[i] = param_is_var[i];
             proc_table[proc_idx].param_is_const[i] = param_is_const[i];
             proc_table[proc_idx].param_is_out[i] = param_is_out[i];
+            proc_table[proc_idx].param_has_default[i] = param_has_default[i];
+            proc_table[proc_idx].param_default_type[i] = param_default_type[i];
+            proc_table[proc_idx].param_default_value[i] = param_default_value[i];
             proc_table[proc_idx].param_is_proc[i] = param_is_proc[i];
             proc_table[proc_idx].param_proc_is_function[i] = param_proc_is_function[i];
             proc_table[proc_idx].param_proc_return_type[i] = param_proc_return_type[i];

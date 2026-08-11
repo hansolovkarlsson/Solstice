@@ -2305,6 +2305,72 @@ open) stays there.
       regression test, 6 error cases, 1 warning case) and
       [docs/LANGUAGE.md](LANGUAGE.md#const-parameters).
 
+- [x] Default/optional parameter values — `= <const-expr>` on a trailing
+      run of parameters; a call that omits trailing arguments gets the
+      default spliced into the argument list at parse time, exactly as
+      the original ROADMAP blurb anticipated - pure call-site sugar,
+      zero `codegen.c`/`type_checker.c` changes, since both already just
+      walk whatever argument nodes are in the AST's call-argument list
+      and can't tell a spliced default from one the caller wrote.
+
+      **Not on `var`/`const`/`out` parameters** - all three are
+      by-reference in this compiler (an address, not a value; see the
+      `const`/`out` entry above), and a default literal has no
+      caller-side lvalue to take the address of. Stricter than some
+      other Pascal dialects, which allow defaults on `const` because
+      their `const` isn't always by-reference under the hood - here it
+      always is, so the restriction follows from the implementation,
+      not a language-design choice. Also not on array/record parameters
+      (no literal syntax exists for either), not on subrange-typed
+      parameters (a documented v1 scope cut avoiding declaration-time
+      bounds-check complexity), and not inside a procedural/functional
+      parameter's own inline signature or a named procedural type -
+      reusing the exact same `allow_const_out`-gated boundary `const`/
+      `out` already draw for the one grammar (`parse_proc_signature_
+      tail()`) that has such a flag to reuse.
+
+      **Two real gaps found during design validation, before any code
+      was written**: (1) class-method defaults would have silently
+      vanished by call-site time - `register_class_method_param()` and
+      `register_abstract_method_signature()` turn a class method's
+      `ProcParamHeader` into its real, call-site-visible `proc_table[]`
+      entry FIELD-BY-FIELD, entirely separately from the inherited-
+      method flat-struct-copy path that would have carried new fields
+      "for free"; both now explicitly thread `param_has_default`/
+      `param_default_type`/`param_default_value` through. (2) those same
+      two functions already follow an explicit defensive-zeroing
+      discipline for every per-slot field they touch, since
+      `proc_table[]` only resets `proc_count` between compiles in a
+      long-lived host process (a stale value from an unrelated
+      procedure that previously occupied the same slot could otherwise
+      leak in) - the 3 new fields needed to join that same discipline,
+      unconditionally written on every call regardless of whether this
+      particular parameter actually has a default, not just an
+      afterthought bolted on separately.
+
+      Also confirmed, not just assumed: the ordinary top-level
+      `procedure`/`function` grammar (`subroutine_declaration()`'s own
+      inline parameter loop) parses independently of `parse_proc_
+      signature_tail()` entirely, so it needed its own from-scratch
+      implementation of every restriction above, not a shared gate;
+      spliced default nodes need an explicit line number passed in
+      (`make_default_value_node()`) rather than relying on
+      `create_node()`'s ambient `token.line`, since by splice time
+      parsing has moved on past the whole call; a class method **override
+      may declare its own, different default** from the method it
+      overrides - which default applies is resolved STATICALLY, against
+      whichever type the call site's own expression is declared as,
+      exactly like C++/Java default arguments, even though the method
+      body that runs is still chosen dynamically (confirmed against the
+      actual call-resolution code, not assumed by analogy); and a
+      default lives on the forward declaration when one exists, needing
+      zero extra code, since a completing body can never re-list
+      parameters at all under this compiler's existing forward-
+      declaration convention. See `examples/test/defaults/test_defaults_
+      *.pas` (8 positive cases including the forward-declaration and
+      override-static-resolution scenarios, 12 error cases) and
+      [docs/LANGUAGE.md](LANGUAGE.md#default-parameter-values).
+
 ## Known issues (found via AddressSanitizer)
 
 Both surfaced by a proactive ASan/UBSan sweep during the virtual
