@@ -158,6 +158,13 @@ typedef enum {
     TOKEN_USES,           // 'uses UnitName, ...;' - pulls a unit's declarations
                            // into the current compile (program header or a
                            // unit's own interface section).
+    TOKEN_INITIALIZATION, // a unit's optional 'initialization' section - a
+                           // statement list that runs once, before the main
+                           // program's own body, in unit-dependency order.
+    TOKEN_FINALIZATION,   // a unit's optional 'finalization' section - a
+                           // statement list that runs once, after the main
+                           // program's own body, in REVERSE unit-dependency
+                           // order.
     TOKEN_INHERITED, // 'inherited;' or 'inherited MethodName(args);' inside
                       // a class method body - a direct (non-virtual) call to
                       // the enclosing method's own class's PARENT's

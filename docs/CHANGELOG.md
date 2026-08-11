@@ -2393,6 +2393,52 @@ open) stays there.
       case checking the second target specifically) and
       [docs/LANGUAGE.md](LANGUAGE.md#the-with-statement).
 
+- [x] Unit `initialization`/`finalization` sections — front-end only,
+      zero new `Opcode`/`NodeType`, matching the ROADMAP blurb's
+      "bounded follow-up" framing. Three existing pieces of machinery
+      turned out to cover the whole feature: (1) units are pure
+      source-merge with no linker and the VM has no entry-point field at
+      all (`run_vm()` always starts at instruction 0) - "main runs
+      first" is pure code layout ending in a trailing `emit_halt()`, so
+      a unit's `finalization` code just needed to land as extra
+      statements appended right before that `HALT`, no VM/bytecode
+      change; (2) `loaded_units[]` (only ever appends a unit's name
+      *after* everything it transitively `uses` is already merged) was
+      already a valid dependency order for free - iterated forward for
+      `initialization`, in reverse for `finalization`, no topo-sort
+      needed; (3) `statement_list()` already stops on its own at the
+      first non-statement-start token, so it parses an un-bracketed
+      `initialization`/`finalization` body (no `begin`/`end`) completely
+      unmodified.
+
+      The actual change: two new tokens (`TOKEN_INITIALIZATION`/
+      `TOKEN_FINALIZATION`); `load_unit()` now optionally parses each
+      section right before its closing `end.` and stashes the resulting
+      statement chain in two new arrays (`loaded_unit_init[]`/
+      `loaded_unit_final[]`) indexed in lockstep with `loaded_units[]`;
+      `parse_ast()`'s existing end-of-parse splice point (already used
+      to prepend the vtable-init and class-parent-init chains onto the
+      main body) gained two more passes - prepend each unit's
+      `initialization` chain in reverse load order (so the
+      first-loaded unit ends up first, right after the vtable/
+      class-parent bookkeeping those chains need already in place), then
+      append each unit's `finalization` chain, also in reverse load
+      order, to the tail of the whole statement chain.
+
+      **Scope, matching standard Pascal, not new gaps**: no local `var`
+      declarations inside either section (a stray one surfaces as a
+      plain `match()` "Unexpected token 'var'", no special-casing
+      needed); a diamond-dependency unit's sections still run exactly
+      once, at its first-load position, for free; `finalization` doesn't
+      run if the program terminates via an unhandled runtime error
+      (`fatal_abort()`/`longjmp`, which never reaches trailing bytecode)
+      - the same scope `try`/`finally` already has outside its own
+      handled exception. See `examples/test/units/test_units_initfinal_
+      *.pas` (basic single-unit init+final, a diamond-dependency ordering
+      test proving the exact `Base, DiamondA, DiamondB` / `DiamondB,
+      DiamondA, Base` sequence, and independently-optional sections) and
+      [docs/LANGUAGE.md](LANGUAGE.md#initialization-and-finalization).
+
 ## Known issues (found via AddressSanitizer)
 
 Both surfaced by a proactive ASan/UBSan sweep during the virtual

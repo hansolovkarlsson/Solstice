@@ -379,7 +379,10 @@ mechanism (not separate compilation) that merges a unit's declarations,
 classes included, into the same compile, with unit-level visibility
 enforced for procedures/functions and global variables (something a
 unit declares only in its `implementation` section can't be referenced
-from outside that unit) — see [docs/LANGUAGE.md](docs/LANGUAGE.md#units).
+from outside that unit), plus optional `initialization`/`finalization`
+sections that run automatically before/after the main program's own
+body, in unit-dependency order — see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#units).
 
 Also working, in `solas`/`desole` (hand-written `.sasm` tooling, not
 Pascal-language features): `SWAP`/`OVER`/`ROT` stack-manipulation

@@ -4088,6 +4088,82 @@ end.
   units) declaring the same name is the same "already declared" compile
   error as any other collision.
 
+### `initialization` and `finalization`
+
+A unit's `implementation` section can end with two optional sections
+instead of going straight to `end.`:
+
+```pascal
+unit Logger;
+
+interface
+
+var
+    LineCount: integer;
+
+implementation
+
+initialization
+    LineCount := 0;
+    writeln('Logger starting up');
+
+finalization
+    writeln('Logger shutting down, wrote ', LineCount, ' lines');
+
+end.
+```
+
+```pascal
+program UsesLogger;
+
+uses Logger;
+
+begin
+    LineCount := LineCount + 1;
+    writeln('doing work');
+end.
+```
+Output:
+```
+Logger starting up
+doing work
+Logger shutting down, wrote 1 lines
+```
+
+- **`initialization`'s statements run once, automatically, before the
+  main program's own `begin...end.` body** — no explicit call needed.
+  **`finalization`'s statements run once, automatically, after** the
+  main program's own body finishes normally.
+- Both sections are optional and independent: a unit may have just
+  `initialization`, just `finalization`, both, or neither.
+- Neither section takes a `begin`/`end` wrapper — just a plain statement
+  list, same as what's between `initialization`/`finalization` and the
+  next keyword. No local `var` declarations are allowed here (same as
+  standard Pascal) — declare any state the section needs as an ordinary
+  unit-level `var` instead (like `LineCount` above).
+- **With more than one unit, `initialization` sections run in
+  unit-dependency order, and `finalization` sections run in the exact
+  reverse order** — the same order `uses` itself resolves a diamond
+  dependency in: a unit's own `initialization` always runs after every
+  unit it (transitively) `uses`, and its `finalization` always runs
+  before theirs.
+  ```pascal
+  { uses A, B;  where B itself uses A: }
+  { initialization order:  A, B }
+  { finalization order:    B, A }
+  ```
+- A unit used by more than one other unit (a diamond dependency) still
+  only runs its `initialization`/`finalization` once, at the point it's
+  first loaded — same one-copy guarantee `uses` already gives every
+  other declaration.
+- **`finalization` doesn't run if the program terminates via an
+  unhandled runtime error** (an uncaught `raise`, an out-of-range index,
+  etc.) — the same scope [`try`/`finally`](#try--finally) already has
+  for anything outside its own handled exception; there's no
+  program-wide unwind-and-clean-up mechanism.
+- Only units have these sections — the main program itself doesn't;
+  its own `begin...end.` body already fills that role.
+
 ## Errors
 
 Every compile error reports as `file:line: Compile Error: message` (or

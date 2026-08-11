@@ -7455,6 +7455,16 @@ static int loaded_unit_count = 0;
 static char loading_units[MAX_UNITS][MAX_NAME];
 static int loading_unit_count = 0;
 
+// Each loaded unit's own 'initialization'/'finalization' statement chain
+// (NULL if the unit has none), indexed in lockstep with loaded_units[] -
+// written by load_unit() right before it appends to loaded_units[], so
+// every slot below loaded_unit_count is always fresh from THIS compile;
+// no separate reset needed beyond loaded_unit_count itself resetting to
+// 0 in parse_ast(). See parse_ast()'s end-of-parse splice for how these
+// become part of the main program's own statement chain.
+static ASTNode *loaded_unit_init[MAX_UNITS];
+static ASTNode *loaded_unit_final[MAX_UNITS];
+
 // Reads an entire unit source file into a malloc'd, NUL-terminated
 // buffer. Mirrors pascalc.c's own read_file() (fopen/fseek/fread), but
 // reports a failure via compile_error() (recoverable, points at the
@@ -7609,11 +7619,31 @@ static void load_unit(const char *name, int use_line) {
         subroutine_declaration(token.type == TOKEN_FUNCTION, 0, token.type == TOKEN_DESTRUCTOR);
     }
 
+    // Both sections are optional and independent - a unit may have
+    // 'initialization' only, 'finalization' only, both, or neither.
+    // statement_list() (used everywhere else only inside a begin...end)
+    // works unmodified here too: real Pascal's initialization/
+    // finalization sections are themselves un-bracketed statement lists,
+    // and statement_list() already stops on its own at the first
+    // non-statement-start token (here, TOKEN_FINALIZATION or TOKEN_END).
+    ASTNode *unit_init = NULL;
+    if (token.type == TOKEN_INITIALIZATION) {
+        match(TOKEN_INITIALIZATION);
+        unit_init = statement_list();
+    }
+    ASTNode *unit_final = NULL;
+    if (token.type == TOKEN_FINALIZATION) {
+        match(TOKEN_FINALIZATION);
+        unit_final = statement_list();
+    }
+
     match(TOKEN_END);
     match(TOKEN_PERIOD);
 
     free(unit_source);
     loading_unit_count--;
+    loaded_unit_init[loaded_unit_count] = unit_init;
+    loaded_unit_final[loaded_unit_count] = unit_final;
     strcpy(loaded_units[loaded_unit_count++], name);
 
     current_filename = saved_filename;
@@ -7827,6 +7857,37 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         tail->next = root->left;
         root->left = class_parent_init;
     }
+
+    // Unit initialization sections run next, in unit-load (dependency)
+    // order - prepend in REVERSE load order so that after every prepend,
+    // the first-loaded unit's init chain ends up first, right after the
+    // vtable/class-parent bookkeeping above (a unit's own initialization
+    // code may construct objects or call virtual methods, which needs
+    // vtables already populated).
+    for (int i = loaded_unit_count - 1; i >= 0; i--) {
+        if (!loaded_unit_init[i]) continue;
+        ASTNode *tail = loaded_unit_init[i];
+        while (tail->next) tail = tail->next;
+        tail->next = root->left;
+        root->left = loaded_unit_init[i];
+    }
+
+    // Unit finalization sections run last, after the main program's own
+    // body, in REVERSE unit-load order (last-loaded unit finalizes
+    // first) - appended to the tail of the whole statement chain built
+    // so far, right before pascalc.c's own trailing emit_halt().
+    {
+        ASTNode *tail = root->left;
+        if (tail) { while (tail->next) tail = tail->next; }
+        for (int i = loaded_unit_count - 1; i >= 0; i--) {
+            if (!loaded_unit_final[i]) continue;
+            if (tail) tail->next = loaded_unit_final[i];
+            else root->left = loaded_unit_final[i];
+            tail = loaded_unit_final[i];
+            while (tail->next) tail = tail->next;
+        }
+    }
+
     return root;
 }
 
