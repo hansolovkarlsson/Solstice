@@ -234,7 +234,66 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       declaration, so there's nothing to hand back except that raw
       value. Works everywhere an ordinary `for` loop counter can be
       (global, local, parameter's record field, `static` local) - see
-      [docs/LANGUAGE.md](LANGUAGE.md#iterating-a-set-for-x-in-s-do).
+      [docs/LANGUAGE.md](LANGUAGE.md#for-x-in--do).
+- [x] `for x in ... do` generalized to 1D arrays and strings —
+      `for x in arr do`/`for c in s do`, alongside the already-shipped
+      set case, still zero new `NodeType`/`Opcode`: both desugar into
+      the SAME `NODE_FOR`/`NODE_LOCAL_FOR` shape the set case already
+      relies on, extending the two existing `parse_for_in_tail_global`/
+      `_local` functions rather than adding new ones.
+
+      Arrays need no evaluate-once caching at all (unusual, and worth
+      calling out) - an array is never itself an expression VALUE in
+      this compiler, only ever accessed by name, so there's nothing to
+      cache; the sweep just walks the array's own compile-time-known
+      bounds directly. Strings, by contrast, need the SAME evaluate-once
+      treatment the set case already established (a string-valued
+      expression, e.g. a function call, must run exactly once) plus
+      their own length captured once at loop start, separately, using
+      the same subrange/local-vs-global caching idiom.
+
+      Two real defects found and fixed during design validation (a
+      Plan-agent second pass), not left latent:
+      - **Reusing `cache_expr_once()` for the string VALUE would have
+        `fatal_abort()`'d at compile time.** That helper hardcodes its
+        hidden temp as `TYPE_INTEGER` (its only prior use, record-array
+        index caching, is always an int) - `type_checker.c`'s
+        `NODE_ASSIGN` case validates against the temp's OWN registered
+        `sym_table[]` type, not any AST node's `expression_type`, so
+        caching a string this way would reject with "Cannot assign
+        expression to variable" on the global path and silently
+        mis-type on the local path. Fixed by hand-caching the string
+        value the same way the existing SET-caching code already does
+        (`add_var`/`add_local` with the real type up front) instead of
+        reusing that helper - `cache_expr_once()` is still reused, but
+        only for the LENGTH value, which genuinely is `TYPE_INTEGER`.
+      - **A missing `wrap_range_check()`.** No generic runtime range
+        check exists anywhere in `codegen.c`/`type_checker.c` - every
+        one of the 20+ existing assignment-construction sites in
+        `parser.c` explicitly wraps its own RHS; comparing the loop
+        variable's base type against the array's element type (needed
+        regardless, for an ordinary type mismatch) does nothing for
+        this, since two variables can share a base type while only one
+        is subrange-constrained. Every per-iteration element read
+        assigned into the loop variable is now wrapped with
+        `wrap_range_check()` using the LOOP VARIABLE's own subrange
+        info, matching how every other assignment site in this codebase
+        already treats range-checking as a property of the assignment
+        TARGET.
+
+      Scope cuts for v1: 1D arrays only (2D/N-D and arrays-of-records
+      rejected with a clear error at the point the array target is
+      resolved, matching the existing `low()`/`high()`/`length()`
+      restriction); the iterated array/string may be a plain global, a
+      "local" array/string, or (arrays only) a `var`-reference
+      parameter - a record-field or `with`-field array specifically
+      isn't recognized as a target and falls through to a natural,
+      not purpose-written, compile error. See
+      `examples/test/forin/test_forin_array_*.pas`/
+      `test_forin_string_*.pas` (7 positive cases including the
+      flagship evaluate-once-for-a-function-returning-a-string case and
+      a runtime range-check confirmation, and 4 error cases) and
+      [docs/LANGUAGE.md](LANGUAGE.md#for-x-in--do).
 
 ### Language — records & arrays
 
@@ -2187,9 +2246,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
       store path; `out` is nearly free once `var` already works.
 - [ ] Default/optional parameter values — pure call-site sugar, missing
       trailing arguments get the default expression spliced in.
-- [ ] `for x in ... do` generalized beyond sets, to arrays and strings —
-      both already have compile-time-known bounds, the same shape the
-      set-only desugaring already relies on.
 - [ ] `with a, b do` (multiple targets in one `with`) — already a
       documented gap; small, since `with_stack` is already a stack.
 - [ ] Unit `initialization`/`finalization` sections — units currently

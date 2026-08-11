@@ -1605,7 +1605,7 @@ a record field, or a function's return type. `write`/`writeln` can't
 print a set directly — standard Pascal defines no textual representation
 for one — and `readln` into a set isn't supported either.
 
-### Iterating a set: `for x in s do`
+### `for x in ... do`
 
 ```pascal
 s := [1, 3, 5, 9];
@@ -1637,6 +1637,51 @@ since 32 is the hard cap on a set's size (see above). This means a
 `break`/`continue` inside the loop body works exactly as it would in any
 other `for` loop.
 
+**Iterating a 1D array**:
+
+```pascal
+var
+    scores: array[1..4] of integer;
+    x: integer;
+scores[1] := 5; scores[2] := 10; scores[3] := 15; scores[4] := 20;
+for x in scores do
+    writeln(x);   { prints 5, 10, 15, 20 }
+```
+
+`x` must match the array's declared ELEMENT type exactly (a scalar type
+only — `integer`, `boolean`, `char`, an enumerated type, or a
+subrange). `scores` can be a global array, a local array, or a `var`
+array-reference parameter — desugars to sweeping a hidden index from
+the array's own declared bounds, reading `scores[hiddenIndex]` into `x`
+each iteration; no evaluate-once caching is needed here (unlike a set
+or string expression) since an array is never itself an expression
+value in this compiler, only ever accessed by name.
+
+**Iterating a string**:
+
+```pascal
+var
+    name: string;
+    c: char;
+name := 'Sol';
+for c in name do
+    writeln(c);   { prints S, o, l }
+```
+
+`c` must be `char`. The string expression (which, unlike an array, CAN
+be any string-valued expression — a variable, a function call, a
+concatenation) is evaluated exactly once, before the loop starts, same
+as a set expression — a string-returning function called this way runs
+once, not once per character. Its length is likewise captured once at
+loop start; mutating the string from inside the loop body doesn't
+change how many characters the loop visits.
+
+Assigning into `x`/`c` still respects a `subrange`-constrained loop
+variable — if the variable is declared `1..10` and the array holds a
+wider-ranged value, or the char is subrange-constrained (`'a'..'z'`),
+an out-of-range element still triggers the ordinary runtime range-check
+error, exactly as an explicit assignment to that variable would.
+
 ### What's not supported yet
 
 - **Combining two sets declared with different base types/ranges isn't
@@ -1645,6 +1690,12 @@ other `for` loop.
   declared base type a given set value "belongs to" the way it does for
   enums. A deliberate simplification — mixing set shapes like this is a
   programmer error this compiler won't catch, not a feature.
+- **2D/N-D arrays and arrays of records** as the iterated collection —
+  only 1D, scalar-element arrays work.
+- **A record field or `with`-field array** as the iterated collection —
+  `for x in someRecord.numbers do` isn't recognized; copy/alias into a
+  plain array variable first (a record-field or `with`-field SET or
+  STRING works fine, this restriction is array-specific).
 
 A set works as a `var` parameter (mutated correctly through the
 reference), and as an array element type (`array[1..3] of set of 0..9`),

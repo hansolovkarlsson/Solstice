@@ -260,10 +260,11 @@ block-scoped `label` declarations, compiling straight to the VM's
 existing unconditional jump with zero new opcodes, via the same
 backpatching technique `break`/`continue` already use (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#goto-and-labels)). Also working:
-`for x in s do`, iterating a variable over a set's members - a pure
-parse-time desugaring into an ordinary `for` loop plus an `in` test,
-zero new opcodes (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#iterating-a-set-for-x-in-s-do)).
+`for x in ... do`, generalized beyond sets to 1D arrays and strings too
+(`for x in arr do`, `for c in s do`) - still a pure parse-time
+desugaring into an ordinary `for` loop plus (for sets/strings) an
+evaluate-once cache, zero new opcodes (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#for-x-in--do)).
 Also working: an uninitialized-variable warning pass — the compiler's
 first non-fatal diagnostic (compilation still succeeds), flagging a
 local variable read but never assigned, or a function that never sets

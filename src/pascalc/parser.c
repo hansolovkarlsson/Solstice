@@ -10153,6 +10153,122 @@ static ASTNode *parse_local_for_tail(int field_local_idx) {
     return compound;
 }
 
+// Identity of a resolved 'for x in arr do' array target - enough to
+// build repeated element reads of it (build_forin_array_element_read()
+// below), without needing to re-resolve the name each time.
+typedef struct {
+    int is_ref;       // 1 = array-ref ('var') parameter (NODE_REF_ARRAY_ACCESS) - "which array" is a runtime value; 0 = plain/mangled-global array (NODE_ARRAY_ACCESS)
+    int sym_idx;       // valid when !is_ref: the array's sym_table[] index
+    int local_idx;      // valid when is_ref: the parameter's own local slot
+    int levels_up;       // valid when is_ref: same convention find_local_outward() itself uses
+    DataType elem_type;
+    int lower, upper;
+} ForInArrayTarget;
+
+// Checks whether the CURRENT token names a supported 'for x in arr do'
+// array target (a plain global array, a "local" array - which
+// add_local_array() registers as a mangled GLOBAL, so it's resolved
+// identically to a true global once found, see is_array below - or a
+// by-reference array parameter), NOT immediately followed by '[' (that
+// shape is ordinary indexed access, an entirely different, already-
+// scalar-valued expression - e.g. 'for x in someSetArray[i] do' iterates
+// the SET stored at that element, unaffected by this function at all).
+// Mirrors try_get_array_bounds_here()'s own contract (peek, consume
+// only on an actual match, return 0 without consuming anything
+// otherwise so the caller can fall back to arithmetic_expression() for
+// the set/string cases) but resolves fuller identity than that function
+// needs for low()/high()/length(). Deliberately uses find_var_soft_
+// visible() (NOT find_var(), which unconditionally fatal_abort()s on an
+// unknown identifier) for the global fallback - 'for c in
+// SomeStringFunc() do' must fall through gracefully here, not crash the
+// compiler because a procedure name isn't a variable.
+//
+// Scope cut: doesn't check with-fields or record fields - 'for x in
+// someRecord.numbers do' isn't recognized here and falls through to
+// arithmetic_expression(), which will surface some natural (not
+// purpose-written) "array must be indexed" rejection - a real but
+// low-priority UX gap, not a correctness one, left undecorated for v1.
+static int try_resolve_forin_array_here(ForInArrayTarget *out) {
+    if (token.type != TOKEN_IDENTIFIER) return 0;
+    char name[MAX_NAME];
+    strcpy(name, token.text);
+    Token saved_token = token;
+    LexerPos saved_pos = lexer_save_pos();
+    next_token(); // peek past the identifier
+    int followed_by_bracket = (token.type == TOKEN_LBRACKET);
+    token = saved_token;
+    lexer_restore_pos(saved_pos);
+    if (followed_by_bracket) return 0;
+
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->is_array) {
+            if (sym_table[ls->array_sym_idx].is_2d || sym_table[ls->array_sym_idx].is_nd
+                || sym_table[ls->array_sym_idx].is_record_array) {
+                compile_error(token.line, "'for x in %s do' doesn't support 2D/N-D arrays or arrays of records yet", name);
+            }
+            match(TOKEN_IDENTIFIER);
+            out->is_ref = 0;
+            out->sym_idx = ls->array_sym_idx;
+            out->elem_type = sym_table[ls->array_sym_idx].type;
+            out->lower = sym_table[ls->array_sym_idx].array_lower;
+            out->upper = sym_table[ls->array_sym_idx].array_upper;
+            return 1;
+        }
+        if (ls->is_array_ref) {
+            if (ls->is_2d || ls->is_nd) {
+                compile_error(token.line, "'for x in %s do' doesn't support 2D/N-D arrays yet", name);
+            }
+            match(TOKEN_IDENTIFIER);
+            out->is_ref = 1;
+            out->local_idx = local_idx;
+            out->levels_up = levels_up;
+            out->elem_type = ls->type;
+            out->lower = ls->array_lower;
+            out->upper = ls->array_upper;
+            return 1;
+        }
+        return 0; // a local, but not an array - fall through
+    }
+    int global_idx = find_var_soft_visible(name);
+    if (global_idx != -1 && sym_table[global_idx].is_array) {
+        if (sym_table[global_idx].is_2d || sym_table[global_idx].is_nd
+            || sym_table[global_idx].is_record_array) {
+            compile_error(token.line, "'for x in %s do' doesn't support 2D/N-D arrays or arrays of records yet", name);
+        }
+        match(TOKEN_IDENTIFIER);
+        out->is_ref = 0;
+        out->sym_idx = global_idx;
+        out->elem_type = sym_table[global_idx].type;
+        out->lower = sym_table[global_idx].array_lower;
+        out->upper = sym_table[global_idx].array_upper;
+        return 1;
+    }
+    return 0; // not an array at all - fall through to a general expression
+}
+
+// Builds ONE element read of a resolved for-in array target, indexed by
+// index_ref (a fresh read of the hidden sweep variable - never reused
+// across iterations/callers, matching the AST-double-free hazard
+// documented and avoided elsewhere in this file).
+static ASTNode *build_forin_array_element_read(ForInArrayTarget *t, ASTNode *index_ref) {
+    if (t->is_ref) {
+        ASTNode *node = create_node(NODE_REF_ARRAY_ACCESS);
+        node->data.var_idx = t->local_idx;
+        node->op = (TokenType)t->levels_up;
+        node->left = index_ref;
+        node->expression_type = t->elem_type;
+        return node;
+    }
+    ASTNode *node = create_node(NODE_ARRAY_ACCESS);
+    node->data.var_idx = t->sym_idx;
+    node->left = index_ref;
+    node->expression_type = t->elem_type;
+    return node;
+}
+
 // Parses the 'in <set expr> do <body>' tail of 'for x in s do stmt',
 // given the loop variable already resolved to a GLOBAL scalar
 // (sym_idx - a plain global, a with-field, a global record field, or a
@@ -10174,9 +10290,135 @@ static ASTNode *parse_local_for_tail(int field_local_idx) {
 // (integer/enum/boolean) isn't tracked past declaration either, there's
 // no way to hand back anything but a raw ordinal.
 static ASTNode *parse_for_in_tail_global(int sym_idx) {
+    int line = token.line; // captured before further tokens are consumed,
+                            // so a type-mismatch error below still points
+                            // at the 'for' statement itself, not wherever
+                            // parsing happens to have reached by the time
+                            // the mismatch is discovered (e.g. the loop
+                            // body's own first line, once the collection
+                            // expression and 'do' are behind us)
     match(TOKEN_IN);
-    ASTNode *set_expr = arithmetic_expression();
+
+    ForInArrayTarget target;
+    if (try_resolve_forin_array_here(&target)) {
+        if (sym_table[sym_idx].type != target.elem_type) {
+            compile_error(line, "'for' loop variable's type doesn't match the array's element type");
+        }
+        match(TOKEN_DO);
+
+        char idx_name[MAX_NAME];
+        snprintf(idx_name, MAX_NAME, "__for_in_arr_idx%d", sym_count);
+        int idx_sym_idx = sym_count;
+        add_var(idx_name, TYPE_INTEGER);
+
+        ASTNode *for_node = create_node(NODE_FOR);
+        for_node->data.var_idx = idx_sym_idx;
+        for_node->op = TOKEN_TO;
+        ASTNode *lo = create_node(NODE_NUMBER);
+        lo->data.num_value = target.lower;
+        lo->expression_type = TYPE_INTEGER;
+        for_node->left = lo;
+        ASTNode *hi = create_node(NODE_NUMBER);
+        hi->data.num_value = target.upper;
+        hi->expression_type = TYPE_INTEGER;
+        for_node->right = hi;
+
+        ASTNode *idx_read = create_node(NODE_VARIABLE);
+        idx_read->data.var_idx = idx_sym_idx;
+        idx_read->expression_type = TYPE_INTEGER;
+        ASTNode *element_read = build_forin_array_element_read(&target, idx_read);
+
+        ASTNode *assign_x = create_node(NODE_ASSIGN);
+        assign_x->data.var_idx = sym_idx;
+        assign_x->expression_type = sym_table[sym_idx].type;
+        assign_x->left = wrap_range_check(element_read, sym_table[sym_idx].is_subrange,
+            sym_table[sym_idx].subrange_lower, sym_table[sym_idx].subrange_upper);
+
+        loop_depth++;
+        assign_x->next = statement();   // body
+        loop_depth--;
+        ASTNode *body_compound = create_node(NODE_COMPOUND);
+        body_compound->left = assign_x;
+        for_node->extra = body_compound;
+
+        return for_node;
+    }
+
+    ASTNode *collection_expr = arithmetic_expression();
     match(TOKEN_DO);
+
+    if (collection_expr->expression_type == TYPE_STRING) {
+        if (sym_table[sym_idx].type != TYPE_CHAR) {
+            compile_error(line, "'for' loop variable must be char to iterate a string");
+        }
+        char str_name[MAX_NAME];
+        snprintf(str_name, MAX_NAME, "__for_in_str%d", sym_count);
+        int str_sym_idx = sym_count;
+        add_var(str_name, TYPE_STRING);
+        ASTNode *str_cache_assign = create_node(NODE_ASSIGN);
+        str_cache_assign->data.var_idx = str_sym_idx;
+        str_cache_assign->expression_type = TYPE_STRING;
+        str_cache_assign->left = collection_expr;
+
+        ASTNode *str_read_for_len = create_node(NODE_VARIABLE);
+        str_read_for_len->data.var_idx = str_sym_idx;
+        str_read_for_len->expression_type = TYPE_STRING;
+        ASTNode *len_call = create_node(NODE_BUILTIN_CALL);
+        len_call->op = TOKEN_LENGTH;
+        len_call->left = str_read_for_len;
+        len_call->expression_type = TYPE_INTEGER;
+
+        int len_slot, len_is_local;
+        ASTNode *len_cache_assign = cache_expr_once(len_call, "for_in_strlen", &len_slot, &len_is_local);
+
+        char idx_name[MAX_NAME];
+        snprintf(idx_name, MAX_NAME, "__for_in_str_idx%d", sym_count);
+        int idx_sym_idx = sym_count;
+        add_var(idx_name, TYPE_INTEGER);
+
+        ASTNode *for_node = create_node(NODE_FOR);
+        for_node->data.var_idx = idx_sym_idx;
+        for_node->op = TOKEN_TO;
+        ASTNode *lo = create_node(NODE_NUMBER);
+        lo->data.num_value = 1;
+        lo->expression_type = TYPE_INTEGER;
+        for_node->left = lo;
+        for_node->right = make_cached_ref(len_slot, len_is_local);
+
+        ASTNode *idx_read = create_node(NODE_VARIABLE);
+        idx_read->data.var_idx = idx_sym_idx;
+        idx_read->expression_type = TYPE_INTEGER;
+        ASTNode *char_read = create_node(NODE_STRING_INDEX);
+        char_read->data.var_idx = str_sym_idx;
+        char_read->left = idx_read;
+        char_read->expression_type = TYPE_CHAR;
+
+        ASTNode *assign_c = create_node(NODE_ASSIGN);
+        assign_c->data.var_idx = sym_idx;
+        assign_c->expression_type = TYPE_CHAR;
+        assign_c->left = wrap_range_check(char_read, sym_table[sym_idx].is_subrange,
+            sym_table[sym_idx].subrange_lower, sym_table[sym_idx].subrange_upper);
+
+        loop_depth++;
+        assign_c->next = statement();   // body
+        loop_depth--;
+        ASTNode *body_compound = create_node(NODE_COMPOUND);
+        body_compound->left = assign_c;
+        for_node->extra = body_compound;
+
+        str_cache_assign->next = len_cache_assign;
+        len_cache_assign->next = for_node;
+        ASTNode *compound = create_node(NODE_COMPOUND);
+        compound->left = str_cache_assign;
+        return compound;
+    }
+
+    if (collection_expr->expression_type != TYPE_SET) {
+        compile_error(line, "'for x in ...' expects a set, array, or string");
+    }
+    if (sym_table[sym_idx].type != TYPE_INTEGER) {
+        compile_error(line, "'for' loop variable must be integer");
+    }
 
     char hidden_name[MAX_NAME];
     snprintf(hidden_name, MAX_NAME, "__for_in_set%d", sym_count);
@@ -10186,7 +10428,7 @@ static ASTNode *parse_for_in_tail_global(int sym_idx) {
     ASTNode *cache_assign = create_node(NODE_ASSIGN);
     cache_assign->data.var_idx = set_sym_idx;
     cache_assign->expression_type = TYPE_SET;
-    cache_assign->left = set_expr;
+    cache_assign->left = collection_expr;
 
     ASTNode *for_node = create_node(NODE_FOR);
     for_node->data.var_idx = sym_idx;
@@ -10231,9 +10473,129 @@ static ASTNode *parse_for_in_tail_global(int sym_idx) {
 // hidden local (rather than a hidden global) to cache the (here, set-
 // typed) value that must only be evaluated once.
 static ASTNode *parse_for_in_tail_local(int local_idx) {
+    int line = token.line; // captured before further tokens are consumed -
+                            // see parse_for_in_tail_global()'s identical
+                            // comment for why
     match(TOKEN_IN);
-    ASTNode *set_expr = arithmetic_expression();
+
+    ForInArrayTarget target;
+    if (try_resolve_forin_array_here(&target)) {
+        if (current_locals[local_idx].type != target.elem_type) {
+            compile_error(line, "'for' loop variable's type doesn't match the array's element type");
+        }
+        match(TOKEN_DO);
+
+        char idx_name[MAX_NAME];
+        snprintf(idx_name, MAX_NAME, "__for_in_arr_idx_local%d", current_local_count);
+        int idx_slot = add_local(idx_name, TYPE_INTEGER);
+
+        ASTNode *for_node = create_node(NODE_LOCAL_FOR);
+        for_node->data.var_idx = idx_slot;
+        for_node->op = TOKEN_TO;
+        ASTNode *lo = create_node(NODE_NUMBER);
+        lo->data.num_value = target.lower;
+        lo->expression_type = TYPE_INTEGER;
+        for_node->left = lo;
+        ASTNode *hi = create_node(NODE_NUMBER);
+        hi->data.num_value = target.upper;
+        hi->expression_type = TYPE_INTEGER;
+        for_node->right = hi;
+
+        ASTNode *idx_read = create_node(NODE_LOCAL_VAR);
+        idx_read->data.var_idx = idx_slot;
+        idx_read->expression_type = TYPE_INTEGER;
+        ASTNode *element_read = build_forin_array_element_read(&target, idx_read);
+
+        ASTNode *assign_x = create_node(NODE_LOCAL_ASSIGN);
+        assign_x->data.var_idx = local_idx;
+        assign_x->expression_type = current_locals[local_idx].type;
+        assign_x->left = wrap_range_check(element_read, current_locals[local_idx].is_subrange,
+            current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
+
+        loop_depth++;
+        assign_x->next = statement();   // body
+        loop_depth--;
+        ASTNode *body_compound = create_node(NODE_COMPOUND);
+        body_compound->left = assign_x;
+        for_node->extra = body_compound;
+
+        return for_node;
+    }
+
+    ASTNode *collection_expr = arithmetic_expression();
     match(TOKEN_DO);
+
+    if (collection_expr->expression_type == TYPE_STRING) {
+        if (current_locals[local_idx].type != TYPE_CHAR) {
+            compile_error(line, "'for' loop variable must be char to iterate a string");
+        }
+        char str_name[MAX_NAME];
+        snprintf(str_name, MAX_NAME, "__for_in_str_local%d", current_local_count);
+        int str_slot = add_local(str_name, TYPE_STRING);
+        ASTNode *str_cache_assign = create_node(NODE_LOCAL_ASSIGN);
+        str_cache_assign->data.var_idx = str_slot;
+        str_cache_assign->expression_type = TYPE_STRING;
+        str_cache_assign->left = collection_expr;
+
+        ASTNode *str_read_for_len = create_node(NODE_LOCAL_VAR);
+        str_read_for_len->data.var_idx = str_slot;
+        str_read_for_len->expression_type = TYPE_STRING;
+        ASTNode *len_call = create_node(NODE_BUILTIN_CALL);
+        len_call->op = TOKEN_LENGTH;
+        len_call->left = str_read_for_len;
+        len_call->expression_type = TYPE_INTEGER;
+
+        int len_slot, len_is_local;
+        ASTNode *len_cache_assign = cache_expr_once(len_call, "for_in_strlen", &len_slot, &len_is_local);
+
+        char idx_name[MAX_NAME];
+        snprintf(idx_name, MAX_NAME, "__for_in_str_idx_local%d", current_local_count);
+        int idx_slot = add_local(idx_name, TYPE_INTEGER);
+
+        ASTNode *for_node = create_node(NODE_LOCAL_FOR);
+        for_node->data.var_idx = idx_slot;
+        for_node->op = TOKEN_TO;
+        ASTNode *lo = create_node(NODE_NUMBER);
+        lo->data.num_value = 1;
+        lo->expression_type = TYPE_INTEGER;
+        for_node->left = lo;
+        for_node->right = make_cached_ref(len_slot, len_is_local);
+
+        ASTNode *idx_read = create_node(NODE_LOCAL_VAR);
+        idx_read->data.var_idx = idx_slot;
+        idx_read->expression_type = TYPE_INTEGER;
+        ASTNode *char_read = create_node(NODE_LOCAL_STRING_INDEX);
+        char_read->data.var_idx = str_slot;
+        char_read->op = (TokenType)0;
+        char_read->left = idx_read;
+        char_read->expression_type = TYPE_CHAR;
+
+        ASTNode *assign_c = create_node(NODE_LOCAL_ASSIGN);
+        assign_c->data.var_idx = local_idx;
+        assign_c->expression_type = TYPE_CHAR;
+        assign_c->left = wrap_range_check(char_read, current_locals[local_idx].is_subrange,
+            current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
+
+        loop_depth++;
+        assign_c->next = statement();   // body
+        loop_depth--;
+        ASTNode *body_compound = create_node(NODE_COMPOUND);
+        body_compound->left = assign_c;
+        for_node->extra = body_compound;
+
+        str_cache_assign->next = len_cache_assign;
+        len_cache_assign->next = for_node;
+        ASTNode *compound = create_node(NODE_COMPOUND);
+        compound->left = str_cache_assign;
+        return compound;
+    }
+
+    if (collection_expr->expression_type != TYPE_SET) {
+        compile_error(line, "'for x in ...' expects a set, array, or string");
+    }
+    if (current_locals[local_idx].type != TYPE_INTEGER) {
+        compile_error(line, "'for' loop variable must be integer");
+    }
 
     char hidden_name[MAX_NAME];
     snprintf(hidden_name, MAX_NAME, "__for_in_set_local%d", current_local_count);
@@ -10242,7 +10604,7 @@ static ASTNode *parse_for_in_tail_local(int local_idx) {
     ASTNode *cache_assign = create_node(NODE_LOCAL_ASSIGN);
     cache_assign->data.var_idx = set_slot;
     cache_assign->expression_type = TYPE_SET;
-    cache_assign->left = set_expr;
+    cache_assign->left = collection_expr;
 
     ASTNode *for_node = create_node(NODE_LOCAL_FOR);
     for_node->data.var_idx = local_idx;
@@ -10904,19 +11266,19 @@ static ASTNode *statement(void) {
                 }
             }
             if (is_local_target) {
-                if (current_locals[field_local_idx].type != TYPE_INTEGER) {
-                    compile_error(token.line, "'for' loop variable must be integer");
-                }
                 if (token.type == TOKEN_IN) {
                     return parse_for_in_tail_local(field_local_idx);
                 }
+                if (current_locals[field_local_idx].type != TYPE_INTEGER) {
+                    compile_error(token.line, "'for' loop variable must be integer");
+                }
                 return parse_local_for_tail(field_local_idx);
-            }
-            if (sym_table[field_sym_idx].type != TYPE_INTEGER) {
-                compile_error(token.line, "'for' loop variable must be integer");
             }
             if (token.type == TOKEN_IN) {
                 return parse_for_in_tail_global(field_sym_idx);
+            }
+            if (sym_table[field_sym_idx].type != TYPE_INTEGER) {
+                compile_error(token.line, "'for' loop variable must be integer");
             }
             ASTNode *stmt = create_node(NODE_FOR);
             stmt->data.var_idx = field_sym_idx;
@@ -10964,12 +11326,12 @@ static ASTNode *statement(void) {
             // below), just targeting the mangled global's index instead
             // of find_var()'s.
             int static_idx = current_locals[local_idx].static_sym_idx;
-            if (sym_table[static_idx].type != TYPE_INTEGER) {
-                compile_error(token.line, "'for' loop variable must be integer");
-            }
             match(TOKEN_IDENTIFIER);
             if (token.type == TOKEN_IN) {
                 return parse_for_in_tail_global(static_idx);
+            }
+            if (sym_table[static_idx].type != TYPE_INTEGER) {
+                compile_error(token.line, "'for' loop variable must be integer");
             }
             ASTNode *stmt = create_node(NODE_FOR);
             stmt->data.var_idx = static_idx;
@@ -10992,22 +11354,22 @@ static ASTNode *statement(void) {
             return stmt;
         }
         if (local_idx != -1) {
-            if (current_locals[local_idx].type != TYPE_INTEGER) {
-                compile_error(token.line, "'for' loop variable must be integer");
-            }
             match(TOKEN_IDENTIFIER);
             if (token.type == TOKEN_IN) {
                 return parse_for_in_tail_local(local_idx);
+            }
+            if (current_locals[local_idx].type != TYPE_INTEGER) {
+                compile_error(token.line, "'for' loop variable must be integer");
             }
             return parse_local_for_tail(local_idx);
         }
         int global_idx = find_var(token.text);
         match(TOKEN_IDENTIFIER);
         if (token.type == TOKEN_IN) {
-            if (sym_table[global_idx].type != TYPE_INTEGER) {
-                compile_error(token.line, "'for' loop variable must be integer");
-            }
             return parse_for_in_tail_global(global_idx);
+        }
+        if (sym_table[global_idx].type != TYPE_INTEGER) {
+            compile_error(token.line, "'for' loop variable must be integer");
         }
         ASTNode *stmt = create_node(NODE_FOR);
         stmt->data.var_idx = global_idx;
