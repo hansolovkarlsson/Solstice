@@ -301,7 +301,8 @@ opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
 - [docs/BYTECODE.md](docs/BYTECODE.md) — SolVM architecture, full opcode reference, `.bin` file format.
 - [docs/ASSEMBLER.md](docs/ASSEMBLER.md) — `solas`/`desole` `.sasm` syntax and usage.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internals and extension checklist; start here before structural changes.
-- [docs/ROADMAP.md](docs/ROADMAP.md) — the authoritative, checklist-level project plan: current-phase tasks plus later phases (OOP Pascal, further front ends, Phoenix). Keep it updated as work lands — this is the one place tracking what's actually left to do, superseding the old `notes/todo.md`.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — the authoritative, checklist-level project plan: current-phase tasks plus later phases (OOP Pascal, further front ends, Phoenix). Scoped to what's still open — a shipped item moves out to `docs/CHANGELOG.md` once it lands. Keep it updated as work lands or plans change — this is the one place tracking what's actually left to do, superseding the old `notes/todo.md`.
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — the chronological record of shipped features and fixed bugs, each with the design decisions and bugs found along the way. Move a `docs/ROADMAP.md` item here (as a `[x]` entry, full detail intact) once it ships, rather than leaving it to accumulate in the roadmap.
 - Root [README.md](README.md) — current feature status (working / not yet implemented), project layout table, and a one-paragraph roadmap summary that links to docs/ROADMAP.md.
 
 ## Repo layout beyond `src/`

@@ -1512,7 +1512,7 @@ end.
   **Field-width syntax on an enum argument (`writeln(c:10)`) falls back
   to printing the raw ordinal**, padded, rather than the name — a known,
   deliberately-scoped-out gap (see
-  [docs/ROADMAP.md](ROADMAP.md)). An ordinal that doesn't correspond to
+  [docs/CHANGELOG.md](CHANGELOG.md)). An ordinal that doesn't correspond to
   any named value (only reachable via unchecked `succ`/`pred` past an
   enum's first/last value) also falls back to printing the raw ordinal,
   in both the padded and unpadded cases.
@@ -2203,7 +2203,7 @@ you're done with a block, the same discipline `malloc`/`free` demands.
 
 **v1 complete** — declaration parsing, `new`/`dispose`, field
 read/write, method bodies, `c.Method(args)` call syntax (all 5 "Classes
-and instances" build steps in `docs/ROADMAP.md`'s Phase 2), single
+and instances" build steps, see `docs/CHANGELOG.md`'s Phase 2), single
 inheritance, and virtual/dynamic dispatch all work. See "Not implemented
 yet" below and `notes/classes-and-instances-scoping.md` for the full
 design rationale.

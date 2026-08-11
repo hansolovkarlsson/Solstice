@@ -12,7 +12,7 @@ Neither is in the near-term plan, and neither is part of "classes and
 instances":
 
 - **Closures** are tracked separately, under Phase 2's "Language
-  extensions beyond standard Pascal" (`docs/ROADMAP.md:796`), explicitly
+  extensions beyond standard Pascal" section in `docs/ROADMAP.md`, explicitly
   non-standard — real Pascal doesn't have them. This compiler already
   has nested procedures with lexical scoping (a static-link chain,
   `vm_static_link[]`), but that chain only exists while the enclosing

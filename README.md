@@ -88,7 +88,8 @@ make clean      # remove binaries and object files
 - **[docs/BYTECODE.md](docs/BYTECODE.md)** — SolVM's architecture, the full opcode reference, and the `.bin` file format.
 - **[docs/ASSEMBLER.md](docs/ASSEMBLER.md)** — `solas`/`desole` syntax reference and usage guide.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the compiler pipeline and project are put together internally; start here if you're extending the codebase.
-- **[docs/ROADMAP.md](docs/ROADMAP.md)** — the detailed, checklist-level plan behind the summary below.
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** — the detailed, checklist-level plan behind the summary below (what's still open).
+- **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — shipped features and fixed bugs, in the order they landed, with the design decisions behind each one.
 
 ## Project layout
 
@@ -342,7 +343,7 @@ fields rather than real overlapping storage, since this compiler's
 records have no memory layout of their own to overlap in the first
 place (see [docs/LANGUAGE.md](docs/LANGUAGE.md#variant-records)). This
 was the last item on the Phase 1 (Wirth-compatible Pascal) checklist —
-see [docs/ROADMAP.md](docs/ROADMAP.md).
+see [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 Phase 2 (object-oriented Pascal) has started: classes and instances
 work end-to-end (`type TFoo = class ... end;`, fields, methods, `new`/
