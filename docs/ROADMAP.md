@@ -1725,6 +1725,66 @@ anyway, so this is where they land instead.
       opcodes were added). See
       `examples/test/except/test_except_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#try--except--raise).
+- [x] `try`/`finally` — `try <body> finally <cleanup> end;`, guaranteed
+      cleanup that runs whether or not `body` raised, then lets any
+      in-flight exception keep propagating outward afterward. A
+      separate, parallel construct from `try`/`except` (never combined
+      in one block, matching Delphi's own restriction - nest to get
+      both).
+
+      Confirmed the "smaller follow-up, reuses the same `OP_TRY`-style
+      snapshot mechanism" framing exactly: **zero `vm.c` changes, zero
+      new opcodes, zero new `NodeType`** - `OP_TRY`/`OP_END_TRY`/
+      `OP_RAISE`/`OP_EXCEPT_MSG` are reused completely unmodified, and
+      `NODE_TRY` itself is reused (discriminated via its own previously
+      write-only-default `op` field, `op == TOKEN_FINALLY`) rather than
+      adding a new node type. The key design insight: `cleanup`'s AST
+      subtree is compiled TWICE by `codegen.c` - once inline for the
+      normal-completion path, once as the "handler" address `OP_TRY`
+      points at for the exception-unwind path, with the second copy
+      ending in `EXCEPT_MSG; RAISE` to re-raise and keep propagating
+      (since by the time that copy runs, `OP_RAISE` already popped this
+      `try`'s own handler entry, so the re-raise correctly searches from
+      the *next* enclosing handler outward, with no new opcode needed to
+      express "continue unwinding after cleanup"). An exception raised
+      from inside `cleanup` itself naturally supersedes the original as
+      an emergent property of the same mechanism, no special-casing
+      needed.
+
+      **One genuine hazard found and guarded against, not discovered the
+      hard way**: `codegen.c`'s label table (`label_table[idx].code_idx`)
+      is a single scalar, unconditionally overwritten on every
+      `NODE_LABEL` visit - a labeled statement inside `cleanup` would,
+      under double-compilation, get treated as a backward goto into the
+      FIRST copy while the SECOND copy's own label position isn't even
+      known yet, a genuine miscompile corrupting the try-vs-normal-path
+      invariant. Confirmed reachable (not theoretical): this compiler's
+      goto/label model is deliberately permissive about labels appearing
+      inside structured statements (`docs/LANGUAGE.md`'s own documented
+      simplification). Fixed with a new `finally_body_depth` counter
+      (mirroring the existing `loop_depth` idiom exactly), checked at
+      `NODE_LABEL`'s own creation site - catches labels nested arbitrarily
+      deep inside the finally-body for free, since parsing under the
+      counter naturally covers every nested statement form. A `goto`/
+      `break`/`continue` referencing something OUTSIDE the finally-body
+      is NOT rejected - confirmed safe, since every pending-jump
+      structure a statement can register into (`label_table[idx].
+      pending_jumps[]`, loop-context `continue_jumps[]`/`break_jumps[]`)
+      is array-based and already tolerates multiple sources correctly.
+
+      `goto` jumping OUT of an active `try`/`finally` body (skipping
+      `END_TRY`, leaking a stale `vm_except_stack[]` entry) is an
+      inherited characteristic of the already-shipped `OP_TRY`/
+      `OP_END_TRY` pairing - confirmed no worse than the identical
+      pre-existing gap `try`/`except` already has, not newly introduced.
+      `type_checker.c`/`optimizer.c` needed zero changes (confirmed:
+      `NODE_TRY` already had no case in either, relying entirely on
+      their generic recursion into `left`/`right`/`next`/`extra`, and
+      `optimizer.c`'s single pass completes before codegen's double-visit
+      ever happens, so it only ever sees the finally-body once). See
+      `examples/test/finally/test_finally_*.pas` (5 positive cases
+      including a deep-call-frame unwind and cleanup-itself-raises, and 2
+      error cases) and [docs/LANGUAGE.md](LANGUAGE.md#try--finally).
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
@@ -2037,10 +2097,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
       (`destructor Destroy; override;` / `Free`) — `dispose(c)` today
       runs no user code first; needs an implicit root class and a
       vtable call before the heap block is freed.
-- [ ] `try`/`finally` (guaranteed cleanup, runs whether or not an
-      exception occurred) — a natural, smaller follow-up to the
-      try/except/raise entry above, reusing the same `OP_TRY`-style
-      snapshot mechanism.
 - [ ] Typed exception handlers (`on E: SomeExceptionType do`) — needs an
       actual exception-class hierarchy, which drags in most of classes'
       own machinery a second time; explicitly cut when try/except

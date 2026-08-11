@@ -1247,16 +1247,59 @@ void generate_code(ASTNode *node) {
         //   except_or_end:
         //     <handler>
         //   end:
+        //
+        // try <body> finally <cleanup> end - a SEPARATE construct
+        // (node->op == TOKEN_FINALLY), reusing OP_TRY/OP_END_TRY/OP_RAISE
+        // completely unchanged. <cleanup>'s AST subtree is compiled
+        // TWICE - once inline for the normal-completion path, once as
+        // the handler an unwinding OP_RAISE jumps to - since 'finally'
+        // must run whether or not an exception occurred, and OP_TRY only
+        // has ONE handler_ip per entry:
+        //     TRY unwind          ; patched below
+        //     <body>
+        //     END_TRY
+        //     <cleanup>           ; COPY 1 - normal path, runs inline
+        //     JMP end             ; patched below
+        //   unwind:
+        //     <cleanup>           ; COPY 2 - same AST subtree, generated
+        //                         ; again - see the plan/ROADMAP for why
+        //                         ; this is safe (codegen never mutates
+        //                         ; the nodes it reads) and why a label
+        //                         ; declared inside <cleanup> is rejected
+        //                         ; at parse time (finally_body_depth)
+        //     EXCEPT_MSG          ; push the in-flight exception's message
+        //     RAISE               ; re-raise - our own handler entry is
+        //                         ; already popped (by the OP_RAISE that
+        //                         ; got us here), so this correctly
+        //                         ; continues the unwind outward, or hits
+        //                         ; the ordinary uncaught-exception path
+        //                         ; if nothing else is listening
+        //   end:
         case NODE_TRY: {
-            int try_idx = code_idx;
-            emit(OP_TRY, 0);                 // placeholder, patched below
-            generate_code(node->left);       // try-body
-            emit(OP_END_TRY, 0);
-            int jmp_idx = code_idx;
-            emit(OP_JMP, 0);                 // placeholder, patched below
-            code[try_idx].arg = code_idx;    // TRY's handler: start of except-body
-            generate_code(node->right);      // except-body
-            code[jmp_idx].arg = code_idx;    // JMP lands here: past the except-body
+            if (node->op == TOKEN_FINALLY) {
+                int try_idx = code_idx;
+                emit(OP_TRY, 0);                 // placeholder, patched below
+                generate_code(node->left);       // try-body
+                emit(OP_END_TRY, 0);
+                generate_code(node->right);      // cleanup - COPY 1 (normal path)
+                int jmp_idx = code_idx;
+                emit(OP_JMP, 0);                 // placeholder, patched below
+                code[try_idx].arg = code_idx;    // TRY's handler: unwind-path start
+                generate_code(node->right);      // cleanup - COPY 2 (unwind path)
+                emit(OP_EXCEPT_MSG, 0);
+                emit(OP_RAISE, 0);
+                code[jmp_idx].arg = code_idx;    // JMP lands here: past both copies
+            } else {
+                int try_idx = code_idx;
+                emit(OP_TRY, 0);                 // placeholder, patched below
+                generate_code(node->left);       // try-body
+                emit(OP_END_TRY, 0);
+                int jmp_idx = code_idx;
+                emit(OP_JMP, 0);                 // placeholder, patched below
+                code[try_idx].arg = code_idx;    // TRY's handler: start of except-body
+                generate_code(node->right);      // except-body
+                code[jmp_idx].arg = code_idx;    // JMP lands here: past the except-body
+            }
             generate_code(node->next);
             break;
         }

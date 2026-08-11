@@ -198,6 +198,12 @@ typedef enum {
                       // NOT paired with a 'virtual' keyword - every instance
                       // method in this compiler is already always virtually
                       // dispatched, so there is no separate 'virtual' token.
+    TOKEN_FINALLY,    // the 'finally' half of a 'try ... finally ... end'
+                      // statement - a SEPARATE construct from 'try ...
+                      // except ... end' (TOKEN_EXCEPT), never combined in
+                      // one block. See NODE_TRY's reuse of its own 'op'
+                      // field as the try/finally-vs-try/except
+                      // discriminator in parser.c/codegen.c.
     TOKEN_EOF
 } TokenType;
 

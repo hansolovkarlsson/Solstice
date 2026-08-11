@@ -290,7 +290,7 @@ void print_ast(ASTNode *node, int indent) {
             printf("Body:\n");
             print_ast(node->left, indent + 2);
             print_indent(indent + 1);
-            printf("Except:\n");
+            printf("%s\n", node->op == TOKEN_FINALLY ? "Finally:" : "Except:");
             print_ast(node->right, indent + 2);
             if (node->next) {
                 print_ast(node->next, indent);

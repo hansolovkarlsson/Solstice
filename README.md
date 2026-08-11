@@ -400,7 +400,11 @@ scoped deliberately to exceptions Pascal code explicitly raises — the
 VM's own built-in runtime errors (division by zero, array bounds, and
 so on) stay always-fatal, not catchable, matching the "you write it, you
 catch it" boundary this feature draws (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#try--except--raise)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#try--except--raise)). Also working:
+`try`/`finally` (`try <body> finally <cleanup> end;`) — guaranteed
+cleanup that runs whether or not `body` raised, then lets any in-flight
+exception keep propagating; a separate construct from `try`/`except`,
+nest to get both (see [docs/LANGUAGE.md](docs/LANGUAGE.md#try--finally)).
 Also working: properties (`property Name: T read F write SetF;`), a
 field- or method-backed named accessor resolved entirely at compile
 time into an ordinary field access or method call — no new opcodes (see

@@ -26,6 +26,17 @@ static const char *current_filename = "<source>";
 // loop right where they're written, rather than only failing at codegen.
 static int loop_depth = 0;
 
+// Tracks how many 'try...finally...end' cleanup bodies we're currently
+// parsing inside of (mirrors loop_depth's own shape/purpose). Used to
+// reject a labeled statement anywhere inside a finally-body, right where
+// it's written - codegen.c compiles a finally-body's AST subtree TWICE
+// (once for normal completion, once for exception-unwind - see NODE_TRY's
+// codegen case), and label_table[]'s single-scalar code_idx can't
+// tolerate the same label being generated twice; the second occurrence
+// would be misread as a backward goto into the FIRST copy, corrupting
+// the try-vs-normal-path invariant. See the NODE_LABEL creation site.
+static int finally_body_depth = 0;
+
 // Labels declared in the CURRENT block's 'label' section (the main
 // program, or whichever procedure/function is being parsed right now) -
 // reset at the start of each block (parse_ast() for the main program,
@@ -10139,6 +10150,9 @@ static ASTNode *statement(void) {
         if (declared_labels[idx].defined) {
             compile_error(line, "Label %d already labels another statement", id);
         }
+        if (finally_body_depth > 0) {
+            compile_error(line, "Label %d can't appear inside a 'finally' block - its cleanup code is compiled twice internally (once for normal completion, once for exception unwinding), which would create an ambiguous jump target", id);
+        }
         declared_labels[idx].defined = 1;
         stmt->data.num_value = id;
         stmt->left = statement();
@@ -10870,8 +10884,23 @@ static ASTNode *statement(void) {
         ASTNode *stmt = create_node(NODE_TRY);
         match(TOKEN_TRY);
         stmt->left = statement_list();   // try-body
-        match(TOKEN_EXCEPT);
-        stmt->right = statement_list();  // except-body
+        if (token.type == TOKEN_FINALLY) {
+            // 'try <body> finally <cleanup> end' - a SEPARATE construct
+            // from 'try <body> except <handler> end', never combined in
+            // one block (matches Delphi - nest to get both). Discriminated
+            // from an ordinary try/except purely via 'op', which NODE_TRY
+            // never otherwise sets/reads - see codegen.c's own NODE_TRY
+            // case for why the cleanup body gets parsed once but compiled
+            // twice.
+            match(TOKEN_FINALLY);
+            stmt->op = TOKEN_FINALLY;
+            finally_body_depth++;
+            stmt->right = statement_list();  // cleanup body
+            finally_body_depth--;
+        } else {
+            match(TOKEN_EXCEPT);
+            stmt->right = statement_list();  // except-body
+        }
         match(TOKEN_END);
         return stmt;
     }

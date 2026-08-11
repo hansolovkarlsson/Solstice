@@ -719,9 +719,54 @@ writeln('after');
 - No exception classes or types — `except` is a single blanket handler,
   there's no Delphi-style `on E: SomeExceptionType do` matching (every
   `raise` in a given `try`'s body is caught the same way, regardless of
-  what its message says). No `finally` block. No bare `raise;`
-  re-raise shorthand — re-raising means writing out
-  `raise ExceptMessage;` (or any other message) explicitly.
+  what its message says). No bare `raise;` re-raise shorthand —
+  re-raising means writing out `raise ExceptMessage;` (or any other
+  message) explicitly.
+
+### `try` / `finally`
+
+```pascal
+try
+  try
+    writeln('before');
+    raise 'something went wrong';
+    writeln('never printed');
+  finally
+    writeln('cleanup runs either way');
+  end;
+except
+  writeln('caught: ', ExceptMessage);
+end;
+writeln('after');
+```
+
+- `try <body> finally <cleanup> end` — `cleanup` always runs, whether
+  `body` completes normally or raises. If `body` completes normally,
+  `cleanup` runs and execution continues after `end`. If `body` raises,
+  `cleanup` runs first, then the same exception keeps propagating
+  outward exactly as if the `try`/`finally` weren't there — reaching
+  the next enclosing `try`/`except` (or `try`/`finally`, whose own
+  `cleanup` runs too), or the ordinary `VM Runtime Error: Unhandled
+  exception` fatal path if nothing is listening anywhere.
+- **A separate construct from `try`/`except`, never combined in one
+  block** — there's no `try...except...finally...end`. Nest to get
+  both, as in the example above: an inner `try`/`finally` for cleanup,
+  wrapped in an outer `try`/`except` to actually handle the exception
+  (matches Delphi, which has the same restriction).
+- If `cleanup` itself raises (a nested `try`, or a bare `raise`), that
+  new exception supersedes the original — the original is discarded,
+  and the new one is what keeps propagating outward.
+- `ExceptMessage` inside `cleanup` reflects the exception currently
+  being unwound *only* when `cleanup` is running because of one. When
+  `body` completed normally, `cleanup` runs like any other code — there
+  is no exception in flight, so `ExceptMessage` there returns whatever
+  an earlier, unrelated `raise` last left behind (or nothing) — not a
+  reliable way to detect "am I cleaning up after an exception?" (Pascal
+  `finally` blocks generally aren't meant to make that distinction.)
+- A labeled statement can't appear anywhere inside a `finally` block's
+  `cleanup` — a compile-time error. (`cleanup` is compiled twice
+  internally, once for each way it can be reached; a label declared
+  inside it would be ambiguous between the two copies.)
 
 ### Compound statements
 
