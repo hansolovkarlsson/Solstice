@@ -2233,6 +2233,78 @@ open) stays there.
       abstract combination, 1 error case) and
       [docs/LANGUAGE.md](LANGUAGE.md#sealed-classes).
 
+**Moderate — needs some new machinery:**
+
+- [x] `const`/`out` parameters — `const name: type` (read-only) and
+      `out name: type` (an output parameter, no read-guarantee on the
+      caller's incoming value) both on ordinary procedures/functions
+      and class methods. **Corrects the original survey blurb's own
+      guess, based on direct code reading**: `out` isn't a design
+      choice about how to implement it - it MUST be by-reference, since
+      communicating a value back to the caller is impossible for a
+      plain by-value local. Both reuse the existing `var`-parameter
+      by-reference machinery (`is_var_param`, `PUSH_LOCAL_REF`/
+      `LOAD_REF`/`STORE_REF`, `NODE_VAR_PARAM_READ`/`_ASSIGN`)
+      completely unmodified - zero new opcodes, zero new `NodeType`s,
+      zero `codegen.c`/`vm.c`/`type_checker.c` changes. `const` adds a
+      compile-time-only write-restriction; `out` adds a compile-time-
+      only "never assigned" warning - neither changes what's emitted at
+      runtime.
+
+      **`const` is SHALLOW, matching real Pascal**: blocks reassigning
+      the parameter itself (`p := x;`, `new(p)`, `inc(p)`) but not
+      writing through it when it's a pointer/class type (`p.field :=
+      x;` on a `const p: TFoo` stays legal - `const` protects the
+      reference, not what it points to). This needed guards at exactly
+      4 `NODE_VAR_PARAM_ASSIGN` construction sites (`statement()`'s
+      procedural-type-reassign and plain-scalar branches, `inc`/`dec`,
+      `new()`'s direct-target branch) while deliberately leaving the
+      pointer-deref-write branch and `new()`'s own `^`-chain branch
+      unguarded - confirmed by reading that neither of those ever
+      builds a `NODE_VAR_PARAM_ASSIGN` targeting the parameter's own
+      slot in the first place. A 5th write vector, forwarding a
+      `const`-flagged local as another call's own `var`/`out` argument,
+      needed a new `callee_is_const` parameter threaded through
+      `parse_var_argument()`'s forwarding branch and all 4 of its call
+      sites - forwarding a `const` local into another call's own
+      `const` parameter stays legal (both read-only either way).
+
+      **Two real bugs found and fixed during design validation, not
+      left latent**: (1) a third, missed caller of
+      `add_local_var_param()` in the forward-declaration-completion
+      replay loop (`parser.c:8123-8156`) - without the fix, `const`/
+      `out` on any `forward`-declared procedure would have silently
+      lost ALL enforcement the moment its body was completed, since
+      that loop rebuilds each parameter's `LocalSymbol` from
+      `proc_table[]`'s stored flags rather than re-parsing the header;
+      confirmed fixed with a dedicated positive test
+      (`test_constout_forward_const_to_const.pas`, exercising a
+      `forward`-declared `const` parameter end to end) plus a smoke
+      test proving the write-guard still fires post-completion. (2) the
+      top-level-procedure parameter loop's `is_var_group` flag had to
+      also be set by `const`/`out` (not tracked as a separate,
+      independent flag) - `is_var_group` is what gates the whole-record
+      rejection, the `add_local_var_param()` vs. plain `add_local()`
+      dispatch, AND what gets stored into `param_is_var[]`; treating
+      `const`/`out` as fully separate would have silently made them
+      by-VALUE (contradicting the whole "`out` must be by-reference"
+      premise) and reopened the whole-record restriction as a
+      const/out-specific hole `var` itself doesn't have.
+
+      Deliberate v1 scope cut: `const`/`out` recognized only on
+      ordinary procedure/function/class-method declarations - not
+      inside a procedural/functional parameter's own inline signature,
+      not in a named procedural type - both threaded through a new
+      `allow_const_out` gate on `parse_proc_signature_tail()`/
+      `parse_proc_param_header()`, rejected with a clear message
+      otherwise. Inherits every existing `var`-parameter restriction
+      for free (addressable-variable arguments only, no whole records/
+      array elements, no `readln` target, no `for`-loop counter). See
+      `examples/test/constout/test_constout_*.pas` (5 positive cases
+      including the shallow-const mutation and the forward-declaration
+      regression test, 6 error cases, 1 warning case) and
+      [docs/LANGUAGE.md](LANGUAGE.md#const-parameters).
+
 ## Known issues (found via AddressSanitizer)
 
 Both surfaced by a proactive ASan/UBSan sweep during the virtual

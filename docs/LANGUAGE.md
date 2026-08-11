@@ -3428,6 +3428,97 @@ but a `var` parameter now works everywhere else a real Pascal one would.
   counter. Each is a clear compile-time error rather than a silent wrong
   answer.
 
+### `const` parameters
+
+```pascal
+type
+    TPoint = class
+        x: integer;
+    end;
+
+procedure describe(const p: integer);
+begin
+    writeln('value: ', p);
+    { p := p + 1;  <- compile error: cannot assign to 'const' parameter 'p' }
+end;
+
+procedure touch(const c: TPoint);
+begin
+    c.x := 77;   { legal - writes through c, not to c itself }
+    { c := nil;  <- compile error: cannot assign to 'const' parameter 'c' }
+end;
+
+var
+    n: integer;
+    pt: TPoint;
+begin
+    n := 5;
+    describe(n);
+
+    new(pt);
+    pt.x := 1;
+    touch(pt);
+    writeln(pt.x);  { 77 }
+    dispose(pt);
+end.
+```
+
+`const name: type` passes a parameter **by reference**, exactly like
+`var` (same underlying mechanism, same restrictions on the argument -
+it must be a variable, and its type must exactly match), but the
+callee is never allowed to write to it: not a direct assignment, not
+`inc`/`dec`, not `new()` on it, and not forwarding it as another call's
+`var`/`out` argument (forwarding it as another call's own `const`
+argument is fine). Each is a clear compile-time error naming the
+parameter.
+
+**Shallow, matching real Pascal**: `const` only protects the parameter
+itself, not what it points to - a `const` pointer/class parameter's own
+*field* can still be written through it (`c.x := 77;` above), only
+reassigning `c` itself (`c := someOtherInstance;`) is rejected.
+
+**Not supported yet**: `const` inside a procedural/functional
+parameter's own inline signature, or inside a named procedural type's
+signature (`type TProc = procedure(const x: integer);`) - both are a
+clear compile-time error. `const` on a whole record, an array element,
+or as a `for`-loop counter share the same restrictions `var` already
+has, for the same reason (see above).
+
+### `out` parameters
+
+```pascal
+procedure makeIt(out y: integer);
+begin
+    y := 99;
+end;
+
+var
+    a: integer;
+begin
+    makeIt(a);
+    writeln(a);  { 99 }
+end.
+```
+
+`out name: type` is passed by reference, exactly like `var` - runtime-
+identical, in fact, with no separate mechanism of its own. The only
+difference is what it documents and one extra compile-time check: an
+`out` parameter tells the reader "the callee is expected to write this,
+not read whatever the caller passed in" - and if the callee's body
+never assigns it before returning, on any path, a warning is printed:
+
+```
+warn.pas:5: Warning: 'out' parameter 'y' is never assigned a value in procedure 'Forgetful'
+```
+
+Same flow-insensitive limitation as every other warning this compiler
+emits (see [Warnings](#warnings)) - "assigned somewhere in the body",
+not "assigned on every path" - and it's only ever a warning, never a
+compile error; compilation still succeeds either way. Shares every
+other restriction `const`/`var` already have (addressable-variable
+arguments only, no whole records/array elements, not inside a
+procedural/functional signature).
+
 ### Forward declarations
 
 ```pascal

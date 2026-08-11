@@ -143,6 +143,24 @@ typedef struct {
                         // local uses). Mutually exclusive with
                         // is_array/is_array_ref/is_static (only a plain
                         // scalar parameter can be a 'var' parameter).
+                        // ALSO set (alongside is_const_param/is_out_param
+                        // below) for a 'const'/'out' parameter - both
+                        // reuse this exact by-reference mechanism.
+    int is_const_param;    // 'const name: type' - see param_is_const in
+                        // common.h's ProcSymbol. Only meaningful when
+                        // is_var_param is also set. Blocks every write-
+                        // guard site from assigning to this parameter
+                        // directly (shallow - writing THROUGH it, e.g.
+                        // a pointer/class parameter's own field, is
+                        // still legal). Mutually exclusive with
+                        // is_out_param.
+    int is_out_param;      // 'out name: type' - see param_is_out in
+                        // common.h's ProcSymbol. Only meaningful when
+                        // is_var_param is also set. No behavioral
+                        // difference from a plain 'var' parameter at
+                        // this level - only consulted by the
+                        // uninitialized-variable warning pass. Mutually
+                        // exclusive with is_const_param.
     int is_proc_param;    // an inline procedural/functional parameter
                         // (see param_is_proc in common.h's ProcSymbol) -
                         // this slot holds a runtime procedure entry
@@ -493,6 +511,20 @@ typedef struct {
                                // the enclosing procedure's
     DataType param_types[MAX_PARAMS];
     int param_is_var[MAX_PARAMS];
+    int param_is_const[MAX_PARAMS]; // 'const' - only meaningful when
+                               // param_is_var is also set (both share
+                               // the same by-reference mechanism);
+                               // mutually exclusive with param_is_out.
+                               // Only ever set when this header is a
+                               // class method's (see the allow_const_out
+                               // parameter on parse_proc_signature_tail()/
+                               // parse_proc_param_header()) - rejected
+                               // as a compile error everywhere else this
+                               // struct is used (a procedural/functional
+                               // parameter's own inline signature, a
+                               // named procedural type).
+    int param_is_out[MAX_PARAMS];  // 'out' - same scope restriction as
+                               // param_is_const above.
     char param_names[MAX_PARAMS][MAX_NAME]; // unused by a functional/
                                // procedural parameter itself (only the
                                // structural signature - count/types/
@@ -1901,19 +1933,26 @@ static int add_local(const char *name, DataType type) {
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
     current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_const_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_out_param = 0; // defensive reset (see comment above LocalSymbol)
     current_locals[current_local_count].is_proc_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
 
-// Registers a general by-reference SCALAR parameter ('var name: type').
-// Just an ordinary local slot (like every other parameter) - it holds an
+// Registers a general by-reference SCALAR parameter ('var name: type',
+// 'const name: type', or 'out name: type' - is_const/is_out select
+// which, both mutually exclusive, plain 'var' when both are 0). Just an
+// ordinary local slot (like every other parameter) - it holds an
 // ENCODED REFERENCE, not the value itself, so every access must go
 // through NODE_VAR_PARAM_READ/ASSIGN instead of the plain
 // NODE_LOCAL_VAR/ASSIGN a by-value scalar parameter would use. See
-// param_is_var's comment in common.h for the full design.
-static int add_local_var_param(const char *name, DataType type, int is_subrange, int subrange_lower, int subrange_upper) {
+// param_is_var/param_is_const/param_is_out's comments in common.h for
+// the full design.
+static int add_local_var_param(const char *name, DataType type, int is_subrange, int subrange_lower, int subrange_upper, int is_const, int is_out) {
     int idx = add_local(name, type);
     current_locals[idx].is_var_param = 1;
+    current_locals[idx].is_const_param = is_const;
+    current_locals[idx].is_out_param = is_out;
     current_locals[idx].is_subrange = is_subrange;
     current_locals[idx].subrange_lower = subrange_lower;
     current_locals[idx].subrange_upper = subrange_upper;
@@ -2016,6 +2055,8 @@ static int add_local_array(const char *name, DataType elem_type, int lower, int 
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
     current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_const_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_out_param = 0; // defensive reset (see comment above LocalSymbol)
     current_locals[current_local_count].is_proc_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
@@ -2053,6 +2094,8 @@ static int add_local_array_rec(const char *name, int record_type_idx, int lower,
     current_locals[current_local_count].is_static = 0;
     current_locals[current_local_count].static_sym_idx = 0;
     current_locals[current_local_count].is_var_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_const_param = 0; // defensive reset (see comment above LocalSymbol)
+    current_locals[current_local_count].is_out_param = 0; // defensive reset (see comment above LocalSymbol)
     current_locals[current_local_count].is_proc_param = 0; // defensive reset (see comment above LocalSymbol)
     return current_local_count++;
 }
@@ -2654,20 +2697,42 @@ static NameGroup parse_name_group(void) {
 // procedural TYPE, e.g. 'type TProc = procedure(x: integer);' - has no
 // name of its own; the type's own name, already consumed before '=',
 // is unrelated to any parameter name here). Scalar-only signature for
-// now (by-value and 'var') - no array/record parameters (parse_scalar_
+// now (by-value, 'var', and - when allow_const_out permits, see below -
+// 'const'/'out') - no array/record parameters (parse_scalar_
 // type() already rejects both with a clear "Unknown type" error,
 // needing no extra guard here), and no subrange types either (there's
 // nowhere to stash per-parameter subrange bounds in the ProcSymbol/
 // LocalSymbol arrays this feature added - a documented, narrow v1 gap,
 // not a silent one).
-static void parse_proc_signature_tail(ProcParamHeader *h) {
+//
+// allow_const_out: 'const'/'out' are only meaningful on a genuine
+// procedure/function/class-method declaration, where a real body gets
+// compiled against them (write-guards, the out-unassigned warning) -
+// not inside a procedural/functional parameter's own inline signature
+// or a named procedural type, which never have a body of their own and
+// would need their own param_is_const[]/param_is_out[] arrays threaded
+// through entirely separate structs for comparatively little value (a
+// deliberate, documented v1 scope cut - see docs/ROADMAP.md's
+// const/out entry). Callers pass 1 only for a class method header.
+static void parse_proc_signature_tail(ProcParamHeader *h, int allow_const_out) {
     h->param_count = 0;
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
         if (token.type != TOKEN_RPAREN) {
             while (1) {
-                int is_var = 0;
+                int is_var = 0, is_const = 0, is_out = 0;
                 if (token.type == TOKEN_VAR) { is_var = 1; match(TOKEN_VAR); }
+                else if (token.type == TOKEN_CONST) {
+                    if (!allow_const_out) {
+                        compile_error(token.line, "'const' parameters aren't supported here yet - only on procedure/function/method declarations (see docs/LANGUAGE.md)");
+                    }
+                    is_var = 1; is_const = 1; match(TOKEN_CONST);
+                } else if (token.type == TOKEN_OUT) {
+                    if (!allow_const_out) {
+                        compile_error(token.line, "'out' parameters aren't supported here yet - only on procedure/function/method declarations (see docs/LANGUAGE.md)");
+                    }
+                    is_var = 1; is_out = 1; match(TOKEN_OUT);
+                }
                 char names[MAX_GROUP_NAMES][MAX_NAME];
                 int name_count = 0;
                 while (1) {
@@ -2693,6 +2758,8 @@ static void parse_proc_signature_tail(ProcParamHeader *h) {
                     }
                     h->param_types[h->param_count] = t;
                     h->param_is_var[h->param_count] = is_var;
+                    h->param_is_const[h->param_count] = is_const;
+                    h->param_is_out[h->param_count] = is_out;
                     strcpy(h->param_names[h->param_count], names[i]);
                     h->param_count++;
                 }
@@ -2718,8 +2785,9 @@ static void parse_proc_signature_tail(ProcParamHeader *h) {
 // the 'function'/'procedure' keyword (e.g. 'function f(n: integer):
 // integer' as ONE formal parameter, unlike a NameGroup which can list
 // several names sharing one type) - see parse_proc_signature_tail()
-// above for everything after the header's own name.
-static ProcParamHeader parse_proc_param_header(void) {
+// above for everything after the header's own name (including
+// allow_const_out's meaning).
+static ProcParamHeader parse_proc_param_header(int allow_const_out) {
     ProcParamHeader h;
     h.is_function = (token.type == TOKEN_FUNCTION);
     match(h.is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
@@ -2728,7 +2796,7 @@ static ProcParamHeader parse_proc_param_header(void) {
     }
     strcpy(h.name, token.text);
     match(TOKEN_IDENTIFIER);
-    parse_proc_signature_tail(&h);
+    parse_proc_signature_tail(&h, allow_const_out);
     return h;
 }
 
@@ -3036,7 +3104,17 @@ static ASTNode *parse_record_argument(int proc_idx, int param_index, ASTNode **o
 // procedural/functional parameter too, which has no proc_table[] entry
 // of its own to look an expected type up from - see
 // parse_indirect_call().
-static ASTNode *parse_var_argument(DataType expected_type, const char *proc_name, int param_index) {
+// callee_is_const: whether the parameter THIS argument is satisfying
+// is itself 'const' (read-only, so forwarding an already-'const' local
+// into it is fine) as opposed to 'var'/'out' (writable, so forwarding
+// a 'const' local into it must be rejected - see the forwarding branch
+// below). Always 0 when called through a procedural/functional
+// parameter or a procedural-type variable, since 'const'/'out' aren't
+// supported inside those signatures (see parse_proc_signature_tail()'s
+// own allow_const_out parameter) - correctly still rejects forwarding
+// a 'const' source there too, since such a target is by construction
+// never const.
+static ASTNode *parse_var_argument(DataType expected_type, const char *proc_name, int param_index, int callee_is_const) {
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Parameter %d of '%s' is a 'var' parameter - expects a variable, not an expression",
                        param_index + 1, proc_name);
@@ -3116,6 +3194,9 @@ static ASTNode *parse_var_argument(DataType expected_type, const char *proc_name
         if (ls->is_var_param) {
             // Forwarding: this slot already holds a valid reference (from
             // this procedure's OWN caller) - pass it through unchanged.
+            if (ls->is_const_param && !callee_is_const) {
+                compile_error(line, "cannot pass 'const' parameter '%s' where a writable ('var'/'out') parameter is expected", name);
+            }
             ASTNode *node = create_node(NODE_LOCAL_VAR);
             node->data.var_idx = local_idx;
             node->op = (TokenType)levels_up;
@@ -3453,7 +3534,7 @@ static ASTNode *parse_call_arguments(int proc_idx) {
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_record[arg_count]) {
                     arg = parse_record_argument(proc_idx, arg_count, &this_tail);
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_var[arg_count]) {
-                    arg = parse_var_argument(proc_table[proc_idx].param_types[arg_count], proc_table[proc_idx].name, arg_count);
+                    arg = parse_var_argument(proc_table[proc_idx].param_types[arg_count], proc_table[proc_idx].name, arg_count, proc_table[proc_idx].param_is_const[arg_count]);
                     this_tail = arg;
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_proc[arg_count]) {
                     arg = parse_proc_argument(proc_idx, arg_count);
@@ -3513,7 +3594,7 @@ static ASTNode *parse_indirect_call(LocalSymbol *ls, int local_idx, int levels_u
             while (1) {
                 ASTNode *arg;
                 if (arg_count < ls->proc_param_param_count && ls->proc_param_param_is_var[arg_count]) {
-                    arg = parse_var_argument(ls->proc_param_param_types[arg_count], ls->name, arg_count);
+                    arg = parse_var_argument(ls->proc_param_param_types[arg_count], ls->name, arg_count, 0); // 0: const/out never valid inside a procedural/functional parameter's own signature (see docs/LANGUAGE.md)
                 } else if (arg_count < ls->proc_param_param_count) {
                     arg = expression();
                     DataType expected = ls->proc_param_param_types[arg_count];
@@ -3595,7 +3676,7 @@ static ASTNode *build_procvar_call(ASTNode *callee, int proc_type_idx, int line,
             while (1) {
                 ASTNode *arg;
                 if (arg_count < sig->param_count && sig->param_is_var[arg_count]) {
-                    arg = parse_var_argument(sig->param_types[arg_count], proc_types[proc_type_idx].name, arg_count);
+                    arg = parse_var_argument(sig->param_types[arg_count], proc_types[proc_type_idx].name, arg_count, 0); // 0: const/out never valid inside a named procedural type's own signature (see docs/LANGUAGE.md)
                 } else if (arg_count < sig->param_count) {
                     arg = expression();
                     DataType expected = sig->param_types[arg_count];
@@ -3666,7 +3747,7 @@ static ASTNode *parse_class_method_call_arguments(int mangled_proc_idx) {
                 int slot = arg_count + 1; // +1 to skip self at slot 0
                 ASTNode *arg;
                 if (arg_count < user_param_count && proc_table[mangled_proc_idx].param_is_var[slot]) {
-                    arg = parse_var_argument(proc_table[mangled_proc_idx].param_types[slot], proc_table[mangled_proc_idx].unmangled_name, slot);
+                    arg = parse_var_argument(proc_table[mangled_proc_idx].param_types[slot], proc_table[mangled_proc_idx].unmangled_name, slot, proc_table[mangled_proc_idx].param_is_const[slot]);
                 } else if (arg_count < user_param_count && proc_table[mangled_proc_idx].param_types[slot] >= TYPE_PROC_BASE) {
                     arg = parse_proc_value(proc_table[mangled_proc_idx].param_types[slot] - TYPE_PROC_BASE, token.line);
                 } else if (arg_count < user_param_count) {
@@ -6437,13 +6518,13 @@ static void parse_class_declaration(const char *class_name, int line) {
             }
             strcpy(h.name, token.text);
             match(TOKEN_IDENTIFIER);
-            parse_proc_signature_tail(&h);
+            parse_proc_signature_tail(&h, 0); // moot - rejected just below if any params were given
             if (h.param_count > 0) {
                 compile_error(method_line, "'%s' is a destructor and can't take parameters", h.name);
             }
             is_destructor_decl = 1;
         } else {
-            h = parse_proc_param_header();
+            h = parse_proc_param_header(1); // class method header - const/out allowed
         }
         h.is_class_method = is_class_method_decl;
         h.is_destructor = is_destructor_decl;
@@ -6924,7 +7005,7 @@ static void parse_type_section(void) {
             strcpy(pd->name, type_name);
             pd->sig.is_function = (token.type == TOKEN_FUNCTION);
             match(pd->sig.is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
-            parse_proc_signature_tail(&pd->sig);
+            parse_proc_signature_tail(&pd->sig, 0); // named procedural type - const/out scope cut, see docs/LANGUAGE.md
             match(TOKEN_SEMI);
             proc_type_count++;
             continue;
@@ -7686,17 +7767,24 @@ static void scan_local_usage(ASTNode *node, char *read_flag, char *assigned_flag
     // their own parse sites, which restrict both to this procedure's own
     // locals for exactly this reason) so they need no such check.
     int levels_up = (node->type == NODE_LOCAL_VAR || node->type == NODE_LOCAL_ASSIGN ||
-                      node->type == NODE_LOCAL_VAR_REF) ? (int)node->op : 0;
+                      node->type == NODE_LOCAL_VAR_REF || node->type == NODE_VAR_PARAM_ASSIGN) ? (int)node->op : 0;
 
     if (node->type == NODE_LOCAL_VAR) {
         if (levels_up == 0) read_flag[node->data.var_idx] = 1;
     } else if (node->type == NODE_LOCAL_ASSIGN || node->type == NODE_LOCAL_FOR ||
-               node->type == NODE_LOCAL_READLN || node->type == NODE_LOCAL_VAR_REF) {
+               node->type == NODE_LOCAL_READLN || node->type == NODE_LOCAL_VAR_REF ||
+               node->type == NODE_VAR_PARAM_ASSIGN) {
         // NODE_LOCAL_VAR_REF (passing this local by reference to another
         // procedure as a 'var' argument) is conservatively treated as an
         // assignment too - the callee might set it through that
         // reference, and this pass would rather miss a real bug than
         // wrongly warn about a value a callee legitimately provides.
+        // NODE_VAR_PARAM_ASSIGN (assigning to THIS procedure's own 'var'/
+        // 'const'/'out' parameter, e.g. an 'out' parameter's own body
+        // writing it) only matters here for is_out_param slots - see
+        // check_uninitialized_locals()'s own new loop below; harmless to
+        // set assigned_flag for a plain 'var' slot too, since that loop
+        // never reads it there.
         if (levels_up == 0) assigned_flag[node->data.var_idx] = 1;
     }
 
@@ -7731,6 +7819,23 @@ static void check_uninitialized_locals(int proc_idx, ASTNode *body, int decl_lin
         fprintf(stderr, "%s:%d: Warning: function '%s' never assigns a value to its own name - it will always return an undefined value\n",
                 current_filename, decl_line, proc_table[proc_idx].name);
     }
+
+    // 'out' parameters: the one case where a parameter itself IS checked
+    // by this pass (every other parameter kind is always skipped above,
+    // by construction, since the loop starts at param_slot_count) - an
+    // 'out' parameter promises the caller a value back, so never
+    // assigning it anywhere in the body is worth flagging, mirroring the
+    // function-return-value check just above. Deliberately does NOT also
+    // check read_flag here (unlike the loop above) - reading an 'out'
+    // parameter before assigning it is legal, just unusual, not worth a
+    // dedicated warning.
+    for (int i = 0; i < param_slot_count; i++) {
+        if (current_locals[i].is_out_param && !assigned_flag[i]) {
+            fprintf(stderr, "%s:%d: Warning: 'out' parameter '%s' is never assigned a value in %s '%s'\n",
+                    current_filename, decl_line, current_locals[i].name,
+                    is_function ? "function" : "procedure", proc_table[proc_idx].name);
+        }
+    }
 }
 
 // Registers one SCALAR parameter (self, or one of a method's own
@@ -7741,9 +7846,9 @@ static void check_uninitialized_locals(int proc_idx, ASTNode *body, int decl_lin
 // when the header itself is parsed - see ProcParamHeader), so this
 // never needs the array/record/procedural-parameter branches
 // subroutine_declaration()'s own parameter loop has to handle.
-static void register_class_method_param(int proc_idx, int slot, const char *name, DataType type, int is_var) {
+static void register_class_method_param(int proc_idx, int slot, const char *name, DataType type, int is_var, int is_const, int is_out) {
     if (is_var) {
-        add_local_var_param(name, type, 0, 0, 0);
+        add_local_var_param(name, type, 0, 0, 0, is_const, is_out);
     } else {
         add_local(name, type);
     }
@@ -7760,6 +7865,8 @@ static void register_class_method_param(int proc_idx, int slot, const char *name
     proc_table[proc_idx].param_record_type_idx[slot] = 0;
     proc_table[proc_idx].param_record_field_count[slot] = 0;
     proc_table[proc_idx].param_is_var[slot] = is_var;
+    proc_table[proc_idx].param_is_const[slot] = is_const;
+    proc_table[proc_idx].param_is_out[slot] = is_out;
     proc_table[proc_idx].param_is_proc[slot] = 0;
     proc_table[proc_idx].param_proc_is_function[slot] = 0;
     proc_table[proc_idx].param_proc_return_type[slot] = TYPE_UNKNOWN;
@@ -7815,6 +7922,8 @@ static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_
     proc_table[proc_idx].param_types[0] = (DataType)(TYPE_POINTER_BASE + class_ptr_idx);
     strcpy(proc_table[proc_idx].param_names[0], "self");
     proc_table[proc_idx].param_is_var[0] = 0;
+    proc_table[proc_idx].param_is_const[0] = 0;
+    proc_table[proc_idx].param_is_out[0] = 0;
     proc_table[proc_idx].param_is_array_ref[0] = 0;
     proc_table[proc_idx].param_is_2d[0] = 0;
     proc_table[proc_idx].param_is_nd[0] = 0;
@@ -7841,6 +7950,8 @@ static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_
         proc_table[proc_idx].param_types[slot] = h->param_types[i];
         strcpy(proc_table[proc_idx].param_names[slot], h->param_names[i]);
         proc_table[proc_idx].param_is_var[slot] = h->param_is_var[i];
+        proc_table[proc_idx].param_is_const[slot] = h->param_is_const[i];
+        proc_table[proc_idx].param_is_out[slot] = h->param_is_out[i];
         proc_table[proc_idx].param_is_subrange[slot] = 0;
         proc_table[proc_idx].param_subrange_lower[slot] = 0;
         proc_table[proc_idx].param_subrange_upper[slot] = 0;
@@ -7968,13 +8079,13 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
         // parse_call_arguments(), which has no self-offset logic of its
         // own to match).
         for (int i = 0; i < h->param_count; i++) {
-            register_class_method_param(proc_idx, i, h->param_names[i], h->param_types[i], h->param_is_var[i]);
+            register_class_method_param(proc_idx, i, h->param_names[i], h->param_types[i], h->param_is_var[i], h->param_is_const[i], h->param_is_out[i]);
         }
         proc_table[proc_idx].param_count = h->param_count;
     } else {
-        register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0);
+        register_class_method_param(proc_idx, 0, "self", (DataType)(TYPE_POINTER_BASE + class_ptr_idx), 0, 0, 0);
         for (int i = 0; i < h->param_count; i++) {
-            register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i]);
+            register_class_method_param(proc_idx, i + 1, h->param_names[i], h->param_types[i], h->param_is_var[i], h->param_is_const[i], h->param_is_out[i]);
         }
         proc_table[proc_idx].param_count = h->param_count + 1;
     }
@@ -8146,7 +8257,8 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
             } else if (proc_table[proc_idx].param_is_var[i]) {
                 add_local_var_param(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i],
                                      proc_table[proc_idx].param_is_subrange[i], proc_table[proc_idx].param_subrange_lower[i],
-                                     proc_table[proc_idx].param_subrange_upper[i]);
+                                     proc_table[proc_idx].param_subrange_upper[i],
+                                     proc_table[proc_idx].param_is_const[i], proc_table[proc_idx].param_is_out[i]);
             } else {
                 int idx = add_local(proc_table[proc_idx].param_names[i], proc_table[proc_idx].param_types[i]);
                 current_locals[idx].is_subrange = proc_table[proc_idx].param_is_subrange[i];
@@ -8178,6 +8290,8 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
         int param_record_type_idx[MAX_PARAMS];
         int param_record_field_count[MAX_PARAMS];
         int param_is_var[MAX_PARAMS];
+        int param_is_const[MAX_PARAMS];
+        int param_is_out[MAX_PARAMS];
         int param_is_proc[MAX_PARAMS];
         int param_proc_is_function[MAX_PARAMS];
         DataType param_proc_return_type[MAX_PARAMS];
@@ -8200,7 +8314,7 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         if (param_count >= MAX_PARAMS) {
                             compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
                         }
-                        ProcParamHeader h = parse_proc_param_header();
+                        ProcParamHeader h = parse_proc_param_header(0); // inline functional/procedural parameter - const/out scope cut, see docs/LANGUAGE.md
                         add_local_proc_param(h.name, h.is_function, h.return_type, h.param_count, h.param_types, h.param_is_var);
                         strcpy(param_names[param_count], h.name);
                         param_types[param_count] = TYPE_INTEGER; // unused - see is_proc_param's comment
@@ -8213,6 +8327,8 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         param_record_type_idx[param_count] = 0;
                         param_record_field_count[param_count] = 0;
                         param_is_var[param_count] = 0;
+                        param_is_const[param_count] = 0;
+                        param_is_out[param_count] = 0;
                         param_is_proc[param_count] = 1;
                         param_proc_is_function[param_count] = h.is_function;
                         param_proc_return_type[param_count] = h.return_type;
@@ -8226,16 +8342,33 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         break;
                     }
 
-                    // 'var' is a per-group modifier here (inside the
-                    // parameter list), unlike the 'var' KEYWORD that
-                    // introduces the whole local-variable SECTION below -
-                    // same token, different grammar position, so this
-                    // check only fires here, once per semicolon-separated
-                    // parameter group.
-                    int is_var_group = 0;
+                    // 'var'/'const'/'out' are per-group modifiers here
+                    // (inside the parameter list), unlike the 'var'/
+                    // 'const' KEYWORDS that introduce a whole
+                    // local-variable/named-constant SECTION below - same
+                    // tokens, different grammar position, so this check
+                    // only fires here, once per semicolon-separated
+                    // parameter group. Mutually exclusive with each
+                    // other. is_var_group means "by reference at all" -
+                    // 'const'/'out' both set it too (they share the
+                    // exact same by-reference mechanism as plain 'var'),
+                    // not just their own is_const_group/is_out_group -
+                    // this is what makes the whole-record rejection just
+                    // below, and the add_local_var_param() dispatch a
+                    // few lines down, already cover 'const'/'out' for
+                    // free.
+                    int is_var_group = 0, is_const_group = 0, is_out_group = 0;
                     if (token.type == TOKEN_VAR) {
                         is_var_group = 1;
                         match(TOKEN_VAR);
+                    } else if (token.type == TOKEN_CONST) {
+                        is_var_group = 1;
+                        is_const_group = 1;
+                        match(TOKEN_CONST);
+                    } else if (token.type == TOKEN_OUT) {
+                        is_var_group = 1;
+                        is_out_group = 1;
+                        match(TOKEN_OUT);
                     }
                     NameGroup g = parse_name_group();
                     for (int i = 0; i < g.count; i++) {
@@ -8243,7 +8376,7 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                             compile_error(token.line, "Too many parameters (limit is %d)", MAX_PARAMS);
                         }
                         if (is_var_group && g.is_record) {
-                            compile_error(token.line, "'var' doesn't support whole records yet - only a scalar 'var' parameter is supported (see docs/LANGUAGE.md)");
+                            compile_error(token.line, "'var'/'const'/'out' don't support whole records yet - only a scalar by-reference parameter is supported (see docs/LANGUAGE.md)");
                         }
                         if (g.is_array_of_record) {
                             compile_error(token.line, "Array-of-record parameters aren't supported yet - copy into/out of a local array of records instead (see docs/LANGUAGE.md)");
@@ -8259,7 +8392,7 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         } else if (g.is_record) {
                             add_local_record(g.names[i], g.record_type_idx);
                         } else if (is_var_group) {
-                            add_local_var_param(g.names[i], g.type, g.is_subrange, g.subrange_lower, g.subrange_upper);
+                            add_local_var_param(g.names[i], g.type, g.is_subrange, g.subrange_lower, g.subrange_upper, is_const_group, is_out_group);
                         } else {
                             int idx = add_local(g.names[i], g.type);
                             current_locals[idx].is_subrange = g.is_subrange;
@@ -8287,6 +8420,8 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
                         param_record_type_idx[param_count] = g.record_type_idx;
                         param_record_field_count[param_count] = g.is_record ? record_type_leaf_count(g.record_type_idx) : 0;
                         param_is_var[param_count] = is_var_group;
+                        param_is_const[param_count] = is_const_group;
+                        param_is_out[param_count] = is_out_group;
                         param_is_proc[param_count] = 0;
                         param_proc_is_function[param_count] = 0;
                         param_proc_param_count[param_count] = 0;
@@ -8332,6 +8467,8 @@ static void subroutine_declaration(int is_function_decl, int header_only, int is
             proc_table[proc_idx].param_record_type_idx[i] = param_record_type_idx[i];
             proc_table[proc_idx].param_record_field_count[i] = param_record_field_count[i];
             proc_table[proc_idx].param_is_var[i] = param_is_var[i];
+            proc_table[proc_idx].param_is_const[i] = param_is_const[i];
+            proc_table[proc_idx].param_is_out[i] = param_is_out[i];
             proc_table[proc_idx].param_is_proc[i] = param_is_proc[i];
             proc_table[proc_idx].param_proc_is_function[i] = param_proc_is_function[i];
             proc_table[proc_idx].param_proc_return_type[i] = param_proc_return_type[i];
@@ -9241,6 +9378,9 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     }
     if (is_local && local_at(local_idx, levels_up)->is_var_param) {
         is_var_param = 1;
+        if (local_at(local_idx, levels_up)->is_const_param) {
+            compile_error(line, "'%s' cannot be used on 'const' parameter '%s'", name_str, name);
+        }
     }
 
     ASTNode *delta;
@@ -9561,6 +9701,10 @@ static ASTNode *parse_new_statement(void) {
         ctor_call->right = parse_class_method_call_arguments(ctor_mangled_idx);
     }
     match(TOKEN_RPAREN);
+
+    if (is_var_param && local_at(local_idx, levels_up)->is_const_param) {
+        compile_error(line, "cannot 'new' a 'const' parameter '%s'", name);
+    }
 
     ASTNode *value_node = create_node(NODE_HEAP_ALLOC);
     value_node->expression_type = target_type;
@@ -10843,6 +10987,9 @@ static ASTNode *statement(void) {
                     // matching global case in parse_global_assignment()
                     // for why this branches on token.type == TOKEN_ASSIGN.
                     if (token.type == TOKEN_ASSIGN) {
+                        if (ls->is_const_param) {
+                            compile_error(token.line, "cannot assign to 'const' parameter '%s'", ls->name);
+                        }
                         ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);
                         stmt->data.var_idx = local_idx;
                         stmt->op = (TokenType)levels_up;
@@ -10870,6 +11017,9 @@ static ASTNode *statement(void) {
                     if (step.is_method_call) return step.call_node;
                     if (step.is_property_setter) return build_property_setter_call(base, step, line);
                     return build_heap_deref_write_statement(base, step);
+                }
+                if (ls->is_const_param) {
+                    compile_error(token.line, "cannot assign to 'const' parameter '%s'", ls->name);
                 }
                 match(TOKEN_ASSIGN);
                 ASTNode *stmt = create_node(NODE_VAR_PARAM_ASSIGN);

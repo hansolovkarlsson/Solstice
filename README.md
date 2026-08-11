@@ -430,7 +430,13 @@ class's destructor, dynamically dispatched, before actually freeing the
 instance (see [docs/LANGUAGE.md](docs/LANGUAGE.md#destructors)). Also
 working: sealed classes (`class sealed ... end;`) — marks a class
 unable to be subclassed, a compile-time-only check with no runtime cost
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#sealed-classes)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#sealed-classes)). Also
+working: `const`/`out` parameters — `const` is a read-only by-reference
+parameter (shallow: writing through a `const` pointer/class parameter's
+own field is still legal, only reassigning the parameter itself is
+rejected), `out` is runtime-identical to `var` with an added "never
+assigned" warning (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#const-parameters)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

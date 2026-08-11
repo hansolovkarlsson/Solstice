@@ -216,6 +216,14 @@ typedef enum {
                       // subclassed (see PointerTypeDef.is_sealed in
                       // parser.c). A class-header modifier, unlike
                       // TOKEN_ABSTRACT which is a method-header modifier.
+    TOKEN_OUT,        // 'out name: type' - an alternative to 'var' on a
+                      // procedure/function/method parameter, sharing the
+                      // exact same by-reference mechanism (see
+                      // ProcSymbol.param_is_out below) - documents that
+                      // the callee is expected to write it, not read the
+                      // caller's incoming value. 'const' reuses the
+                      // ALREADY-existing TOKEN_CONST (const declarations)
+                      // rather than needing a token of its own.
     TOKEN_EOF
 } TokenType;
 
@@ -2142,6 +2150,38 @@ typedef struct {
                                     // synchronized stack value or
                                     // widening the calling convention
                                     // itself.
+    int param_is_const[MAX_PARAMS]; // 1 if this parameter is declared
+                                    // 'const name: type' - reuses
+                                    // param_is_var's exact by-reference
+                                    // mechanism (param_is_var[i] is ALSO
+                                    // 1 whenever this is), but the
+                                    // callee is never allowed to write to
+                                    // it: no direct assignment, no
+                                    // inc/dec, no new() on it directly.
+                                    // Shallow, matching real Pascal -
+                                    // writing THROUGH a const pointer/
+                                    // class parameter (p^.field := x;)
+                                    // is still legal; only reassigning
+                                    // the parameter itself is rejected.
+                                    // Mutually exclusive with
+                                    // param_is_out. See parser.c's
+                                    // write-guard sites for the full
+                                    // enforcement.
+    int param_is_out[MAX_PARAMS]; // 1 if this parameter is declared
+                                    // 'out name: type' - runtime-
+                                    // identical to a plain 'var'
+                                    // parameter (param_is_var[i] is ALSO
+                                    // 1 whenever this is; no separate
+                                    // opcode or AST node exists for
+                                    // 'out') - the only difference is a
+                                    // compile-time-only analysis: the
+                                    // uninitialized-variable warning pass
+                                    // additionally flags this parameter
+                                    // if the callee's body never assigns
+                                    // it before returning (see
+                                    // check_uninitialized_locals() in
+                                    // parser.c). Mutually exclusive with
+                                    // param_is_const.
     int param_is_proc[MAX_PARAMS]; // 1 if this parameter is itself a
                                     // procedure/function header, written
                                     // inline ('function f(n: integer):

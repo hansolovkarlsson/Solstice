@@ -110,9 +110,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 - [ ] Class references/metaclasses (`TClass = class of TObject;`,
       virtual constructors via `AClass.Create`) — a new "class-typed
       value" distinct from an instance.
-- [ ] `const`/`out` parameters — `const` sits next to the existing `var`
-      by-reference mechanism (`PUSH_LOCAL_REF`/`LOAD_REF`) without a
-      store path; `out` is nearly free once `var` already works.
 - [ ] Default/optional parameter values — pure call-site sugar, missing
       trailing arguments get the default expression spliced in.
 - [ ] `with a, b do` (multiple targets in one `with`) — already a
