@@ -783,6 +783,23 @@ typedef struct {
                                   // (type_checker.c's assignment/
                                   // parameter-passing compatibility
                                   // check - see docs/LANGUAGE.md#classes).
+    int is_sealed;                // only meaningful if is_class - 1 if
+                                  // this class was declared 'class sealed
+                                  // ... end;' (see parse_class_declaration()).
+                                  // Blocks any LATER 'class(ThisClass)'
+                                  // from resolving - checked once, at the
+                                  // single place a parent class name is
+                                  // resolved. Assigned UNCONDITIONALLY
+                                  // every time a class is declared (never
+                                  // just 'if sealed'), matching every
+                                  // other is_class-only field here -
+                                  // pointer_types[] contents persist
+                                  // across compiles in the same process
+                                  // (only pointer_type_count resets), so a
+                                  // skipped else-branch would leak a
+                                  // stale sealed flag from an earlier
+                                  // compile onto an unrelated class reusing
+                                  // the same table slot.
 } PointerTypeDef;
 static PointerTypeDef pointer_types[MAX_POINTER_DECLS];
 static int pointer_type_count = 0;
@@ -6166,6 +6183,12 @@ static int proc_param_headers_match(ProcParamHeader *a, ProcParamHeader *b) {
 static void parse_class_declaration(const char *class_name, int line) {
     match(TOKEN_CLASS);
 
+    int class_is_sealed = 0;
+    if (token.type == TOKEN_SEALED) {
+        match(TOKEN_SEALED);
+        class_is_sealed = 1;
+    }
+
     int parent_ptr_idx = -1;
     if (token.type == TOKEN_LPAREN) {
         match(TOKEN_LPAREN);
@@ -6175,6 +6198,9 @@ static void parse_class_declaration(const char *class_name, int line) {
         parent_ptr_idx = find_pointer_type(token.text);
         if (parent_ptr_idx == -1 || !pointer_types[parent_ptr_idx].is_class) {
             compile_error(token.line, "'%s' is not a declared class", token.text);
+        }
+        if (pointer_types[parent_ptr_idx].is_sealed) {
+            compile_error(token.line, "Cannot inherit from sealed class '%s'", token.text);
         }
         match(TOKEN_IDENTIFIER);
         match(TOKEN_RPAREN);
@@ -6220,6 +6246,7 @@ static void parse_class_declaration(const char *class_name, int line) {
     pt->target_record_type_idx = rt_idx;
     pt->is_pending = 0;
     pt->parent_class_ptr_idx = parent_ptr_idx;
+    pt->is_sealed = class_is_sealed;
     pt->method_count = 0;
 
     if (parent != NULL) {

@@ -230,6 +230,7 @@ void next_token(void) {
         else if (strcasecmp(token.text, "seek") == 0) token.type = TOKEN_SEEK;
         else if (strcasecmp(token.text, "filesize") == 0) token.type = TOKEN_FILESIZE;
         else if (strcasecmp(token.text, "abstract") == 0) token.type = TOKEN_ABSTRACT;
+        else if (strcasecmp(token.text, "sealed") == 0) token.type = TOKEN_SEALED;
         else token.type = TOKEN_IDENTIFIER;
         return;
     }

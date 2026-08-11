@@ -2580,6 +2580,45 @@ live relationship resolved later:
   class's own field/method lists are already fully flattened by the
   time a further subclass inherits from it.
 
+### Sealed classes
+
+```pascal
+type
+    TShape = class
+        name: integer;
+    end;
+    TCircle = class sealed(TShape)
+        radius: real;
+    end;
+    { TSquare = class(TCircle) end;  <- compile error: TCircle is sealed }
+var
+    c: TCircle;
+begin
+    new(c);
+    c.radius := 2.0;
+    dispose(c);
+end.
+```
+
+`class sealed ... end;` (or `class sealed(TParent) ... end;`, combining
+sealing with inheriting from a non-sealed parent) marks a class as
+unable to be subclassed. Any later `class(TCircle) ... end;` is a
+compile-time error naming the sealed class:
+
+```
+Cannot inherit from sealed class 'TCircle'
+```
+
+The `sealed` modifier itself is never inherited — it's checked once,
+only at the point a class is used as *someone else's* parent, so a
+sealed class's own ancestor (if any) is unaffected, and a sealed class
+can still freely use every other class feature (fields, methods,
+properties, class members, abstract methods, a destructor) exactly as
+an unsealed class would. Declaring an abstract method inside a sealed
+class is legal but self-defeating (the class can then be neither
+subclassed nor, being abstract, instantiated) — not specially rejected,
+the same way Delphi itself allows the combination.
+
 ### Virtual dispatch
 
 ```pascal

@@ -426,7 +426,10 @@ any unresolved abstract method is a compile error (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#abstract-methods)). Also working:
 virtual destructors (`destructor Destroy;`) — `dispose(c)` now calls a
 class's destructor, dynamically dispatched, before actually freeing the
-instance (see [docs/LANGUAGE.md](docs/LANGUAGE.md#destructors)).
+instance (see [docs/LANGUAGE.md](docs/LANGUAGE.md#destructors)). Also
+working: sealed classes (`class sealed ... end;`) — marks a class
+unable to be subclassed, a compile-time-only check with no runtime cost
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#sealed-classes)).
 
 Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
 records, and a whole record or an array element as a `var` argument.

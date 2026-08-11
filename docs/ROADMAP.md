@@ -1715,6 +1715,15 @@ anyway, so this is where they land instead.
       [docs/LANGUAGE.md](LANGUAGE.md#built-in-functions-and-procedures).
 - [ ] User-level error/warning built-ins, distinct from the VM's internal
       recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
+- [ ] `sizeOf` — a Turbo Pascal/Delphi built-in, not ISO Pascal. Complicated
+      by this VM's memory model: every scalar (`integer`, `real`, `boolean`,
+      `char`, `string`) is a uniform 4-byte slot in `vm_vars[]`/
+      `vm_stack[]` (strings/chars are `string_pool[]` indices, not inline
+      bytes - see the memory-model section in `CLAUDE.md`), so a literal
+      byte-size answer wouldn't reflect anything real the way it does in
+      Delphi. Would need a defined convention first (e.g. "slots occupied"
+      rather than bytes) before this means anything meaningful for
+      records/arrays/classes; no design yet.
 - [x] `try`/`except`/`raise` — `raise <message>;` (any string/char
       expression) unwinds straight to the innermost active `try`'s
       `except` block, however many procedure calls deep it's nested;
@@ -2223,8 +2232,42 @@ tag, the vtable) rather than by Delphi-completeness — these are
 unscoped ideas, not committed work, and none has a design/plan yet.
 
 **Good fit — reuse existing machinery:**
-- [ ] Sealed classes (`class sealed`) — a single flag check at class
-      declaration time.
+- [x] Sealed classes — `class sealed ... end;` / `class
+      sealed(TParent) ... end;` marks a class unable to be subclassed;
+      `class(TSealedOne) ... end;` later is a `compile_error()` naming
+      the sealed class. Confirmed by design validation to be the
+      cheapest OOP feature shipped so far: one new token
+      (`TOKEN_SEALED`, added exactly like `TOKEN_ABSTRACT` was), one new
+      `PointerTypeDef.is_sealed` field, one parse-time check at the
+      single place a `class(ParentName)` ancestor ever resolves
+      (`parse_class_declaration()`) - zero new `NodeType`/`Opcode`, zero
+      `codegen.c`/`type_checker.c`/`vm.c` changes.
+
+      **A stale-slot leak confirmed real by an existing precedent in
+      this same file, not a hypothetical**: `pointer_types[]` is a
+      static array reused across compiles in the same process (only
+      `pointer_type_count` resets to 0 between compiles - see
+      "Global state, not parameters" in
+      [ARCHITECTURE.md](ARCHITECTURE.md)); the plain-pointer-type path
+      (`type PFoo = ^Target;`) already carries an explicit comment
+      documenting this exact hazard and resets `method_count`
+      accordingly. `is_sealed` follows the same discipline: assigned
+      unconditionally every time a class is declared
+      (`pt->is_sealed = class_is_sealed;`, never an `if`-only
+      assignment with no else), so a sealed flag from an earlier
+      compile's class can never leak onto an unrelated class reusing
+      the same `pointer_types[]` slot in a later same-process compile.
+
+      Scope: sealing isn't inherited - it's checked once, only at the
+      point a class is used as someone else's parent, so a sealed
+      class's own ancestor (if any) is unaffected. A class can be both
+      sealed and (via an abstract method) abstract at once - legal but
+      self-defeating (neither subclassable nor instantiable) - not
+      specially rejected, matching Delphi's own behavior for the same
+      combination. See `examples/test/sealed/test_sealed_*.pas` (3
+      positive cases including sealed-with-parent and the sealed+
+      abstract combination, 1 error case) and
+      [docs/LANGUAGE.md](LANGUAGE.md#sealed-classes).
 
 **Moderate — needs some new machinery:**
 - [ ] `TObject` implicit root class — the virtual-destructor half of

@@ -211,6 +211,11 @@ typedef enum {
                       // parser.c). Never paired with 'class' (a
                       // destructor is inherently instance-lifecycle) or
                       // 'abstract'.
+    TOKEN_SEALED,     // 'class sealed ... end;' / 'class sealed(TParent)
+                      // ... end;' - marks a class as unable to be
+                      // subclassed (see PointerTypeDef.is_sealed in
+                      // parser.c). A class-header modifier, unlike
+                      // TOKEN_ABSTRACT which is a method-header modifier.
     TOKEN_EOF
 } TokenType;
 
