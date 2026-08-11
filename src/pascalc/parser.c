@@ -579,6 +579,21 @@ typedef struct {
                                // again, deferring further). See
                                // class_first_unresolved_abstract_method()
                                // for how this blocks 'new()'.
+    int is_destructor;        // unused by a functional/procedural
+                               // parameter; 1 if declared with the
+                               // 'destructor' keyword instead of
+                               // 'procedure'/'function' (always implies
+                               // is_function = 0, no params). At most one
+                               // per class hierarchy - see
+                               // parse_class_declaration()'s own
+                               // uniqueness/kind-mismatch checks.
+                               // Consulted ONLY by dispose() (see
+                               // class_find_destructor()) and those two
+                               // structural checks - an ordinary direct
+                               // call ('c.Destroy;') and 'inherited' both
+                               // treat a destructor as a completely
+                               // ordinary instance method, needing no
+                               // special-casing anywhere else.
 } ProcParamHeader;
 
 #define MAX_CLASS_PROPERTIES 16 // no vm.c coupling needed (unlike
@@ -2705,12 +2720,12 @@ static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
 static ASTNode *parse_call_arguments(int proc_idx);
-static void subroutine_declaration(int is_function_decl, int header_only);
+static void subroutine_declaration(int is_function_decl, int header_only, int is_destructor_decl);
 static ASTNode *parse_case_label_value(void);
 static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int declaring_class_ptr_idx);
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
 static void parse_class_declaration(const char *class_name, int line);
-static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line);
+static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line, int is_destructor_decl);
 static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_idx);
 
 // Parses 'idx1, idx2, ..., idxN]' (already past the opening '[') for an
@@ -3733,6 +3748,22 @@ static const char *class_first_unresolved_abstract_method(int class_ptr_idx) {
         if (pt->methods[i].is_abstract) return pt->methods[i].name;
     }
     return NULL;
+}
+
+// class_ptr_idx's destructor slot (stable vtable index, following
+// inheritance - a class that doesn't declare/override one still finds
+// an ancestor's, via the same struct-copy inheritance mechanism), or -1
+// if no destructor exists anywhere in the hierarchy. Used by
+// parse_dispose_statement() to build the virtual call dispose() makes
+// before actually freeing the block - see there for why this returns
+// the SLOT index (NODE_VIRTUAL_CALL.data.num_value), not a proc_table[]
+// index.
+static int class_find_destructor(int class_ptr_idx) {
+    PointerTypeDef *pt = &pointer_types[class_ptr_idx];
+    for (int i = 0; i < pt->method_count; i++) {
+        if (pt->methods[i].is_destructor) return i;
+    }
+    return -1;
 }
 
 // Whether 'name' is a field or method of class_ptr_idx - the check that
@@ -6332,7 +6363,7 @@ static void parse_class_declaration(const char *class_name, int line) {
     // it past inherited_method_count).
     int already_overridden[MAX_CLASS_METHODS] = {0};
 
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
         if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
         if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
         int is_class_method_decl = 0;
@@ -6357,8 +6388,38 @@ static void parse_class_declaration(const char *class_name, int line) {
             }
         }
         int method_line = token.line;
-        ProcParamHeader h = parse_proc_param_header();
+        ProcParamHeader h;
+        int is_destructor_decl = 0;
+        if (token.type == TOKEN_DESTRUCTOR) {
+            // 'destructor Name;' - an alternative to procedure/function,
+            // parsed by hand since parse_proc_param_header() hard-codes
+            // matching TOKEN_FUNCTION/TOKEN_PROCEDURE as its own literal
+            // first token. Reuses parse_proc_signature_tail() directly -
+            // already separate from parse_proc_param_header(), with no
+            // leading-keyword assumption of its own - for the optional
+            // '(params)' (rejected below if any are given; a trailing
+            // ': ReturnType' is simply never looked for since is_function
+            // stays 0, so 'destructor Foo: integer;' falls through to a
+            // generic token-mismatch error at the match(TOKEN_SEMI)
+            // below rather than a dedicated message - an accepted, minor
+            // rough edge, not gold-plated).
+            match(TOKEN_DESTRUCTOR);
+            h.is_function = 0;
+            if (token.type != TOKEN_IDENTIFIER) {
+                compile_error(token.line, "Expected a destructor name after 'destructor'");
+            }
+            strcpy(h.name, token.text);
+            match(TOKEN_IDENTIFIER);
+            parse_proc_signature_tail(&h);
+            if (h.param_count > 0) {
+                compile_error(method_line, "'%s' is a destructor and can't take parameters", h.name);
+            }
+            is_destructor_decl = 1;
+        } else {
+            h = parse_proc_param_header();
+        }
         h.is_class_method = is_class_method_decl;
+        h.is_destructor = is_destructor_decl;
         match(TOKEN_SEMI);
         h.is_abstract = 0;
         if (token.type == TOKEN_ABSTRACT) {
@@ -6369,6 +6430,9 @@ static void parse_class_declaration(const char *class_name, int line) {
             // abstract;' pair.
             if (h.is_class_method) {
                 compile_error(token.line, "'%s' can't be abstract - a class method is never overridden, so it would never have an implementation", h.name);
+            }
+            if (h.is_destructor) {
+                compile_error(token.line, "'%s' is a destructor and can't be abstract", h.name);
             }
             match(TOKEN_ABSTRACT);
             match(TOKEN_SEMI);
@@ -6390,6 +6454,32 @@ static void parse_class_declaration(const char *class_name, int line) {
         int existing_idx = -1;
         for (int i = 0; i < pt->method_count; i++) {
             if (strcmp(pt->methods[i].name, h.name) == 0) { existing_idx = i; break; }
+        }
+        // A class hierarchy has at most ONE destructor, found by flag
+        // (is_destructor) not by name - proc_param_headers_match() below
+        // deliberately doesn't compare is_destructor (same reasoning as
+        // is_abstract/is_class_method), so without this check a subclass
+        // could silently "override" an inherited destructor with a
+        // plain procedure of the same signature, replacing the entry
+        // with one that has is_destructor = 0 - dispose() would then
+        // silently stop finding it in that subclass, with no error at
+        // all. Checked BEFORE the override/duplicate chain below, since
+        // that chain has no way to express "same name, different kind."
+        if (existing_idx == -1) {
+            if (h.is_destructor) {
+                for (int i = 0; i < pt->method_count; i++) {
+                    if (pt->methods[i].is_destructor) {
+                        compile_error(method_line, "class '%s' already has a destructor '%s' (declared in '%s') - a class can have at most one; override it instead of declaring a new one",
+                                       class_name, pt->methods[i].name, pointer_types[pt->methods[i].declaring_class_ptr_idx].name);
+                    }
+                }
+            }
+        } else if (h.is_destructor != pt->methods[existing_idx].is_destructor) {
+            if (h.is_destructor) {
+                compile_error(method_line, "'%s' is inherited as an ordinary method - it can't be redeclared as a destructor", h.name);
+            } else {
+                compile_error(method_line, "'%s' is the class's destructor and must be redeclared with 'destructor', not '%s'", h.name, h.is_function ? "function" : "procedure");
+            }
         }
         if (existing_idx == -1) {
             if (pt->method_count >= MAX_CLASS_METHODS) {
@@ -7257,8 +7347,8 @@ static void load_unit(const char *name, int use_line) {
     if (token.type == TOKEN_CONST) parse_const_section();
     if (token.type == TOKEN_TYPE) parse_type_section();
     if (token.type == TOKEN_VAR) parse_var_section();
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
-        subroutine_declaration(token.type == TOKEN_FUNCTION, 1); // header_only
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 1, token.type == TOKEN_DESTRUCTOR); // header_only
     }
 
     match(TOKEN_IMPLEMENTATION);
@@ -7266,8 +7356,8 @@ static void load_unit(const char *name, int use_line) {
     if (token.type == TOKEN_CONST) parse_const_section();
     if (token.type == TOKEN_TYPE) parse_type_section();
     if (token.type == TOKEN_VAR) parse_var_section();
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
-        subroutine_declaration(token.type == TOKEN_FUNCTION, 0);
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 0, token.type == TOKEN_DESTRUCTOR);
     }
 
     match(TOKEN_END);
@@ -7449,8 +7539,8 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     int main_label_count = declared_label_count;
     memcpy(main_labels, declared_labels, sizeof(DeclaredLabel) * declared_label_count);
 
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
-        subroutine_declaration(token.type == TOKEN_FUNCTION, 0);
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 0, token.type == TOKEN_DESTRUCTOR);
     }
 
     for (int i = 0; i < proc_count; i++) {
@@ -7763,7 +7853,7 @@ static int register_abstract_method_signature(ProcParamHeader *h, int class_ptr_
 // shorthand yet, a known v1 gap. A method body also doesn't support its
 // own nested procedure/function declarations yet (unlike an ordinary
 // procedure) - also a known, narrow v1 gap.
-static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line) {
+static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line, int is_destructor_decl) {
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Expected a method name after '%s.'", class_name);
     }
@@ -7804,6 +7894,16 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
         compile_error(decl_line, "'%s.%s' was declared as a %s, but its body is written as a %s",
                        class_name, method_name, h->is_function ? "function" : "procedure",
                        is_function_decl ? "function" : "procedure");
+    }
+    if (h->is_destructor != is_destructor_decl) {
+        // A SEPARATE check from is_function above - both a destructor
+        // and an ordinary procedure have is_function == 0, so that check
+        // alone can't tell 'destructor Destroy;' and 'procedure Destroy;'
+        // apart.
+        compile_error(decl_line, "'%s.%s' was declared as a %s, but its body is written as a %s",
+                       class_name, method_name,
+                       h->is_destructor ? "destructor" : (h->is_function ? "function" : "procedure"),
+                       is_destructor_decl ? "destructor" : (is_function_decl ? "function" : "procedure"));
     }
     match(TOKEN_SEMI);
 
@@ -7928,10 +8028,14 @@ static void parse_class_method_body(int is_function_decl, const char *class_name
 // after the parameter list is parsed, before the body: a recursive call
 // site inside the body needs the real param_count/param_types already in
 // place, not the placeholders add_proc() set.
-static void subroutine_declaration(int is_function_decl, int header_only) {
-    match(is_function_decl ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
+static void subroutine_declaration(int is_function_decl, int header_only, int is_destructor_decl) {
+    if (is_destructor_decl) {
+        match(TOKEN_DESTRUCTOR);
+    } else {
+        match(is_function_decl ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
+    }
     if (token.type != TOKEN_IDENTIFIER) {
-        compile_error(token.line, "Expected a %s name", is_function_decl ? "function" : "procedure");
+        compile_error(token.line, "Expected a %s name", is_destructor_decl ? "destructor" : (is_function_decl ? "function" : "procedure"));
     }
     char name[MAX_NAME];
     int decl_line = token.line;
@@ -7951,8 +8055,12 @@ static void subroutine_declaration(int is_function_decl, int header_only) {
             compile_error(decl_line, "A class method body ('%s.Method') must be declared at the top level, not nested inside another procedure", name);
         }
         match(TOKEN_PERIOD);
-        parse_class_method_body(is_function_decl, name, decl_line);
+        parse_class_method_body(is_function_decl, name, decl_line, is_destructor_decl);
         return;
+    }
+
+    if (is_destructor_decl) {
+        compile_error(decl_line, "'destructor' can only be used for a class method body ('destructor ClassName.MethodName; ...') - '%s' isn't followed by '.'", name);
     }
 
     int existing_idx = find_proc(name);
@@ -8294,8 +8402,8 @@ static void subroutine_declaration(int is_function_decl, int header_only) {
     int saved_label_count = declared_label_count;
     memcpy(saved_labels, declared_labels, sizeof(DeclaredLabel) * declared_label_count);
 
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION) {
-        subroutine_declaration(token.type == TOKEN_FUNCTION, 0);
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR) {
+        subroutine_declaration(token.type == TOKEN_FUNCTION, 0, token.type == TOKEN_DESTRUCTOR);
     }
 
     memcpy(declared_labels, saved_labels, sizeof(DeclaredLabel) * saved_label_count);
@@ -9382,6 +9490,9 @@ static ASTNode *parse_new_statement(void) {
         if (ctor_h->is_class_method) {
             compile_error(method_line, "'%s' is a class method and can't be used as a constructor - it has no instance to initialize", method_name);
         }
+        if (ctor_h->is_destructor) {
+            compile_error(method_line, "'%s' is the destructor and can't be used as a constructor", method_name);
+        }
         if (ctor_h->is_private && current_class_ptr_idx != ctor_h->declaring_class_ptr_idx) {
             // Same strict-private check as an ordinary method call - a
             // constructor isn't a special case (resolve_heap_deref_step()
@@ -9484,6 +9595,26 @@ static ASTNode *parse_new_statement(void) {
 // into X - see NODE_HEAP_DISPOSE in common.h for why this deliberately
 // matches standard Pascal's own "the pointer's value is undefined after
 // dispose" semantics rather than auto-nilling it).
+//
+// If X's target is a class with a destructor anywhere in its hierarchy
+// (class_find_destructor()), a virtual call to it is spliced in right
+// before the actual free, chained via chain_two_statements() (a raw
+// 'dtor_call->next = stmt; return dtor_call;' would be WRONG - the
+// caller/statement_list() would overwrite dtor_call's own ->next when
+// linking the NEXT top-level statement, losing the link to stmt entirely;
+// chain_two_statements() wraps both in a NODE_COMPOUND instead, whose
+// OWN ->next is the only externally-visible splice point - same
+// mechanism new(c, Init(args))'s own tag-write+constructor-call chain
+// already uses).
+//
+// WARNING: the destructor's own body must never dispose() 'self' (or
+// any alias of the same instance) - OP_DISPOSE (vm.c) has no "already
+// freed" guard, only nil/out-of-range checks, so a self-dispose during
+// teardown links the same block onto the freelist twice, corrupting it
+// so a later new() can hand the same memory to two live, unrelated
+// pointers. Not new here - dispose(c); dispose(c); already has this
+// hazard today - but self-dispose from inside teardown code is an easy
+// accident to make.
 static ASTNode *parse_dispose_statement(void) {
     match(TOKEN_DISPOSE);
     match(TOKEN_LPAREN);
@@ -9493,10 +9624,44 @@ static ASTNode *parse_dispose_statement(void) {
         compile_error(line, "'dispose' expects a pointer variable");
     }
     match(TOKEN_RPAREN);
+    DataType target_type = p_expr->expression_type;
     ASTNode *stmt = create_node(NODE_HEAP_DISPOSE);
     stmt->line = line;
     stmt->left = p_expr;
-    stmt->data.num_value = pointer_types[p_expr->expression_type - TYPE_POINTER_BASE].target_elem_size;
+    stmt->data.num_value = pointer_types[target_type - TYPE_POINTER_BASE].target_elem_size;
+
+    if (pointer_types[target_type - TYPE_POINTER_BASE].is_class) {
+        int class_ptr_idx = target_type - TYPE_POINTER_BASE;
+        int dtor_slot = class_find_destructor(class_ptr_idx);
+        if (dtor_slot != -1) {
+            if (p_expr->type != NODE_VARIABLE && p_expr->type != NODE_LOCAL_VAR && p_expr->type != NODE_VAR_PARAM_READ) {
+                compile_error(line, "'dispose' can't call '%s's destructor on this expression - dispose a plain variable instead", pointer_types[class_ptr_idx].name);
+            }
+            ProcParamHeader *dtor_h = &pointer_types[class_ptr_idx].methods[dtor_slot];
+            if (find_proc(dtor_h->mangled_name) == -1) {
+                compile_error(line, "'%s.%s' (the destructor) doesn't have a body yet", pointer_types[class_ptr_idx].name, dtor_h->name);
+            }
+            // A FRESH second read of the same target - p_expr itself is
+            // already consumed as stmt->left above; reusing that same
+            // node instance a second time here would make free_ast()
+            // visit it through two parents and double-free it (the same
+            // hazard parse_new_statement()'s own fresh-read comments
+            // document already having hit once).
+            ASTNode *self_read = create_node(p_expr->type);
+            self_read->data.var_idx = p_expr->data.var_idx;
+            self_read->op = p_expr->op;
+            self_read->expression_type = target_type;
+            self_read->line = line;
+            ASTNode *dtor_call = create_node(NODE_VIRTUAL_CALL);
+            dtor_call->line = line;
+            dtor_call->data.num_value = dtor_slot;
+            dtor_call->expression_type = TYPE_UNKNOWN;
+            dtor_call->op = TOKEN_PROCEDURE;
+            dtor_call->left = self_read;
+            dtor_call->right = NULL;
+            return chain_two_statements(dtor_call, stmt);
+        }
+    }
     return stmt;
 }
 

@@ -248,7 +248,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
-| `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type — see [Pointers](#pointers) |
+| `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type; for a class with a `destructor`, `dispose` calls it first — see [Pointers](#pointers), [Destructors](#destructors) |
 | `ParamCount` | function | Number of command-line arguments passed to the running program |
 | `ParamStr(i)` | function | The `i`th command-line argument as a string — `ParamStr(0)` is the running `.bin`'s own path |
 | `ExceptMessage` | function | The message from the `raise` an enclosing `except` block just caught — see [`try` / `except` / `raise`](#try--except--raise) |
@@ -2381,6 +2381,76 @@ feature. `new(head^.next, Init(...))` (an allocation target reached
 through an explicit `^`-chain rather than a plain variable) isn't
 supported, matching the existing restriction that `new` into a
 class-typed field through `^` has for a plain `new(head^.next)` too.
+
+### Destructors
+
+```pascal
+type
+    TFile = class
+    public
+        destructor Destroy;
+    end;
+    TLoggedFile = class(TFile)
+    public
+        destructor Destroy;
+    end;
+var
+    lf: TLoggedFile;
+    f: TFile;
+
+destructor TFile.Destroy;
+begin
+    writeln('closing the file');
+end;
+
+destructor TLoggedFile.Destroy;
+begin
+    writeln('logging: about to close');
+    inherited;
+end;
+
+begin
+    new(lf);
+    f := lf;
+    dispose(f);   { dispatches to TLoggedFile.Destroy, which chains to
+                    TFile.Destroy via 'inherited' - prints "logging:
+                    about to close" then "closing the file" }
+end.
+```
+
+- `destructor Name;` — an alternative to `procedure`/`function` when
+  declaring a class method, marking it as the class's ONE designated
+  destructor: no parameters, no return value. `dispose(c)` automatically
+  calls it, dispatched dynamically exactly like an ordinary virtual
+  method call, before actually freeing the instance's memory.
+- **A class hierarchy has at most one destructor.** A subclass overrides
+  the inherited one by re-declaring the SAME name with `destructor`
+  again (call `inherited;`/`inherited Destroy;` inside it to chain
+  cleanup up to the ancestor, exactly like overriding any other method —
+  nothing chains automatically). Declaring an independently-named SECOND
+  destructor, or overriding/introducing one with a mismatched kind
+  (`procedure` instead of `destructor`, or vice versa), is a compile
+  error.
+- **A destructor is an ordinary method for every other purpose** —
+  calling it directly (`c.Destroy;`) works outside of `dispose()` too
+  (the instance stays alive; only its cleanup code runs), and a
+  `private` destructor is only reachable through `dispose()` — an
+  explicit external `c.Destroy;` is still rejected by the same
+  visibility rule an ordinary private method already has.
+- `class destructor`/`destructor ... abstract;` are both rejected — a
+  destructor is inherently instance-lifecycle, and (being never
+  overridable) a class method could never get an implementation.
+- `dispose()` only calls the destructor for a plain variable, local, or
+  `var` parameter target — `dispose(head^.next)` (a `^`-deref chain) is
+  rejected with a compile error when the class has a destructor
+  (unchanged, unrestricted, when it doesn't) — assign to a plain
+  variable first.
+- **Never `dispose()` `self` (or any alias of the same instance) from
+  inside that instance's own destructor.** `dispose` has no
+  already-freed check — only nil/out-of-range are guarded — so disposing
+  the same instance twice (whether by hand or via a self-dispose during
+  teardown) corrupts the free list, letting a later `new()` hand the
+  same memory to two unrelated live pointers.
 
 ### Inheritance
 

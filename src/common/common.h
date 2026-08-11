@@ -204,6 +204,13 @@ typedef enum {
                       // one block. See NODE_TRY's reuse of its own 'op'
                       // field as the try/finally-vs-try/except
                       // discriminator in parser.c/codegen.c.
+    TOKEN_DESTRUCTOR, // 'destructor Name;' - an alternative to
+                      // 'procedure'/'function' when declaring a class
+                      // method, marking it as the class's ONE designated
+                      // destructor (see ProcParamHeader.is_destructor in
+                      // parser.c). Never paired with 'class' (a
+                      // destructor is inherently instance-lifecycle) or
+                      // 'abstract'.
     TOKEN_EOF
 } TokenType;
 

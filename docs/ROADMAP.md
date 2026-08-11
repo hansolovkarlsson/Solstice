@@ -2078,6 +2078,81 @@ anyway, so this is where they land instead.
       a 3-level-deep multi-abstract hierarchy, and 6 error cases
       covering every rejection path) and
       [docs/LANGUAGE.md](LANGUAGE.md#abstract-methods).
+- [x] Virtual destructors — `destructor Destroy;` as a new alternative
+      to `procedure`/`function` when declaring a class method, marking
+      it as the class's ONE designated destructor: `dispose(c)` now
+      calls it (dynamically dispatched, exactly like any other virtual
+      method call) right before actually freeing the instance.
+
+      **Deliberately ships only half of the bundled survey idea below**
+      - no implicit `TObject` root class. The destructor mechanism works
+      on ANY class, with or without an explicit parent, found by
+      checking whether it (or an ancestor, via the same struct-copy
+      inheritance mechanism that already propagates `is_abstract`
+      automatically) has a method flagged as the destructor. A universal
+      root type earns its keep in real Delphi because its whole
+      ecosystem (generic containers, `TObject`-typed collections, RTTI)
+      assumes one common ancestor - this compiler has none of that yet,
+      so retrofitting every class's `parent_class_ptr_idx` would be
+      unrequested architecture with no consumer. Zero new opcodes, zero
+      new `NodeType` - reuses `NODE_VIRTUAL_CALL`/`build_vtable_init_
+      chain()` completely unmodified (a destructor is an ordinary
+      instance method under the hood, just carrying one new
+      `is_destructor` flag).
+
+      **A silent-corruption hazard found and guarded against before any
+      code ran**: `proc_param_headers_match()` (the existing override-
+      signature check) deliberately doesn't compare `is_destructor`
+      (same reasoning as `is_abstract`/`is_class_method`) - without an
+      explicit check, a subclass could "override" an inherited
+      `destructor Destroy;` with a plain `procedure Destroy;` of the
+      same signature, silently replacing the entry with one that has
+      `is_destructor = 0`, breaking `dispose()`'s ability to find it in
+      that subclass with no error at all. Fixed with an explicit
+      uniqueness + kind-mismatch check ahead of the existing override/
+      duplicate chain.
+
+      **A missing parse path found during design validation, not left
+      as a gap**: a class declaration only registers method HEADERS -
+      the body is written separately at the top level via
+      `subroutine_declaration()`, and every one of its four call sites
+      (unit interface, unit implementation, main program, nested
+      procedures) gated on `procedure`/`function` only, with no path at
+      all for `destructor TFoo.Destroy; begin ... end;`. Fixed by
+      threading a third `is_destructor_decl` parameter through
+      `subroutine_declaration()`/`parse_class_method_body()` and all
+      four call sites, with its own kind-mismatch check mirroring the
+      existing `is_function` one (needed separately - a destructor and
+      an ordinary procedure both have `is_function == 0`, so the
+      existing check alone can't tell `destructor Destroy;` and
+      `procedure Destroy;` apart).
+
+      `dispose(c)`'s own synthesized destructor call deliberately
+      bypasses `is_private` (unlike an explicit `c.Destroy;` call, which
+      still goes through the ordinary, unmodified private-access check) -
+      a private destructor becomes reachable only through `dispose()`,
+      matching Delphi's own `Free`/`Destroy` split and the actual point
+      of being able to make one private at all. Restricted to a plain
+      variable/local/`var`-parameter target - a `^`-deref chain is
+      rejected with a compile error when the class has a destructor
+      (confirmed NOT as narrow as it first looks: this compiler
+      flattens record fields, including class-pointer ones, into their
+      own slots at parse time, so `dispose(myRecord.classField)`
+      already resolves to a plain-variable node and isn't excluded).
+
+      **A pre-existing, unrelated double-free hazard flagged, not
+      fixed**: `OP_DISPOSE` has no already-freed guard (only nil/
+      out-of-range are checked), so `dispose(self)` from inside that
+      instance's own destructor corrupts the free list - not new here
+      (`dispose(c); dispose(c);` already has this hazard today), but the
+      destructor feature makes it much easier to trigger by accident.
+      Documented with an explicit warning, matching this codebase's
+      existing "the pointer's value is undefined after dispose"
+      precedent for a similar footgun. See
+      `examples/test/destructor/test_destructor_*.pas` (6 positive cases
+      including virtual dispatch + `inherited` chaining together through
+      a base-typed variable, and 10 error cases covering every rejection
+      path) and [docs/LANGUAGE.md](LANGUAGE.md#destructors).
 
 ### Object-oriented language features under consideration (Delphi-inspired)
 
@@ -2093,10 +2168,13 @@ unscoped ideas, not committed work, and none has a design/plan yet.
       declaration time.
 
 **Moderate — needs some new machinery:**
-- [ ] `TObject` implicit root class + virtual destructor pattern
-      (`destructor Destroy; override;` / `Free`) — `dispose(c)` today
-      runs no user code first; needs an implicit root class and a
-      vtable call before the heap block is freed.
+- [ ] `TObject` implicit root class — the virtual-destructor half of
+      this originally-bundled idea has shipped (see the destructor entry
+      above); this is what's left. Retrofitting every class's
+      `parent_class_ptr_idx` to an implicit universal ancestor earns its
+      keep once something actually needs one common type to hang off of
+      - generic containers, a `TObject`-typed collection, RTTI - none of
+      which exist in this compiler yet. Revisit when one of those does.
 - [ ] Typed exception handlers (`on E: SomeExceptionType do`) — needs an
       actual exception-class hierarchy, which drags in most of classes'
       own machinery a second time; explicitly cut when try/except
