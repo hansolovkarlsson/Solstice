@@ -307,6 +307,16 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_WARNING:
+            printf("[Warning]\n");
+            print_indent(indent + 1);
+            printf("Message:\n");
+            print_ast(node->left, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_IS_TEST:
             printf("[Is Test] -> Class ID: %d\n", node->data.num_value);
             print_ast(node->left, indent + 1);

@@ -9528,7 +9528,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
-           t == TOKEN_TRY || t == TOKEN_RAISE ||
+           t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -11892,6 +11892,15 @@ static ASTNode *statement(void) {
         ASTNode *stmt = create_node(NODE_RAISE);
         match(TOKEN_RAISE);
         stmt->left = expression();       // message
+        return stmt;
+    }
+
+    if (token.type == TOKEN_WARNING) {
+        match(TOKEN_WARNING);
+        match(TOKEN_LPAREN);
+        ASTNode *stmt = create_node(NODE_WARNING);
+        stmt->left = expression(); // message
+        match(TOKEN_RPAREN);
         return stmt;
     }
 

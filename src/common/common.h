@@ -182,6 +182,7 @@ typedef enum {
     TOKEN_TRY,        // 'try ... except ... end' - see NODE_TRY.
     TOKEN_EXCEPT,     // the 'except' half of a 'try' statement.
     TOKEN_RAISE,      // 'raise <message>;' - see NODE_RAISE/OP_RAISE.
+    TOKEN_WARNING,    // 'warning(<message>);' - see NODE_WARNING/OP_WARNING.
     TOKEN_EXCEPTMESSAGE, // the 'ExceptMessage' builtin - see OP_EXCEPT_MSG.
     TOKEN_PROPERTY,   // 'property Name: Type read ReadTarget [write WriteTarget];'
                       // inside a 'class ... end;' body - see ClassProperty in
@@ -1211,6 +1212,13 @@ typedef enum {
                   // immutable, so no re-interning needed, unlike
                   // OP_PARAM_STR's argv-at-startup interning). Meaningful
                   // only when executed inside an except-body. No operand.
+    OP_WARNING,   // Pops a string_pool[] index (the message), flushes
+                  // stdout (so an interleaved write/writeln's buffered
+                  // output can't reorder relative to this stderr print
+                  // when both streams are captured together), then
+                  // prints "Warning: <message>\n" to stderr. Unlike
+                  // OP_ASSERT/an unhandled OP_RAISE, never calls
+                  // fatal_abort() - execution just continues. No operand.
     OP_IS_INSTANCE, // 'obj is TFoo' / one step of 'obj as TFoo' - arg =
                   // target class_id (a pointer_types[] index, same
                   // meaning as OP_LOAD_VTABLE_SLOT's runtime class_id).
@@ -1916,6 +1924,11 @@ typedef enum {
                        // type_checker.c). Unwinds to the innermost active
                        // OP_TRY handler if one exists, else a fatal VM
                        // Runtime Error - see OP_RAISE.
+    NODE_WARNING,      // 'warning(<message-expr>);' - left = the message
+                       // expression (must be string/char-typed, same
+                       // rule as NODE_RAISE). next = sibling statement
+                       // chain. Prints to stderr and continues - never
+                       // fatal, never catchable - see OP_WARNING.
     NODE_IS_TEST,      // 'obj is TFoo' - left = the object expression
                        // (class- or TYPE_NIL-typed). data.num_value =
                        // target class's pointer_types[] index (same

@@ -220,7 +220,9 @@ parser-time features needing no new opcodes — a bare identifier inside a
 [docs/LANGUAGE.md](docs/LANGUAGE.md#the-with-statement)). Also working:
 `assert(cond)` / `assert(cond, message)`, aborting cleanly with that
 message if `cond` is false (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#assert)); `static` local variables,
+[docs/LANGUAGE.md](docs/LANGUAGE.md#assert)); `warning(message)`, a
+non-fatal runtime diagnostic that prints to stderr and keeps running
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#warning)); `static` local variables,
 which persist across calls (including recursive ones) by reusing the
 same "hidden mangled global" trick local arrays already use (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#static-local-variables)); and 2D

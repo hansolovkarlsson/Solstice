@@ -789,6 +789,47 @@ writeln('after');
   re-raising means writing out `raise ExceptMessage;` (or any other
   message) explicitly.
 
+### `warning`
+
+```pascal
+writeln('before');
+warning('cache is getting full');
+writeln('after');
+```
+Output:
+```
+before
+Warning: cache is getting full
+after
+```
+
+`warning(<message>);` — `message` must be `string` or `char` (any
+expression, same rule as `raise`'s message). Prints `Warning: message`
+to **stderr**, not stdout, and **execution continues immediately
+afterward** — unlike `assert`/an uncaught `raise`, it's never fatal, and
+unlike `raise`, there's nothing for a `try`/`except` to catch (there's
+no error to unwind from).
+
+This is a distinct thing from the two other "warning"-shaped mechanisms
+in this compiler, worth not confusing with `warning`:
+- `assert(cond, msg)` and `raise msg;` (above) are for **errors** —
+  something has gone wrong and the program should stop (uncatchably for
+  `assert`, catchably for `raise`). `warning` is for the opposite case:
+  something worth noting, but not wrong enough to stop for.
+- The compiler's own [compile-time warnings](#warnings) (unused local
+  variables, an `out` parameter never assigned, etc.) are a *static*
+  check the compiler runs over your source before the program ever
+  runs — they're about the code itself, not something your running
+  program decides to report. `warning()` is the opposite: a runtime
+  built-in your own program's logic calls, with values only known while
+  it's actually executing.
+
+Because `warning()` writes to stderr while `write`/`writeln` write to
+stdout, output interleaved between them (as in the example above) stays
+in source order even when both streams are captured together (a
+terminal, `2>&1`, etc.) — the VM flushes stdout before every `warning()`
+print for exactly this reason.
+
 ### `try` / `finally`
 
 ```pascal

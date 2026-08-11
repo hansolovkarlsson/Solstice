@@ -426,6 +426,7 @@ void next_token(void) {
         else if (strcasecmp(token.text, "finally") == 0) token.type = TOKEN_FINALLY;
         else if (strcasecmp(token.text, "destructor") == 0) token.type = TOKEN_DESTRUCTOR;
         else if (strcasecmp(token.text, "raise") == 0) token.type = TOKEN_RAISE;
+        else if (strcasecmp(token.text, "warning") == 0) token.type = TOKEN_WARNING;
         else if (strcasecmp(token.text, "exceptmessage") == 0) token.type = TOKEN_EXCEPTMESSAGE;
         else if (strcasecmp(token.text, "property") == 0) token.type = TOKEN_PROPERTY;
         else if (strcasecmp(token.text, "is") == 0) token.type = TOKEN_IS;

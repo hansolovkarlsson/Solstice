@@ -1310,6 +1310,12 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_WARNING:
+            generate_code(node->left); // message
+            emit(OP_WARNING, 0);
+            generate_code(node->next);
+            break;
+
         case NODE_IS_TEST:
             generate_code(node->left);
             emit(OP_IS_INSTANCE, node->data.num_value);

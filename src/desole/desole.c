@@ -205,6 +205,7 @@ static const char *opcode_name(Opcode op) {
         case OP_END_TRY:    return "end_try";
         case OP_RAISE:      return "raise";
         case OP_EXCEPT_MSG: return "except_msg";
+        case OP_WARNING:    return "warning";
         default:       return NULL;
     }
 }

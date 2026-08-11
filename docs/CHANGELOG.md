@@ -2187,6 +2187,46 @@ anyway, so this is where they land instead.
       including virtual dispatch + `inherited` chaining together through
       a base-typed variable, and 10 error cases covering every rejection
       path) and [docs/LANGUAGE.md](LANGUAGE.md#destructors).
+- [x] `warning(message)` — a non-fatal runtime diagnostic, prints
+      `Warning: message` to stderr and continues. **A scoping finding
+      before any code was written**: the ROADMAP bullet ("user-level
+      error/warning built-ins") turned out to be mostly already shipped
+      by the time this was picked up - `assert(false, msg)` already
+      gives an uncatchable fatal error with a custom message, `raise
+      msg;` already gives a catchable one, confirmed by checking this
+      bullet's git history (it was one of four siblings when first
+      written; the "expose the VM's fatal-error mechanism to Pascal
+      source" sibling shipped separately as `try`/`except`/`raise`).
+      What was genuinely missing was the "warning" half: a running
+      program had no way to emit a non-fatal diagnostic at all before
+      this - `write`/`writeln` only ever reach stdout (no predeclared
+      stderr file exists), and the compiler's own compile-time
+      `## Warnings` are static and not user-triggerable. Scoped down to
+      just this one built-in rather than also adding a redundant fatal
+      `runtimeError()` alongside it.
+
+      Implementation is a near-exact structural mirror of `raise`'s
+      existing pipeline (`NODE_WARNING` = `NODE_RAISE`'s shape, one
+      `left` message child; same `is_string_type()` check in
+      `type_checker.c`; a new `OP_WARNING` opcode reusing `OP_ASSERT`'s
+      `vm_str_index()`-then-print pattern) - call-syntax like `assert`
+      rather than `raise`'s bare-keyword form, since it behaves like an
+      ordinary procedure call, not a control-flow statement.
+
+      **One genuinely new correctness detail, not copied from any
+      precedent**: this is the first opcode that writes to a different
+      stream than stdout while the VM is running (every existing print
+      opcode targets stdout or a user file variable only). Since
+      `vm.c`/`solvm.c` never configure stdout's buffering, `OP_WARNING`
+      calls `fflush(stdout)` before its own `fprintf(stderr, ...)` -
+      without it, interleaved `write`/`writeln` output could reorder
+      relative to a `warning()` call when both streams are captured
+      together (a terminal, `2>&1`, or this project's own testing
+      convention of combining both for hand-verification). See
+      `examples/test/warning/test_warning_*.pas` (4 positive cases
+      including one specifically built around the interleaved-ordering
+      guarantee, 1 error case) and
+      [docs/LANGUAGE.md](LANGUAGE.md#warning).
 
 ### Shipped from the OOP features survey
 

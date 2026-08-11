@@ -53,8 +53,6 @@ anyway, so this is where they land instead.
 
 - [ ] Dynamic arrays (array `copy`/slicing) — standard Pascal arrays are
       always fixed-size
-- [ ] User-level error/warning built-ins, distinct from the VM's internal
-      recoverable-error mechanism (see [ARCHITECTURE.md](ARCHITECTURE.md#recoverable-errors-not-exit))
 - [ ] `sizeOf` — a Turbo Pascal/Delphi built-in, not ISO Pascal.
       Complicated by this VM's memory model: every scalar (`integer`,
       `real`, `boolean`, `char`, `string`) is a uniform 4-byte slot in
@@ -110,6 +108,7 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 - [ ] Class references/metaclasses (`TClass = class of TObject;`,
       virtual constructors via `AClass.Create`) — a new "class-typed
       value" distinct from an instance.
+
 **Large — architecture-changing, lower priority:**
 
 - [ ] Method overloading (`overload`) — this compiler's whole design

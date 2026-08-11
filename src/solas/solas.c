@@ -291,6 +291,7 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"END_TRY",     OP_END_TRY,     OPERAND_NONE},
     {"RAISE",       OP_RAISE,       OPERAND_NONE},
     {"EXCEPT_MSG",  OP_EXCEPT_MSG,  OPERAND_NONE},
+    {"WARNING",     OP_WARNING,     OPERAND_NONE},
 };
 #define NUM_OPCODES (sizeof(OPCODE_TABLE) / sizeof(OPCODE_TABLE[0]))
 

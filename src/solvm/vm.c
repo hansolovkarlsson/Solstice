@@ -1668,6 +1668,13 @@ void run_vm(void) {
                 vm_push(&sp, vm_current_exception_msg);
                 break;
 
+            case OP_WARNING: {
+                int msg_idx = vm_str_index(vm_pop(&sp));
+                fflush(stdout);
+                fprintf(stderr, "Warning: %s\n", string_pool[msg_idx]);
+                break;
+            }
+
             case OP_ABS: {
                 int a = vm_pop(&sp);
                 vm_push(&sp, a < 0 ? -a : a);
