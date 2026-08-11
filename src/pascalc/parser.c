@@ -11834,46 +11834,58 @@ static ASTNode *statement(void) {
     }
 
     if (token.type == TOKEN_WITH) {
-        // 'with recordVar do statement;' - pure parser-time sugar, no
-        // AST node of its own: pushing rv_idx onto with_stack (see the
-        // comment above it) makes every bare field name inside the body
-        // resolve exactly as 'recordVar.field' already would, via the
-        // find_with_field() checks now threaded through every
-        // identifier-resolution call site. The body's own parsed AST is
-        // returned completely unwrapped - this statement contributes
-        // nothing to the tree beyond whatever 'statement()' below
-        // produces on its own.
+        // 'with recordVar[, recordVar...] do statement;' - pure
+        // parser-time sugar, no AST node of its own: pushing each
+        // target's rv_idx onto with_stack (see the comment above it)
+        // makes every bare field name inside the body resolve exactly
+        // as 'recordVar.field' already would, via the find_with_field()
+        // checks now threaded through every identifier-resolution call
+        // site. The body's own parsed AST is returned completely
+        // unwrapped - this statement contributes nothing to the tree
+        // beyond whatever 'statement()' below produces on its own.
+        //
+        // A comma-separated target list pushes one entry per target, in
+        // order, so a later target's field shadows an earlier target's
+        // same-named field - find_with_field() already scans innermost-
+        // to-outermost, so this matches 'with a do with b do ...'
+        // exactly without any change to the stack or its lookup.
         match(TOKEN_WITH);
-        if (token.type != TOKEN_IDENTIFIER) {
-            compile_error(token.line, "'with' expects a record variable");
+        int pushed = 0;
+        for (;;) {
+            if (token.type != TOKEN_IDENTIFIER) {
+                compile_error(token.line, "'with' expects a record variable");
+            }
+            {
+                int rv_is_local, rv_record_type_idx;
+                const int *rv_field_idx;
+                if (!find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+                    compile_error(token.line, "'%s' is not a record variable", token.text);
+                }
+                if (rv_is_local) {
+                    compile_error(token.line, "'with' doesn't support a local record variable or parameter yet - access its fields directly (e.g. '%s.field')", token.text);
+                }
+                if (record_type_has_nested_field(rv_record_type_idx)) {
+                    // find_with_field() binds a bare name straight to
+                    // field_sym_idx[field_idx] as if it were always a leaf -
+                    // a nested-record field's base isn't a valid scalar/
+                    // array reference on its own, so 'with' can't accept a
+                    // record type that has one yet.
+                    compile_error(token.line, "'with' doesn't support a record with a nested-record field yet - access its fields directly (e.g. '%s.field.subfield')", token.text);
+                }
+            }
+            int rv_idx = find_record_var(token.text);
+            match(TOKEN_IDENTIFIER);
+            if (with_depth >= MAX_WITH_DEPTH) {
+                compile_error(token.line, "'with' statements nested too deeply (limit is %d)", MAX_WITH_DEPTH);
+            }
+            with_stack[with_depth++] = rv_idx;
+            pushed++;
+            if (token.type != TOKEN_COMMA) break;
+            match(TOKEN_COMMA);
         }
-        {
-            int rv_is_local, rv_record_type_idx;
-            const int *rv_field_idx;
-            if (!find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
-                compile_error(token.line, "'%s' is not a record variable", token.text);
-            }
-            if (rv_is_local) {
-                compile_error(token.line, "'with' doesn't support a local record variable or parameter yet - access its fields directly (e.g. '%s.field')", token.text);
-            }
-            if (record_type_has_nested_field(rv_record_type_idx)) {
-                // find_with_field() binds a bare name straight to
-                // field_sym_idx[field_idx] as if it were always a leaf -
-                // a nested-record field's base isn't a valid scalar/
-                // array reference on its own, so 'with' can't accept a
-                // record type that has one yet.
-                compile_error(token.line, "'with' doesn't support a record with a nested-record field yet - access its fields directly (e.g. '%s.field.subfield')", token.text);
-            }
-        }
-        int rv_idx = find_record_var(token.text);
-        match(TOKEN_IDENTIFIER);
         match(TOKEN_DO);
-        if (with_depth >= MAX_WITH_DEPTH) {
-            compile_error(token.line, "'with' statements nested too deeply (limit is %d)", MAX_WITH_DEPTH);
-        }
-        with_stack[with_depth++] = rv_idx;
         ASTNode *body = statement();
-        with_depth--;
+        with_depth -= pushed;
         return body;
     }
 

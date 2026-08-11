@@ -2371,6 +2371,28 @@ open) stays there.
       override-static-resolution scenarios, 12 error cases) and
       [docs/LANGUAGE.md](LANGUAGE.md#default-parameter-values).
 
+- [x] `with a, b do` (multiple targets in one `with`) — confirmed as
+      cheap as the ROADMAP blurb guessed: `with` has no `NodeType` of
+      its own at all (pure parser-time sugar - pushes a `record_vars[]`
+      index onto `with_stack`, parses the body, pops), so
+      `type_checker.c`/`optimizer.c`/`codegen.c`/`ast_printer.c` needed
+      zero changes. `with_stack`/`with_depth`
+      (`MAX_WITH_DEPTH 8`) were already a real stack scanned innermost-
+      to-outermost by `find_with_field()`, so a later-listed target
+      already shadows an earlier one automatically - the entire change
+      is wrapping the single identifier-validate-push block in
+      `statement()`'s `TOKEN_WITH` branch in a comma-separated loop,
+      tracking how many targets this statement pushed so the pop
+      afterward is exact regardless of list length. Each target in the
+      list is validated independently (must be a non-local record
+      variable, no nested-record-typed field), so a bad second-or-later
+      target reports the same error, anchored at its own line, as a bad
+      first target always did. See `examples/test/with/test_with_multi*.pas`
+      (2 positive cases: direct nested-vs-comma-list equivalence, and a
+      three-target list proving the loop isn't hardcoded to two; 1 error
+      case checking the second target specifically) and
+      [docs/LANGUAGE.md](LANGUAGE.md#the-with-statement).
+
 ## Known issues (found via AddressSanitizer)
 
 Both surfaced by a proactive ASan/UBSan sweep during the virtual

@@ -110,8 +110,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 - [ ] Class references/metaclasses (`TClass = class of TObject;`,
       virtual constructors via `AClass.Create`) — a new "class-typed
       value" distinct from an instance.
-- [ ] `with a, b do` (multiple targets in one `with`) — already a
-      documented gap; small, since `with_stack` is already a stack.
 - [ ] Unit `initialization`/`finalization` sections — units currently
       have no run-on-load code; a bounded follow-up to units.
 - [ ] Compiler directives (`{$IFDEF}`/`{$ENDIF}`, `{$R+}`) — a

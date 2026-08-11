@@ -1839,15 +1839,19 @@ there's no restriction here beyond what already applies to
 
 - **`with` statements nest** (`with a do with b do ...`), and an inner
   `with`'s field shadows an outer one of the same name.
+- **`with` accepts a comma-separated list of targets**,
+  `with a, b do <statement>;`, equivalent to nesting
+  (`with a do with b do <statement>;`) — a later target's field shadows
+  an earlier target's same-named field, exactly as explicit nesting
+  would. Each target in the list is checked with the same rules listed
+  below (must be a plain global record variable, no nested-record
+  field), independently.
 - **A `with`-target's field takes priority over everything else with the
   same name** — a local variable, parameter, or global with the same
   name as a field is shadowed for the duration of the `with` body. This
   matches classic Pascal behavior (and is a well-known source of subtle
   bugs in real Pascal code — a field name accidentally colliding with an
   outer variable silently redirects to the field instead).
-- Only one record per `with` (`with a, b do ...`, real Pascal's
-  multi-record form, isn't accepted) — nest two `with` statements
-  instead (`with a do with b do ...`) for the same effect.
 - The `with`-target must be a plain record variable; it can't be an
   expression.
 - The `with`-target's record type can't have a nested-record field (see
