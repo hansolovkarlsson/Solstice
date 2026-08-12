@@ -307,7 +307,14 @@ memory (distinct from `write`/`writeln`'s formatting and `read`/
 *value*) — `StrToInt`/`StrToFloat` require the whole string to be a
 valid number, a runtime error otherwise, matching `read`/`readln`'s
 own fatal-on-invalid-input convention rather than a catchable exception
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#numberstring-conversion)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#numberstring-conversion)); and
+`Random(n)`/`Randomize` — this compiler's first random-number
+generation, `Random(n)` only (the mandatory-argument, `integer`-
+returning form; Turbo Pascal's parameterless real-valued `Random` isn't
+supported), deterministic across runs unless `Randomize` is called
+first, matching real Pascal's own convention for free from plain C
+`rand()`'s own default behavior (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#random--randomize)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus

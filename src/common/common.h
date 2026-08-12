@@ -120,6 +120,12 @@ typedef enum {
     TOKEN_STRTOFLOAT, // 'StrToFloat(s)' - string -> real, whole-string
                       // only, same strictness as StrToInt. See
                       // OP_STRTOFLOAT.
+    TOKEN_RANDOM,     // 'Random(n)' - a function, integer 0..n-1. See
+                      // OP_RANDOM.
+    TOKEN_RANDOMIZE,  // 'Randomize;' - a procedure (bare, no parens -
+                      // the real Pascal/Delphi calling convention),
+                      // seeds the generator from the system clock. See
+                      // OP_RANDOMIZE.
     TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
     TOKEN_REAL,       // a real literal, e.g. 3.14 - distinct from
                       // TOKEN_NUMBER (integer literals)
@@ -683,6 +689,11 @@ typedef enum {
                    // string_pool[] index.
     OP_STRTOFLOAT, // String -> real twin of OP_STRTOINT - sscanf("%f%n")
                    // + the same whole-string validation.
+    OP_RANDOM,     // Pops n. If n <= 0: VM Runtime Error, fatal_abort() -
+                   // matches this VM's general "abort on a nonsensical
+                   // runtime bound" convention (array indexing, etc.).
+                   // Else pushes rand() % n.
+    OP_RANDOMIZE,  // No operand, no stack interaction. srand((unsigned)time(NULL)).
     OP_LEFT,      // Pop count, then a string_pool[] index. Push a new
                   // interned string of the first `count` characters,
                   // clamped to the string's actual length (never errors).
@@ -1409,6 +1420,8 @@ typedef enum {
                        // array's symbol index, left = index expression.
     NODE_BREAK,
     NODE_CONTINUE,
+    NODE_RANDOMIZE, // 'Randomize;' - no fields at all (like NODE_BREAK/
+                    // NODE_CONTINUE above). See OP_RANDOMIZE.
     NODE_CALL, // A procedure or function call. data.var_idx = proc_table
                // index. left is the head of the argument list, chained
                // via each argument's own ->next (same technique as

@@ -647,6 +647,14 @@ void type_check(ASTNode *node) {
                     }
                     node->expression_type = TYPE_REAL;
                     break;
+                case TOKEN_RANDOM:
+                    if (node->left->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'Random' requires an integer argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_INTEGER;
+                    break;
                 case TOKEN_LEFT:
                 case TOKEN_RIGHT:
                     if (!is_string_type(node->left->expression_type)) {

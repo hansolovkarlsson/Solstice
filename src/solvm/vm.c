@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <errno.h>
 #include <ctype.h>
+#include <time.h>
 #include "vm.h"
 #include "error.h"
 
@@ -2012,6 +2013,20 @@ void run_vm(void) {
                 vm_push(&sp, float_to_bits(val));
                 break;
             }
+
+            case OP_RANDOM: {
+                int n = vm_pop(&sp);
+                if (n <= 0) {
+                    fprintf(stderr, "VM Runtime Error: 'Random' requires a positive argument (got %d)\n", n);
+                    fatal_abort();
+                }
+                vm_push(&sp, rand() % n);
+                break;
+            }
+
+            case OP_RANDOMIZE:
+                srand((unsigned)time(NULL));
+                break;
 
             case OP_LEFT: {
                 int count = vm_pop(&sp);

@@ -5730,10 +5730,12 @@ static ASTNode *factor(void) {
         match(TOKEN_RPAREN);
         return node;
     } else if (token.type == TOKEN_INTTOSTR || token.type == TOKEN_STRTOINT
-               || token.type == TOKEN_FLOATTOSTR || token.type == TOKEN_STRTOFLOAT) {
+               || token.type == TOKEN_FLOATTOSTR || token.type == TOKEN_STRTOFLOAT
+               || token.type == TOKEN_RANDOM) {
         // Unary number<->string builtins: IntToStr(n), StrToInt(s),
         // FloatToStr(x), StrToFloat(s) - same shape as upcase/uppercase/
-        // lowercase just above.
+        // lowercase just above. Random(n) reuses the identical shape -
+        // one integer argument, one integer result.
         TokenType op = token.type;
         match(op);
         match(TOKEN_LPAREN);
@@ -9767,7 +9769,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
-           t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING ||
+           t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING || t == TOKEN_RANDOMIZE ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -12218,6 +12220,12 @@ static ASTNode *statement(void) {
         }
         ASTNode *stmt = create_node(NODE_CONTINUE);
         match(TOKEN_CONTINUE);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_RANDOMIZE) {
+        ASTNode *stmt = create_node(NODE_RANDOMIZE);
+        match(TOKEN_RANDOMIZE);
         return stmt;
     }
 

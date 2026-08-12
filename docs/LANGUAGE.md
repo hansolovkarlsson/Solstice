@@ -322,6 +322,8 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `ParamCount` | function | Number of command-line arguments passed to the running program |
 | `ParamStr(i)` | function | The `i`th command-line argument as a string — `ParamStr(0)` is the running `.bin`'s own path |
 | `ExceptMessage` | function | The message from the `raise` an enclosing `except` block just caught — see [`try` / `except` / `raise`](#try--except--raise) |
+| `Random(n)` | function | Integer `0..n-1` — see [`Random` / `Randomize`](#random--randomize) |
+| `Randomize` | statement | Seeds the random generator from the system clock — see [`Random` / `Randomize`](#random--randomize) |
 
 - `abs`/`sqr` accept `integer` or `real` (preserving whichever was
   given); `odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
@@ -1736,6 +1738,42 @@ byte; sizeOf(b)`) — a documented v1 gap, not a silent one; use
 which gives the identical answer. Also not supported: arrays (types or
 variables), classes/pointers, string/char types or variables, and
 `int64` (doesn't exist in this compiler).
+
+## `Random` / `Randomize`
+
+```pascal
+var
+    i, roll: integer;
+begin
+    Randomize;
+    for i := 1 to 5 do begin
+        roll := Random(6) + 1;   { 1..6 }
+        writeln(roll);
+    end;
+end.
+```
+
+- `Random(n)` — a function, returns an `integer` in `0..n-1`. `n` must
+  be a positive integer (`>0`); `Random(0)`/a negative argument is a
+  runtime error.
+- `Randomize;` — a procedure (bare, no parens), seeds the generator
+  from the system clock.
+- **Without ever calling `Randomize`, `Random`'s sequence is
+  deterministic — the exact same sequence every time the same compiled
+  program runs** — matching real Pascal's own convention (useful for
+  reproducible testing). This falls out for free from reusing the C
+  standard library's own `rand()` unseeded default behavior, not
+  anything this compiler tracks itself.
+- **Not supported**: the parameterless Turbo Pascal form `Random`
+  (no argument, returns a `real` in `[0, 1)`) — only the
+  mandatory-argument, `integer`-returning `Random(n)` form exists here,
+  the overwhelmingly more common one in practice (dice rolls, random
+  indices, shuffling). Supporting both would mean one name whose return
+  *type* changes based on whether an argument is given, which nothing
+  else in this compiler does.
+- Uses `rand() % n` directly — no bias correction for `n` close to the
+  underlying generator's own range, an accepted simplicity trade-off
+  (this isn't a cryptographic or statistically-rigorous context).
 
 ## Enumerated types
 

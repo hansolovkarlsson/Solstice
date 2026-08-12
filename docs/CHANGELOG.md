@@ -2388,6 +2388,38 @@ anyway, so this is where they land instead.
       int-argument widening; 3 error cases covering trailing garbage,
       an empty/whitespace-only string, and an unparseable real) and
       [docs/LANGUAGE.md](LANGUAGE.md#numberstring-conversion).
+- [x] `Random(n)`/`Randomize` — this compiler's first random-number
+      generation of any kind. **Scoped to the mandatory-argument,
+      `integer`-returning `Random(n)` form only** - real Turbo Pascal's
+      parameterless `Random` (no argument, returns a `real` in
+      `[0, 1)`) is deliberately cut, since supporting both would mean
+      one builtin name whose return *type* changes based on whether an
+      argument is given - nothing else in this compiler works that way,
+      and `Random(n)` is by far the more commonly used form in practice
+      anyway (dice rolls, random indices, shuffling).
+
+      Reuses plain C `rand()`/`srand()` directly - no custom PRNG, not
+      a context where that would earn its keep. **A free correctness
+      property, not extra state tracked deliberately**: real Pascal's
+      own convention is that omitting `Randomize` gives the exact same
+      `Random` sequence every run (useful for reproducible testing) -
+      `rand()`'s own default (unseeded) behavior already does this with
+      zero "has `Randomize` run yet" bookkeeping needed, confirmed by
+      running the same compiled `.bin` twice and diffing the output
+      (see the dedicated determinism test below) rather than just
+      assumed from libc documentation.
+
+      `Randomize;` is parsed as a bare statement (no parens - the real
+      Pascal/Delphi calling convention) via a new, field-less
+      `NODE_RANDOMIZE`, mirroring `NODE_BREAK`/`NODE_CONTINUE`'s own
+      minimal shape exactly; `Random(n)` reuses the `NODE_BUILTIN_CALL`
+      dispatch pattern the `IntToStr`/`StrToInt`/`FloatToStr`/
+      `StrToFloat` entry just above already established. See
+      `examples/test/random/test_random_*.pas` (a value-range check
+      over 1000 iterations via `assert`, a `Randomize`-present smoke
+      test, an explicit determinism test verified by running the
+      compiled binary twice, and the `Random(0)` error case) and
+      [docs/LANGUAGE.md](LANGUAGE.md#random--randomize).
 
 ### Shipped from the OOP features survey
 

@@ -454,6 +454,13 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_RANDOMIZE:
+            printf("[Randomize]\n");
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_LABEL:
             printf("[Label] %d:\n", node->data.num_value);
             print_ast(node->left, indent + 1);

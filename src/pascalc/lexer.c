@@ -413,6 +413,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "strtoint") == 0) token.type = TOKEN_STRTOINT;
         else if (strcasecmp(token.text, "floattostr") == 0) token.type = TOKEN_FLOATTOSTR;
         else if (strcasecmp(token.text, "strtofloat") == 0) token.type = TOKEN_STRTOFLOAT;
+        else if (strcasecmp(token.text, "random") == 0) token.type = TOKEN_RANDOM;
+        else if (strcasecmp(token.text, "randomize") == 0) token.type = TOKEN_RANDOMIZE;
         else if (strcasecmp(token.text, "mid") == 0) token.type = TOKEN_MID;
         else if (strcasecmp(token.text, "left") == 0) token.type = TOKEN_LEFT;
         else if (strcasecmp(token.text, "right") == 0) token.type = TOKEN_RIGHT;

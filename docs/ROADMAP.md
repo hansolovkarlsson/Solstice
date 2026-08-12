@@ -66,8 +66,6 @@ anyway, so this is where they land instead.
       porting real Pascal code.
 - [ ] `Delete`/`Insert` — in-place string-mutation procedures, distinct
       from `copy` (which only ever builds a new string).
-- [ ] `Random`/`Randomize` — no random number generation exists
-      anywhere in this compiler.
 - [ ] `case` range labels (`2..5: ...;`) — case labels must be listed
       individually today (`2, 3, 4, 5:`); a Turbo Pascal/Delphi
       extension over ISO Pascal's discrete-label-only `case`.

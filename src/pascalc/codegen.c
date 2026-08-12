@@ -783,6 +783,11 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_RANDOMIZE:
+            emit(OP_RANDOMIZE, 0);
+            generate_code(node->next);
+            break;
+
         case NODE_LABEL: {
             int idx = find_or_add_label(node->data.num_value);
             label_table[idx].code_idx = code_idx;
@@ -863,6 +868,8 @@ void generate_code(ASTNode *node) {
                 emit(OP_FLOATTOSTR, 0);
             } else if (node->op == TOKEN_STRTOFLOAT) {
                 emit(OP_STRTOFLOAT, 0);
+            } else if (node->op == TOKEN_RANDOM) {
+                emit(OP_RANDOM, 0);
             } else if (node->op == TOKEN_POS) {
                 generate_code(node->right);
                 emit(OP_POS, 0);
