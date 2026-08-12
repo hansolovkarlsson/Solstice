@@ -2477,6 +2477,121 @@ anyway, so this is where they land instead.
       specifically exercising the third write-back path; 3 error cases:
       `const` parameter, array target, `Insert` overflow) and
       [docs/LANGUAGE.md](LANGUAGE.md#delete-and-insert).
+- [x] `exit`/`exit(value)` / `halt`/`halt(n)` — early return from a
+      procedure/function (or the main program), and immediate program
+      termination with an OS exit code. Flagged by the survey as
+      "probably the single most commonly-hit gap for anyone porting real
+      Pascal code."
+
+      **`exit(value)` reuses the exact `NODE_LOCAL_ASSIGN` node
+      `FuncName := expr` already builds, not a parallel code path**: a
+      new `build_return_assign_node()` helper (extracted from that
+      existing parse-time logic, `parser.c`) is called from both sites,
+      so `exit(value)`'s value part gets procedural-return-type and
+      subrange-return-type handling, and full type-checking, entirely
+      for free - `type_checker.c` needed a case for `NODE_HALT`'s
+      exit-code expression (must be integer), but none at all for
+      `NODE_EXIT`, since the child it built is already an ordinary
+      `NODE_LOCAL_ASSIGN` the generic pre-switch recursion already
+      type-checks. Same story in `optimizer.c`: zero new cases needed in
+      either `optimize_ast()` (constant folding) or
+      `mark_used_variables()` - both already recurse into every node's
+      `left` unconditionally, and `sweep_dead_assignments()` never
+      touches `NODE_LOCAL_ASSIGN` at all (confirmed by that function's
+      own existing comment), so the return-value assignment can never be
+      wrongly eliminated as dead code.
+
+      **The forward-jump-to-a-not-yet-known-address machinery is a
+      direct reuse of `break`/`continue`'s own pattern**
+      (`record_break()`/`patch_loop()` in `codegen.c`), just rescoped:
+      break/continue's jump list is a *stack* (`loop_stack[]`, since
+      loops nest), but `exit`'s target - the epilogue of whichever
+      function/program is currently being generated - never needs one,
+      since `generate_block()` is never re-entered mid-function (each
+      proc/the main body is one flat pass through
+      `generate_program()`'s own loop). A single flat list
+      (`pending_exit_jumps[]`), reset once per `generate_block()` call
+      alongside the pre-existing `label_table_count = 0;`, patched to
+      `code_idx` right after `generate_block()` returns (i.e. exactly
+      where the epilogue - `OP_LOAD_LOCAL return_slot` (for a function)
+      followed by `OP_RET`, or the program's own trailing `OP_HALT` at
+      top level - is about to be emitted) is enough.
+
+      **The one genuinely new problem: making `exit` correctly unwind
+      out of an enclosing `try`/`finally`/`except`, matching real
+      Pascal's "`finally` always runs" guarantee**. `try`/`finally`'s
+      existing codegen already compiles the cleanup body *twice* (once
+      inline for the normal path, once for the exception-unwind path -
+      see the `NODE_TRY` case) precisely because there's no runtime
+      "run pending cleanups" primitive in this VM; a bare jump out of a
+      `try`-body would leave `vm_except_stack` unbalanced (no matching
+      `OP_END_TRY`) *and* skip `finally` outright. Solved with no new
+      parser-side tracking at all: since codegen already re-walks the
+      AST, a small `try_stack[]` (mirrors `loop_stack[]` again) is
+      pushed right before, and popped right after, each `NODE_TRY`
+      case's own `generate_code(node->left)` (the protected try-body -
+      in both the `finally` and plain `except` branches). `exit`'s own
+      codegen then walks this stack innermost-first, emitting one
+      balancing `OP_END_TRY` per level and, for any level that has a
+      `finally`, a **third** compiled copy of that cleanup body -
+      extending the existing double-compile convention to a third
+      occurrence rather than inventing a different mechanism.
+      `halt`/`halt(n)` deliberately never touches this stack at all -
+      real Pascal/Delphi's `halt` does NOT run `finally` blocks, and
+      this falls out for free anyway, since `OP_HALT`/`OP_HALT_CODE`'s
+      `return;` bypasses `vm_call_stack`/`vm_except_stack` entirely
+      (the whole VM is terminating, so any "unbalanced" state at that
+      point is harmless).
+
+      **No recursion-depth bookkeeping needed for `exit`, confirmed by
+      how `OP_RET` actually works**: `exit`'s jump target is a fixed,
+      compile-time bytecode address (this function's own compiled
+      epilogue), shared by every recursive invocation of that same
+      function; reaching it pops exactly the top `vm_call_stack[]`
+      entry (`vm.c`'s `OP_RET` handler) - i.e. whichever call is
+      currently innermost/active - identical to what an ordinary
+      fall-through return from that same call would already do. No
+      special-casing exists anywhere for this to be correct; it's a
+      direct consequence of `vm_call_stack` already being a stack.
+
+      **One new opcode, `OP_HALT_CODE`, added instead of changing
+      `OP_HALT`'s existing behavior**: `OP_HALT` itself is completely
+      unchanged (`arg` still unused, exit code always `0`) - zero risk
+      to any hand-written `.sasm`/`.bin` already using it. Only
+      `halt(n);` emits the new opcode (`generate_code(n)` - a full
+      expression, not restricted to a compile-time constant, matching
+      this compiler's general philosophy of evaluating real expressions
+      rather than arbitrarily restricting to constants - followed by
+      `OP_HALT_CODE`, which pops that value off the stack as the exit
+      code). This also required plumbing an actual exit code out of the
+      VM for the first time ever: `run_vm()` changed from `void` to
+      `int` (returning a new local `exit_code`, set only by
+      `OP_HALT_CODE`'s handler, falling through into the same
+      termination `OP_HALT` already had), and `solvm.c`'s `main()` now
+      returns that value instead of an unconditional `return 0;` on
+      every successful run.
+
+      **Reserved-word risk checked, not assumed**: `exit`/`halt` weren't
+      reserved words before this - grepped the entire `examples/` tree
+      first for either name used as an identifier (`exit :=`, `halt(`
+      as a declared proc, etc.); the only hits were `.sasm` files' own
+      pre-existing `HALT` mnemonic and English prose in comments,
+      confirming it was safe to make both reserved keywords.
+
+      See `examples/test/exit/test_exit_*.pas` (9 positive cases -
+      bare `exit`, `exit(value)`, unwinding out of nested `if`/`for`,
+      top-level `exit`, a recursive base case, single- and
+      doubly-nested `try`/`finally`, `exit` out of a `try`/`except`'s
+      protected body specifically re-verified by a second, actually-
+      raising call to the same procedure right after to confirm no
+      `vm_except_stack` corruption, and a class method; 2 error cases:
+      `exit(value)` in a plain `procedure`, `exit(value)` at top level)
+      and `examples/test/halt/test_halt_*.pas` (bare `halt` out of a
+      loop, `halt(n)` with a literal and with a runtime expression -
+      both checked against the actual process exit code, and a
+      `halt`-does-NOT-run-`finally` negative test), plus a `solas`/
+      `desole` round-trip on the new `HALT_CODE` opcode, and
+      [docs/LANGUAGE.md](LANGUAGE.md#exit-and-halt).
 
 ### Shipped from the OOP features survey
 

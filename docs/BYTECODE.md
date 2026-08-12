@@ -197,7 +197,8 @@ corruption.
 |---|---|
 | `JMP` | Set `ip = arg` unconditionally. |
 | `JZ` | Pop a value; if it's `0`, set `ip = arg`. Otherwise fall through. |
-| `HALT` | Stop execution. With `-v`, prints the final value of every non-internal variable (see [`desole`](ASSEMBLER.md) for how `__`-prefixed names are hidden). |
+| `HALT` | Stop execution with exit code `0`. With `-v`, prints the final value of every non-internal variable (see [`desole`](ASSEMBLER.md) for how `__`-prefixed names are hidden). `arg` is unused (always emitted as `0`) - kept that way deliberately so existing hand-written `.sasm`/compiled `.bin` using this opcode is completely unaffected by `HALT_CODE` below. |
+| `HALT_CODE` | Pop a value off the stack and use it as the program's exit code (propagated all the way to the OS process exit code - see [`solvm`](ASSEMBLER.md)'s own `main()`), then stop exactly like `HALT` otherwise (including the same `-v` behavior). No `arg`. Only ever emitted by `pascalc` for `halt(n);` - a bare `halt;` still compiles to plain `HALT`. |
 
 ### Procedures
 

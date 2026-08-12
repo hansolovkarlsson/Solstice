@@ -97,6 +97,12 @@ typedef enum {
     TOKEN_ARRAY, TOKEN_OF, TOKEN_DOTDOT,
     TOKEN_LBRACKET, TOKEN_RBRACKET,
     TOKEN_BREAK, TOKEN_CONTINUE,
+    TOKEN_EXIT,   // 'exit;' / 'exit(value);' - early return from the
+                  // current procedure/function (or the main program) -
+                  // see NODE_EXIT in parser.c/codegen.c.
+    TOKEN_HALT,   // 'halt;' / 'halt(n);' - immediate program
+                  // termination, optionally with an exit code - see
+                  // NODE_HALT and OP_HALT_CODE.
     TOKEN_CHAR_TYPE,
     TOKEN_PROCEDURE,
     TOKEN_FORWARD,
@@ -591,7 +597,14 @@ typedef enum {
                   // with NO trailing newline - standard Pascal prints
                   // booleans as words, not as the underlying 0/1.
     OP_READ,
-    OP_HALT,
+    OP_HALT,  // No arg (always ignored - deliberately left unused so
+              // existing hand-written .sasm/.bin using this opcode is
+              // unaffected). Terminates the program with exit code 0.
+    OP_HALT_CODE, // No arg. Pops an int off the stack as the program's
+              // exit code (propagated to the OS process exit code -
+              // see run_vm()/solvm.c), then terminates exactly like
+              // OP_HALT otherwise. Only emitted for 'halt(n);' -
+              // bare 'halt;' still emits plain OP_HALT.
     OP_JMP,  // Unconditional jump. arg = absolute target instruction index.
     OP_JZ,   // Pop the stack; if the value is zero (false), jump to arg.
              // Otherwise fall through to the next instruction.
@@ -1445,6 +1458,17 @@ typedef enum {
     NODE_CONTINUE,
     NODE_RANDOMIZE, // 'Randomize;' - no fields at all (like NODE_BREAK/
                     // NODE_CONTINUE above). See OP_RANDOMIZE.
+    NODE_EXIT, // 'exit;' / 'exit(value);'. left = NULL for the bare
+               // form, otherwise a NODE_LOCAL_ASSIGN targeting the
+               // enclosing function's own return_slot (built the exact
+               // same way 'FuncName := expr' already is - see
+               // build_return_assign_node() in parser.c) - so
+               // type_checker.c/codegen.c need no new logic for the
+               // value part, only for the early-jump part.
+    NODE_HALT, // 'halt;' / 'halt(n);'. left = NULL for the bare form
+               // (compiles to a plain OP_HALT, exit code 0), otherwise
+               // the exit-code expression (compiles to OP_HALT_CODE,
+               // which pops it off the stack at runtime).
     NODE_CALL, // A procedure or function call. data.var_idx = proc_table
                // index. left is the head of the argument list, chained
                // via each argument's own ->next (same technique as

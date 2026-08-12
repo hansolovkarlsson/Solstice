@@ -3,7 +3,10 @@
 
 #include "common.h"
 
-void run_vm(void);
+// Returns the program's exit code: 0 for a plain 'halt;'/OP_HALT
+// (including the implicit end-of-program one), or whatever 'halt(n);'
+// passed via OP_HALT_CODE otherwise.
+int run_vm(void);
 
 // Interns 'program_name' (the .bin path) as command-line argument 0,
 // then each of argv[0..argc-1] as arguments 1..argc, into string_pool[]

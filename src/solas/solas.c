@@ -182,6 +182,7 @@ static const OpcodeInfo OPCODE_TABLE[] = {
     {"PRINT",     OP_PRINT,     OPERAND_NONE},
     {"PRINT_BOOL", OP_PRINT_BOOL, OPERAND_NONE},
     {"HALT",      OP_HALT,      OPERAND_NONE},
+    {"HALT_CODE", OP_HALT_CODE, OPERAND_NONE},
     {"JMP",       OP_JMP,       OPERAND_LABEL},
     {"JZ",        OP_JZ,        OPERAND_LABEL},
     {"CALL",      OP_CALL,      OPERAND_LABEL},

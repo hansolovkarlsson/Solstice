@@ -796,7 +796,7 @@ static void vm_dump_globals(void) {
     }
 }
 
-void run_vm(void) {
+int run_vm(void) {
     memset(vm_vars, 0, sizeof(vm_vars));
     memset(vm_array_mem, 0, sizeof(vm_array_mem));
     memset(vm_frame_stack, 0, sizeof(vm_frame_stack));
@@ -816,6 +816,9 @@ void run_vm(void) {
     int frame_sp = -1;   // top of the frame stack (empty when -1)
     int except_sp = -1;  // top of vm_except_stack[] (empty when -1)
     int ip = 0;
+    int exit_code = 0;   // set by OP_HALT_CODE only - a plain OP_HALT
+                          // (including the program's own implicit
+                          // end-of-code one) leaves this at 0.
 
     while (1) {
         if (ip < 0 || ip >= code_idx) {
@@ -2311,12 +2314,15 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_HALT_CODE:
+                exit_code = vm_pop(&sp);
+                /* fall through */
             case OP_HALT:
                 if (verbose_mode) {
                     printf("\n--- Final Runtime Execution Output Results ---\n");
                     vm_dump_globals();
                 }
-                return;
+                return exit_code;
 
             case OP_DEBUG_STACK: {
                 printf("[DEBUG] stack (%d value%s):", sp + 1, sp == 0 ? "" : "s");

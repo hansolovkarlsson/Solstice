@@ -56,14 +56,6 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] `exit`/`halt` — no early return from a procedure/function
-      (`exit;`, Delphi's `exit(value);`), and no program-terminate-with-
-      code (`halt`/`halt(n)`) - confirmed absent, not just undocumented
-      (see [docs/LANGUAGE.md](LANGUAGE.md#functions): "there's no
-      separate return/exit statement" - the only way out of a function
-      body today is falling through to `end` after assigning its own
-      name). Probably the single most commonly-hit gap for anyone
-      porting real Pascal code.
 - [ ] `case` range labels (`2..5: ...;`) — case labels must be listed
       individually today (`2, 3, 4, 5:`); a Turbo Pascal/Delphi
       extension over ISO Pascal's discrete-label-only `case`.

@@ -90,6 +90,7 @@ static const char *opcode_name(Opcode op) {
         case OP_READ_LOCAL_STR:  return "read_local_str";
         case OP_READ_LOCAL_CHAR: return "read_local_char";
         case OP_HALT:  return "halt";
+        case OP_HALT_CODE: return "halt_code";
         case OP_JMP:   return "jmp";
         case OP_JZ:    return "jz";
         case OP_CALL:  return "call";

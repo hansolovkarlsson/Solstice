@@ -200,6 +200,67 @@ static void patch_loop(int continue_target, int break_target) {
     for (int i = 0; i < lc->break_count; i++) code[lc->break_jumps[i]].arg = break_target;
 }
 
+// exit support: unlike break/continue (one pending list per enclosing
+// LOOP, since loops nest) exit's target is always "the epilogue of the
+// function/program currently being generated" - and generate_block() is
+// never re-entered mid-function (each proc/the main body is one flat
+// pass through generate_program()'s own loop below), so a single flat
+// list, reset once per generate_block() call alongside label_table_count,
+// is enough - no stack needed. Same emit-then-patch idea as
+// record_break()/record_continue() above.
+#define MAX_EXIT_JUMPS 64
+
+static int pending_exit_jumps[MAX_EXIT_JUMPS];
+static int pending_exit_jump_count = 0;
+
+static void record_exit(void) {
+    if (pending_exit_jump_count >= MAX_EXIT_JUMPS) {
+        fprintf(stderr, "%s: Compile Error: Too many 'exit' statements in one procedure/function (limit is %d)\n",
+                get_current_filename(), MAX_EXIT_JUMPS);
+        fatal_abort();
+    }
+    pending_exit_jumps[pending_exit_jump_count++] = code_idx;
+    emit(OP_JMP, 0); // placeholder, patched once the epilogue's own code_idx is known
+}
+
+// exit/try interaction: NODE_TRY pushes one of these right before
+// generating its own protected try-body (node->left) and pops it right
+// after - so at any point during that body's generation, this stack
+// holds exactly the enclosing try/finally levels an 'exit' statement
+// there would need to unwind through: one OP_END_TRY per level (to keep
+// vm_except_stack balanced - see vm.c's OP_TRY/OP_END_TRY), plus a THIRD
+// compiled copy of any enclosing 'finally' body (the try/finally case
+// below already compiles it twice - once inline, once for the
+// exception-unwind path), since exit's jump bypasses both of those
+// existing copies. 'halt' deliberately never walks this stack - it
+// doesn't run 'finally' blocks, matching real Pascal/Delphi, and gets
+// this for free since OP_HALT/OP_HALT_CODE's return; bypasses
+// vm_except_stack entirely anyway.
+#define MAX_TRY_DEPTH 32
+
+typedef struct {
+    int has_finally;
+    ASTNode *finally_body; // only valid when has_finally is true
+} TryContext;
+
+static TryContext try_stack[MAX_TRY_DEPTH];
+static int try_depth = 0;
+
+static void push_try(int has_finally, ASTNode *finally_body) {
+    if (try_depth >= MAX_TRY_DEPTH) {
+        fprintf(stderr, "%s: Compile Error: try/except/finally nested too deeply (limit is %d)\n",
+                get_current_filename(), MAX_TRY_DEPTH);
+        fatal_abort();
+    }
+    try_stack[try_depth].has_finally = has_finally;
+    try_stack[try_depth].finally_body = finally_body;
+    try_depth++;
+}
+
+static void pop_try(void) {
+    try_depth--;
+}
+
 // goto/label support: one entry per label id seen so far in the CURRENT
 // block (main program or procedure/function body - see generate_block()
 // below, which resets this table at the start of each one). A NODE_GOTO
@@ -788,6 +849,37 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_EXIT:
+            if (node->left) {
+                generate_code(node->left); // NODE_LOCAL_ASSIGN into return_slot
+            }
+            // Unwind every enclosing try/finally/except level, innermost
+            // first - one balancing OP_END_TRY per level (vm_except_stack
+            // must stay balanced even for a jump, not just a fall-
+            // through OP_END_TRY or an OP_RAISE), plus a third compiled
+            // copy of each enclosing 'finally' body, since exit's jump
+            // bypasses both compiled copies the NODE_TRY case above
+            // already emits.
+            for (int t = try_depth - 1; t >= 0; t--) {
+                emit(OP_END_TRY, 0);
+                if (try_stack[t].has_finally) {
+                    generate_code(try_stack[t].finally_body);
+                }
+            }
+            record_exit();
+            generate_code(node->next); // unreachable, kept for uniformity - see NODE_BREAK above
+            break;
+
+        case NODE_HALT:
+            if (node->left) {
+                generate_code(node->left); // exit-code expression
+                emit(OP_HALT_CODE, 0);
+            } else {
+                emit(OP_HALT, 0);
+            }
+            generate_code(node->next); // unreachable, kept for uniformity - see NODE_BREAK above
+            break;
+
         case NODE_LABEL: {
             int idx = find_or_add_label(node->data.num_value);
             label_table[idx].code_idx = code_idx;
@@ -1302,7 +1394,12 @@ void generate_code(ASTNode *node) {
             if (node->op == TOKEN_FINALLY) {
                 int try_idx = code_idx;
                 emit(OP_TRY, 0);                 // placeholder, patched below
+                push_try(1, node->right);        // node->right = the finally body -
+                                                  // an 'exit' inside this try-body
+                                                  // needs to know it, to run a third
+                                                  // compiled copy of it on its way out.
                 generate_code(node->left);       // try-body
+                pop_try();
                 emit(OP_END_TRY, 0);
                 generate_code(node->right);      // cleanup - COPY 1 (normal path)
                 int jmp_idx = code_idx;
@@ -1315,7 +1412,12 @@ void generate_code(ASTNode *node) {
             } else {
                 int try_idx = code_idx;
                 emit(OP_TRY, 0);                 // placeholder, patched below
+                push_try(0, NULL);               // no finally on this level - an
+                                                  // 'exit' inside this try-body still
+                                                  // needs a balancing OP_END_TRY, just
+                                                  // no cleanup copy to run.
                 generate_code(node->left);       // try-body
+                pop_try();
                 emit(OP_END_TRY, 0);
                 int jmp_idx = code_idx;
                 emit(OP_JMP, 0);                 // placeholder, patched below
@@ -1591,6 +1693,8 @@ void generate_code(ASTNode *node) {
 // boundaries, so it can't do this reset itself.
 static void generate_block(ASTNode *body) {
     label_table_count = 0;
+    pending_exit_jump_count = 0;
+    try_depth = 0;
     generate_code(body);
 }
 
@@ -1641,6 +1745,12 @@ void generate_program(ASTNode *main_body) {
                 emit(OP_STORE_LOCAL, p);
             }
             generate_block(proc_table[i].body);
+            // Every pending 'exit' inside this proc's body targets
+            // exactly here - the epilogue about to be emitted below -
+            // regardless of how deeply nested the exit statement was.
+            for (int e = 0; e < pending_exit_jump_count; e++) {
+                code[pending_exit_jumps[e]].arg = code_idx;
+            }
             if (proc_table[i].is_function) {
                 emit(OP_LOAD_LOCAL, proc_table[i].return_slot);
             }
@@ -1652,6 +1762,12 @@ void generate_program(ASTNode *main_body) {
     set_current_filename(main_filename);
     codegen_current_proc_idx = -1;
     generate_block(main_body);
+    // A bare 'exit;' at top level (outside any function) targets right
+    // here - the program's own trailing OP_HALT, emitted moments later
+    // by pascalc.c's emit_halt() call, once generate_program() returns.
+    for (int e = 0; e < pending_exit_jump_count; e++) {
+        code[pending_exit_jumps[e]].arg = code_idx;
+    }
 
     for (int i = 0; i < pending_call_count; i++) {
         code[pending_calls[i].call_instr_idx].arg = proc_table[pending_calls[i].target_proc_idx].entry_address;

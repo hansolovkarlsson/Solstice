@@ -322,7 +322,13 @@ through whichever of `NODE_ASSIGN`/`NODE_LOCAL_ASSIGN`/
 shrink a string so it never errors, `Insert` can grow one past this
 compiler's string-length limit so it follows `+` concatenation's own
 fatal-on-overflow convention (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#delete-and-insert)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#delete-and-insert)); and
+`exit`/`exit(value)`/`halt`/`halt(n)` — early return from a procedure/
+function (or the main program), and immediate program termination with
+an OS exit code, both correctly unwinding through any enclosing
+`try`/`finally` on the way out (`exit` runs every enclosing `finally`,
+matching real Pascal; `halt` deliberately does not) (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#exit-and-halt)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus

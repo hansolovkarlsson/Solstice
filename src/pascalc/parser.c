@@ -9844,7 +9844,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
            t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING || t == TOKEN_RANDOMIZE ||
-           t == TOKEN_DELETE || t == TOKEN_INSERT ||
+           t == TOKEN_DELETE || t == TOKEN_INSERT || t == TOKEN_EXIT || t == TOKEN_HALT ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -11505,6 +11505,37 @@ static ASTNode *parse_write_arg(void) {
     return arg;
 }
 
+// Builds the NODE_LOCAL_ASSIGN that stores a value into function_idx's
+// own return_slot - shared by the 'FuncName := expr' assignment (below,
+// in statement()'s TOKEN_IDENTIFIER branch) and 'exit(value)' (also in
+// statement()), so both go through the exact same procedural-return-type
+// and subrange-return-type handling. Assumes 'token' is positioned right
+// after whichever prefix ('FuncName :=' or 'exit(') already matched, at
+// the start of the value expression itself.
+static ASTNode *build_return_assign_node(int function_idx) {
+    ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
+    stmt->data.var_idx = proc_table[function_idx].return_slot;
+    stmt->expression_type = proc_table[function_idx].return_type;
+    if (proc_table[function_idx].return_type >= TYPE_PROC_BASE) {
+        // A procedural return type needs the same specialized parser
+        // every other procedural-type assignment target already uses -
+        // the generic expression() below would misparse a bare proc
+        // name as a zero-argument CALL to it, not a reference (see
+        // docs/LANGUAGE.md#procedural-types).
+        stmt->left = parse_proc_value(proc_table[function_idx].return_type - TYPE_PROC_BASE, token.line);
+    } else {
+        // return_is_subrange is never set for a procedural return type
+        // (mirrors ProcParamHeader's own "method return types are never
+        // subrange" precedent), so this wrap is meaningless there
+        // anyway - only reached for an ordinary scalar return type.
+        stmt->left = wrap_range_check(expression(),
+            proc_table[function_idx].return_is_subrange,
+            proc_table[function_idx].return_subrange_lower,
+            proc_table[function_idx].return_subrange_upper);
+    }
+    return stmt;
+}
+
 static ASTNode *statement(void) {
     if (token.type == TOKEN_NUMBER) {
         // A bare integer literal can only ever appear here as a
@@ -11614,29 +11645,8 @@ static ASTNode *statement(void) {
             match(TOKEN_IDENTIFIER);
             if (token.type == TOKEN_ASSIGN) {
                 // Assigning to the function's own name sets its return value.
-                ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
-                stmt->data.var_idx = proc_table[current_function_idx].return_slot;
-                stmt->expression_type = proc_table[current_function_idx].return_type;
                 match(TOKEN_ASSIGN);
-                if (proc_table[current_function_idx].return_type >= TYPE_PROC_BASE) {
-                    // A procedural return type needs the same specialized
-                    // parser every other procedural-type assignment target
-                    // already uses - the generic expression() below would
-                    // misparse a bare proc name as a zero-argument CALL to
-                    // it, not a reference (see docs/LANGUAGE.md#procedural-types).
-                    stmt->left = parse_proc_value(proc_table[current_function_idx].return_type - TYPE_PROC_BASE, token.line);
-                } else {
-                    // return_is_subrange is never set for a procedural
-                    // return type (mirrors ProcParamHeader's own "method
-                    // return types are never subrange" precedent), so this
-                    // wrap is meaningless there anyway - only reached for
-                    // an ordinary scalar return type.
-                    stmt->left = wrap_range_check(expression(),
-                        proc_table[current_function_idx].return_is_subrange,
-                        proc_table[current_function_idx].return_subrange_lower,
-                        proc_table[current_function_idx].return_subrange_upper);
-                }
-                return stmt;
+                return build_return_assign_node(current_function_idx);
             }
             // Otherwise this is a recursive self-call used as a statement
             // (discarding the return value) - same shape as calling any
@@ -12417,6 +12427,31 @@ static ASTNode *statement(void) {
     if (token.type == TOKEN_RANDOMIZE) {
         ASTNode *stmt = create_node(NODE_RANDOMIZE);
         match(TOKEN_RANDOMIZE);
+        return stmt;
+    }
+
+    if (token.type == TOKEN_EXIT) {
+        match(TOKEN_EXIT);
+        ASTNode *stmt = create_node(NODE_EXIT);
+        if (token.type == TOKEN_LPAREN) {
+            if (current_function_idx == -1 || !proc_table[current_function_idx].is_function) {
+                compile_error(token.line, "'exit' with a value is only allowed inside a function");
+            }
+            match(TOKEN_LPAREN);
+            stmt->left = build_return_assign_node(current_function_idx);
+            match(TOKEN_RPAREN);
+        }
+        return stmt;
+    }
+
+    if (token.type == TOKEN_HALT) {
+        match(TOKEN_HALT);
+        ASTNode *stmt = create_node(NODE_HALT);
+        if (token.type == TOKEN_LPAREN) {
+            match(TOKEN_LPAREN);
+            stmt->left = expression();
+            match(TOKEN_RPAREN);
+        }
         return stmt;
     }
 

@@ -520,6 +520,60 @@ end;
   re-checking the loop condition — it doesn't skip incrementing the loop
   variable.
 
+### `exit` and `halt`
+
+```pascal
+function Find(target: integer): integer;
+var i: integer;
+begin
+    for i := 1 to 10 do begin
+        if data[i] = target then
+            exit(i);          { found it - return i immediately }
+    end;
+    exit(-1);                 { not found }
+end;
+
+procedure ProcessAll;
+begin
+    while true do begin
+        if NoMoreWork then
+            halt;              { stop the whole program right here }
+        DoWork;
+    end;
+end;
+```
+
+- **`exit;`** — early return from the current procedure/function (or,
+  used at top level, from the main program itself), skipping any
+  remaining statements and jumping straight to the end of the body,
+  wherever the `exit` is - however deeply nested inside `if`/`while`/
+  `for`/`repeat`/`case`/`with` it is.
+- **`exit(value);`** — same, but first assigns `value` to the enclosing
+  function's own return name, exactly like `FuncName := value;` (see
+  [Functions](#functions)) followed by a bare `exit;`. **Only legal
+  inside a `function`** — a plain `procedure` has no return value to
+  set, and neither does the main program itself; either one is a
+  compile-time error.
+- `exit;`/`exit(value);` inside a `try`/`finally` still runs every
+  enclosing `finally` block on the way out, innermost first, exactly as
+  if execution had fallen through normally — real Pascal's own
+  guarantee that a `finally` block "always runs" holds for `exit` too,
+  not just for a normal fall-through or a raised exception.
+- Inside a recursive function, `exit(value)` only returns from the
+  *current* call - whichever call is innermost/active when it runs -
+  never more than one level, no matter how deep the recursion.
+- **`halt;`** — terminates the entire program immediately, from
+  anywhere, unlike `exit` (which only leaves the current procedure/
+  function). Equivalent to falling off the very end of the main program
+  body (exit code `0`).
+- **`halt(n);`** — same, but sets the program's own OS process exit
+  code to `n` (a full expression, not just a literal - `halt(errorCode
+  + 1)` works). Checkable from the shell via `$?` right after running
+  `solvm`.
+- **`halt`/`halt(n)` deliberately do NOT run `finally` blocks** —
+  matches real Pascal/Delphi: `halt` is a hard stop, not a controlled
+  unwind. Contrast with `exit` above.
+
 ### `goto` and labels
 
 ```pascal
@@ -4269,12 +4323,13 @@ end.
   definition omits both the parameter list *and* the return type, since
   both were already given).
 - **The return value is set by assigning to the function's own name**
-  inside its body — `factorial := ...` above. This is the only way to
-  set it; there's no separate `return`/`exit` statement. If a function's
-  body never assigns to its own name, it returns a default value (`0`
-  for `integer`/`boolean`/`char`-as-a-number, or an out-of-range value
-  for `string`/`char` that will cleanly error if actually used — not
-  silently wrong data).
+  inside its body — `factorial := ...` above — or, equivalently,
+  `exit(value);` (see [`exit` and `halt`](#exit-and-halt)), which sets
+  it *and* returns immediately in one step. If a function's body never
+  assigns to its own name (through either form) before falling off the
+  end, it returns a default value (`0` for `integer`/`boolean`/
+  `char`-as-a-number, or an out-of-range value for `string`/`char` that
+  will cleanly error if actually used — not silently wrong data).
 - Reading the function's own name as an expression (to check the return
   value computed so far) isn't supported — only assigning to it is.
   Inside its own body, using the bare name as an expression is treated as

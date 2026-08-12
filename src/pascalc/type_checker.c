@@ -566,6 +566,19 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        // NODE_EXIT needs no case of its own: its 'left', when present,
+        // is a NODE_LOCAL_ASSIGN built the exact same way 'FuncName :=
+        // expr' already is (see build_return_assign_node() in
+        // parser.c), so the generic pre-switch recursion into 'left'
+        // above already runs it through the NODE_LOCAL_ASSIGN case.
+        case NODE_HALT:
+            if (node->left && node->left->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: 'halt' requires an integer exit code\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_BUILTIN_CALL:
             switch (node->op) {
                 case TOKEN_LENGTH:

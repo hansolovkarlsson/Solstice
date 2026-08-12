@@ -354,6 +354,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "of") == 0) token.type = TOKEN_OF;
         else if (strcasecmp(token.text, "break") == 0) token.type = TOKEN_BREAK;
         else if (strcasecmp(token.text, "continue") == 0) token.type = TOKEN_CONTINUE;
+        else if (strcasecmp(token.text, "exit") == 0) token.type = TOKEN_EXIT;
+        else if (strcasecmp(token.text, "halt") == 0) token.type = TOKEN_HALT;
         else if (strcasecmp(token.text, "label") == 0) token.type = TOKEN_LABEL;
         else if (strcasecmp(token.text, "goto") == 0) token.type = TOKEN_GOTO;
         else if (strcasecmp(token.text, "text") == 0) token.type = TOKEN_TEXT_TYPE;

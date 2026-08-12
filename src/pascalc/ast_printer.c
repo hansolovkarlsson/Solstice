@@ -461,6 +461,30 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_EXIT:
+            printf("[Exit]\n");
+            if (node->left) {
+                print_indent(indent + 1);
+                printf("Value:\n");
+                print_ast(node->left, indent + 2);
+            }
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
+        case NODE_HALT:
+            printf("[Halt]\n");
+            if (node->left) {
+                print_indent(indent + 1);
+                printf("Code:\n");
+                print_ast(node->left, indent + 2);
+            }
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_LABEL:
             printf("[Label] %d:\n", node->data.num_value);
             print_ast(node->left, indent + 1);

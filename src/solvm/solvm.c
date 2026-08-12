@@ -47,8 +47,8 @@ int main(int argc, char *argv[]) {
     vm_set_program_args(bin_path, program_argc, program_argv);
 
     if (verbose_mode) printf("\n--- Step 2: Virtual Machine Execution ---\n");
-    run_vm();
+    int exit_code = run_vm();
     fatal_error_active = 0;
 
-    return 0;
+    return exit_code;
 }
