@@ -1627,6 +1627,67 @@ a separate storage region, a larger change than `byte`/`shortint`/
 `word` needed. Tracked as a future item in
 [docs/ROADMAP.md](ROADMAP.md).
 
+## `sizeOf`
+
+**`sizeOf(x)` answers "how many bytes would `x` occupy as a [typed
+(binary) file](#typed-binary-files) record/element" — not "how much
+memory does `x` use."** These are different questions in this VM:
+every scalar occupies exactly one uniform slot in memory *regardless*
+of declared type (that's true for `integer` and `byte` alike), so an
+honest in-memory answer would always be a uniform, uninteresting number
+— the one place a byte-size answer is actually meaningful and variable
+is on-disk typed-file layout, which is what `byte`/`shortint`/`word`
+(above) already give real control over. This is a deliberate departure
+from Delphi's `sizeOf` (which answers real in-memory layout), not an
+oversight.
+
+```pascal
+type
+    TRec = record
+        flag: byte;
+        total: integer;
+    end;
+var
+    f: file of TRec;
+    r: TRec;
+begin
+    writeln(sizeOf(TRec));   { 5 }
+    writeln(sizeOf(r));      { 5 - same answer, from the variable's type }
+    assign(f, 'data.bin');
+    writeln(sizeOf(f));      { 5 - works even before reset/rewrite opens it }
+end.
+```
+
+`sizeOf(x)` accepts:
+
+- **A record type name** (`sizeOf(TRec)`) — the type must be legal as a
+  typed file's element type (see
+  [Typed (binary) files](#typed-binary-files) — no array, string, char,
+  pointer, or procedural-typed fields, checked recursively through any
+  nested record).
+- **A record variable** (`sizeOf(r)`, global or local) — same answer as
+  its type.
+- **A typed-file variable** (`sizeOf(f)`) — the file's own per-record
+  byte size, computed at its `var` declaration and available
+  immediately, even before `reset`/`rewrite` ever opens the file
+  (unlike `filesize(f)`, which needs an actual open file to answer a
+  record *count*).
+- **A scalar type name/keyword** (`sizeOf(integer)`, `sizeOf(byte)`, a
+  declared type alias, enumerated type, or subrange type name) — `4`
+  for `integer`/`real`/`boolean`/a set/an enumerated type, `1` for
+  `byte`/`shortint`, `2` for `word`. A hand-written subrange stays `4`
+  even if its bounds match `byte`'s (`sizeOf(TAge)` where
+  `TAge = 0..255` is `4`, not `1`) — the same compatibility rule
+  `byte`/`shortint`/`word` themselves already follow: only the literal
+  keyword narrows anything.
+
+**Not supported yet**: `sizeOf` on a plain scalar variable (`var b:
+byte; sizeOf(b)`) — a documented v1 gap, not a silent one; use
+`sizeOf(byte)` (or whatever the variable's declared type is) instead,
+which gives the identical answer. Also not supported: arrays (types or
+variables), classes/pointers, string/char types or variables, and
+`int64` (doesn't exist in this compiler).
+
 ## Enumerated types
 
 ```pascal

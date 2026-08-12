@@ -295,7 +295,12 @@ their own narrower width (1 or 2 bytes, not 4) as a typed-file field or
 element, for interop with an external fixed-width binary format
 (`int64` not yet implemented — this VM's `integer` occupies one native-
 `int`-sized storage slot everywhere, the same reason `real` stays 32-bit
-— see [docs/LANGUAGE.md](docs/LANGUAGE.md#sized-integers)). Also working: records as
+— see [docs/LANGUAGE.md](docs/LANGUAGE.md#sized-integers)); and
+`sizeOf(x)` — a pure compile-time constant answering "how many bytes
+would `x` occupy as a typed-file record/element" (a record type,
+record/typed-file variable, or scalar type — not "memory size," which
+would always be a flat, uninteresting 4 in this VM's uniform-slot model
+— see [docs/LANGUAGE.md](docs/LANGUAGE.md#sizeof)). Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus
 whole-element copy to/from another array element or a plain record

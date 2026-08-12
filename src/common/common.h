@@ -211,6 +211,11 @@ typedef enum {
                       // typed file only. See OP_FILE_SEEK.
     TOKEN_FILESIZE,   // the 'filesize' builtin function ('filesize(f)') -
                       // a typed file only. See OP_FILE_SIZE.
+    TOKEN_SIZEOF,     // the 'sizeOf' builtin function ('sizeOf(x)') - see
+                      // factor()'s TOKEN_SIZEOF branch in parser.c.
+                      // Always resolves to a compile-time-constant
+                      // NODE_NUMBER - no opcode, no runtime component
+                      // at all.
     TOKEN_ABSTRACT,   // trailing 'abstract;' modifier after a method header
                       // inside a 'class ... end;' body - see
                       // ProcParamHeader.is_abstract in parser.c. Deliberately

@@ -53,30 +53,6 @@ anyway, so this is where they land instead.
 
 - [ ] Dynamic arrays (array `copy`/slicing) — standard Pascal arrays are
       always fixed-size
-- [ ] `sizeOf` — a Turbo Pascal/Delphi built-in, not ISO Pascal.
-      Complicated by this VM's memory model: every scalar (`integer`,
-      `real`, `boolean`, `char`, `string`) is a uniform 4-byte slot in
-      `vm_vars[]`/`vm_stack[]` (strings/chars are `string_pool[]`
-      indices, not inline bytes - see the memory-model section in
-      `CLAUDE.md`), so a literal byte-size answer wouldn't reflect
-      anything real the way it does in Delphi. Would need a defined
-      convention first (e.g. "slots occupied" rather than bytes) before
-      this means anything meaningful for records/arrays/classes; no
-      design yet.
-
-      **A concrete motivating use case, not just parity with Delphi**:
-      typed (binary) files (see `#typed-binary-files` below) - a `file
-      of TRecord` variable's `filesize(f)` returns the record COUNT, not
-      a byte count, so computing the file's actual byte size needs
-      `TRecord`'s own on-disk size multiplied in by hand. Since
-      `byte`/`shortint`/`word` shipped (see docs/CHANGELOG.md), a
-      record's leaf fields no longer all have the same on-disk width -
-      `record_type_byte_size()` (parser.c) already computes the real
-      per-field-width total internally for `reset`/`rewrite`'s own use,
-      so a future `sizeOf` could reuse that exact function rather than
-      needing its own new width-tracking logic from scratch; still no
-      design for exposing it as a general `sizeOf(x)` builtin (arrays,
-      classes, plain scalars) beyond this one typed-file case.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call

@@ -2599,6 +2599,32 @@ static void parse_set_base_type(void) {
     }
 }
 
+// True if the CURRENT token would be accepted by parse_scalar_type()
+// below as a scalar type name, WITHOUT consuming it or erroring -
+// mirrors that function's own resolution order as a pure boolean
+// pre-check (TOKEN_SET/TOKEN_TEXT_TYPE/TOKEN_FILE_TYPE excluded: none
+// makes sense as a bare type-name argument on its own - 'set' alone
+// isn't a complete type without 'of ...', and the file keywords are
+// things parse_scalar_type() itself rejects with a dedicated error).
+// Used by sizeOf(x) to decide "is x a type name" before falling back
+// to resolving it as a variable instead - factor()/expression() have
+// no other existing hook for "identifier that names a type."
+static int token_is_scalar_type_name(void) {
+    if (token.type == TOKEN_INTEGER || token.type == TOKEN_BOOLEAN || token.type == TOKEN_STRING_TYPE
+        || token.type == TOKEN_CHAR_TYPE || token.type == TOKEN_REAL_TYPE
+        || token.type == TOKEN_BYTE || token.type == TOKEN_SHORTINT || token.type == TOKEN_WORD) {
+        return 1;
+    }
+    if (token.type == TOKEN_IDENTIFIER) {
+        return find_type_alias(token.text) != -1
+            || find_enum_type(token.text) != -1
+            || find_subrange_type(token.text) != -1
+            || find_pointer_type(token.text) != -1
+            || find_proc_type(token.text) != -1;
+    }
+    return 0;
+}
+
 // A scalar type - one of the eight built-in keywords (integer, boolean,
 // string, char, real, byte, shortint, word), a previously declared type
 // alias, enumerated type, subrange type, or 'set of ...' resolving to
@@ -5492,6 +5518,89 @@ static ASTNode *factor(void) {
         ASTNode *node = create_node(NODE_BUILTIN_CALL);
         node->op = TOKEN_FILESIZE;
         node->data.var_idx = fidx;
+        node->expression_type = TYPE_INTEGER;
+        return node;
+    } else if (token.type == TOKEN_SIZEOF) {
+        // 'sizeOf(x)' - the number of bytes x would occupy as a typed
+        // (binary) file record/element (NOT "memory size" - every
+        // scalar in this VM occupies one uniform slot regardless of
+        // declared type, so that answer would always just be 4 and
+        // reflect nothing real; see docs/LANGUAGE.md#sizeof). Always a
+        // compile-time constant - x is resolved to a byte count right
+        // here and spliced in as a plain NODE_NUMBER, exactly like a
+        // named constant substitutes - no opcode, no type_checker.c/
+        // optimizer.c/codegen.c/vm.c involvement at all.
+        match(TOKEN_SIZEOF);
+        match(TOKEN_LPAREN);
+        int line = token.line;
+        int size;
+        // Set (and left for the shared typed-file-safety check just
+        // below) whenever x resolved to a record type, whether named
+        // directly or via a record variable.
+        int rt_idx_for_check = -1;
+        char bad_record_name[MAX_NAME] = "";
+        int rv_is_local, rv_record_type_idx;
+        const int *rv_field_idx;
+        int local_levels_up;
+        if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+            // A record TYPE name.
+            rt_idx_for_check = find_record_type(token.text);
+            strcpy(bad_record_name, token.text);
+            size = record_type_byte_size(rt_idx_for_check);
+            match(TOKEN_IDENTIFIER);
+        } else if (token.type == TOKEN_IDENTIFIER && find_file_var_soft(token.text) != -1
+                   && sym_table[find_file_var_soft(token.text)].type == TYPE_TYPED_FILE) {
+            // A typed-file VARIABLE - reuse its already-cached byte_size,
+            // no recomputation, and meaningful even before reset/rewrite
+            // ever opens the file (a pure declaration-time answer).
+            int fidx = find_file_var_soft(token.text);
+            size = typed_file_vars[find_typed_file_var(fidx)].byte_size;
+            match(TOKEN_IDENTIFIER);
+        } else if (token.type == TOKEN_IDENTIFIER
+                   && find_any_record_var(token.text, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            // A record VARIABLE (global or local) - resolve to its
+            // record type, same answer/check as the type-name case.
+            rt_idx_for_check = rv_record_type_idx;
+            strcpy(bad_record_name, token.text);
+            size = record_type_byte_size(rt_idx_for_check);
+            match(TOKEN_IDENTIFIER);
+        } else if (token_is_scalar_type_name()) {
+            // A scalar TYPE name/keyword - reuse parse_scalar_type()
+            // wholesale, including its scalar_type_disk_width side
+            // channel (exactly the same source of truth byte/shortint/
+            // word fields already use).
+            DataType t = parse_scalar_type();
+            if (!is_typed_file_safe_scalar(t)) {
+                compile_error(line, "This type can't be used with 'sizeOf' - only integer, real, boolean, byte, shortint, word, an enumerated type, or a set are allowed");
+            }
+            size = (scalar_type_disk_width == TOKEN_BYTE || scalar_type_disk_width == TOKEN_SHORTINT) ? 1
+                 : (scalar_type_disk_width == TOKEN_WORD) ? 2 : (int)sizeof(int);
+        } else if (token.type == TOKEN_IDENTIFIER && find_local_outward(token.text, &local_levels_up) != -1) {
+            if (local_at(find_local_outward(token.text, &local_levels_up), local_levels_up)->is_array) {
+                compile_error(line, "'sizeOf' doesn't support arrays");
+            }
+            // A plain scalar variable - explicit v1 scope cut (see
+            // docs/LANGUAGE.md#sizeof), not silently returning a wrong
+            // answer for a byte/shortint/word-declared one.
+            compile_error(line, "'sizeOf' on a scalar variable isn't supported yet - use 'sizeOf' with the type name instead");
+            size = 0; // unreachable
+        } else if (token.type == TOKEN_IDENTIFIER && find_var_soft_visible(token.text) != -1) {
+            if (sym_table[find_var_soft_visible(token.text)].is_array) {
+                compile_error(line, "'sizeOf' doesn't support arrays");
+            }
+            compile_error(line, "'sizeOf' on a scalar variable isn't supported yet - use 'sizeOf' with the type name instead");
+            size = 0; // unreachable
+        } else {
+            compile_error(line, "'sizeOf' expects a type name, a record variable, or a typed file variable (see docs/LANGUAGE.md)");
+            size = 0; // unreachable
+        }
+        if (rt_idx_for_check != -1 && !record_type_is_typed_file_safe(rt_idx_for_check)) {
+            compile_error(line, "'%s' can't be used with 'sizeOf' - no array, string, char, pointer, or procedural-typed fields allowed (same restriction as a typed file's element type)", bad_record_name);
+        }
+        match(TOKEN_RPAREN);
+        ASTNode *node = create_node(NODE_NUMBER);
+        node->line = line;
+        node->data.num_value = size;
         node->expression_type = TYPE_INTEGER;
         return node;
     } else if (token.type == TOKEN_PARAMCOUNT) {

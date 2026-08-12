@@ -2298,6 +2298,60 @@ anyway, so this is where they land instead.
       case, plus the compatibility test above; 3 error cases, one per
       type's bounds check) and
       [docs/LANGUAGE.md](LANGUAGE.md#sized-integers).
+- [x] `sizeOf` — the smallest feature shipped yet: it's a pure compile-
+      time constant. `sizeOf(x)` resolves `x` to a byte count during
+      parsing and splices in a plain `NODE_NUMBER` literal, the same
+      pattern named-constant substitution already uses - **zero new
+      opcodes, zero `type_checker.c`/`optimizer.c`/`codegen.c`/`vm.c`/
+      `solas.c`/`desole.c` changes**. Almost all the real work had
+      already shipped with sized integers: `record_type_byte_size()`
+      (recursion through nested records included), `TypedFileVarDef
+      .byte_size` (a typed-file variable's own answer, precomputed at
+      its `var` declaration - `sizeOf(f)` just reads it directly, no
+      recomputation, and it's available even before `reset`/`rewrite`
+      ever opens the file, unlike `filesize(f)`), and
+      `is_typed_file_safe_scalar()`/`record_type_is_typed_file_safe()`
+      (reused as `sizeOf`'s own restriction boundary, not reinvented).
+
+      **A deliberate semantic choice, stated plainly rather than left
+      implicit**: `sizeOf(x)` answers "how many bytes would `x` occupy
+      as a typed-file record/element," NOT "how much memory does `x`
+      use" - every scalar in this VM occupies one uniform slot
+      regardless of declared type, so an honest in-memory answer would
+      always be a flat, uninteresting `4`. This is why the ROADMAP
+      bullet had no design for years; on-disk typed-file width is the
+      one place a byte-size answer is actually meaningful and variable
+      in this compiler.
+
+      **A real gap found during design validation, deliberately not
+      closed in v1**: `RecordField`/`TypedFileVarDef` carry a
+      `disk_width` tag (from the sized-integers work), but plain
+      `Symbol`/`LocalSymbol` (ordinary variables) don't - a bare `var b:
+      byte;` is indistinguishable from a `0..255`-subrange-typed one at
+      the variable level. Extending `disk_width` to `Symbol`/
+      `LocalSymbol`/`ClassVar`/the function-return-type fields would
+      need ~8-9 new mechanical population sites for a marginal benefit
+      (`sizeOf(byte)` already gives a plain scalar variable's correct
+      answer). Rather than do that plumbing now, or worse, support
+      `sizeOf(scalarVar)` without it and silently return the wrong
+      answer (`4` instead of `1`), v1 explicitly rejects it with a
+      message naming the `sizeOf(<type>)` workaround - a documented v1
+      cut, not a silent inconsistency.
+
+      No existing hook in this parser resolves "the next identifier
+      names a type, not a variable" inside expression parsing (the only
+      precedent, `is`/`as`, is a one-off hand-rolled special case) - a
+      new lookahead helper (`token_is_scalar_type_name()`) mirrors
+      `parse_scalar_type()`'s own resolution order as a pure boolean
+      pre-check, letting `sizeOf` try "is this a type name" before
+      falling back to variable resolution, then reuse
+      `parse_scalar_type()` wholesale (including its
+      `scalar_type_disk_width` side channel) once it commits to the
+      type-name path. See `examples/test/sizeof/test_sizeof_*.pas` (5
+      positive cases including a typed-file variable's answer before
+      the file is ever opened, and a named subrange type confirming the
+      same compatibility guarantee sized integers already have; 5 error
+      cases) and [docs/LANGUAGE.md](LANGUAGE.md#sizeof).
 
 ### Shipped from the OOP features survey
 

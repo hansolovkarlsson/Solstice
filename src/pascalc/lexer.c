@@ -437,6 +437,7 @@ void next_token(void) {
         else if (strcasecmp(token.text, "file") == 0) token.type = TOKEN_FILE_TYPE;
         else if (strcasecmp(token.text, "seek") == 0) token.type = TOKEN_SEEK;
         else if (strcasecmp(token.text, "filesize") == 0) token.type = TOKEN_FILESIZE;
+        else if (strcasecmp(token.text, "sizeof") == 0) token.type = TOKEN_SIZEOF;
         else if (strcasecmp(token.text, "abstract") == 0) token.type = TOKEN_ABSTRACT;
         else if (strcasecmp(token.text, "sealed") == 0) token.type = TOKEN_SEALED;
         else if (strcasecmp(token.text, "out") == 0) token.type = TOKEN_OUT;
