@@ -288,7 +288,14 @@ local, the one deliberate scope cut behind the whole feature (see
 text, compiled entirely at compile time into one raw-int transfer per
 field, the same "no runtime record-copy opcode" idiom whole-record
 assignment already uses (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-binary-files)). Also working: records as
+[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-binary-files)). Also working:
+sized integers — `byte` (`0..255`), `shortint` (`-128..127`), `word`
+(`0..65535`), predefined subrange types that additionally write/read
+their own narrower width (1 or 2 bytes, not 4) as a typed-file field or
+element, for interop with an external fixed-width binary format
+(`int64` not yet implemented — this VM's `integer` occupies one native-
+`int`-sized storage slot everywhere, the same reason `real` stays 32-bit
+— see [docs/LANGUAGE.md](docs/LANGUAGE.md#sized-integers)). Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus
 whole-element copy to/from another array element or a plain record

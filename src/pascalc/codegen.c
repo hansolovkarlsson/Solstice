@@ -1366,11 +1366,12 @@ void generate_code(ASTNode *node) {
                     // compile time, mirroring OP_STORE_VTABLE_SLOT's own
                     // precomputed-flat-index precedent - see
                     // OP_TYPED_FILE_RESET/REWRITE's own comment in
-                    // common.h. record_size was baked into node->right
-                    // at PARSE time (parser.c) - typed_file_vars[] is
-                    // parser.c-local, not visible here.
-                    int record_size = node->right->data.num_value;
-                    int arg = record_size * MAX_SYMBOLS + node->data.var_idx;
+                    // common.h. record_byte_size was baked into
+                    // node->right at PARSE time (parser.c) -
+                    // typed_file_vars[] is parser.c-local, not visible
+                    // here.
+                    int record_byte_size = node->right->data.num_value;
+                    int arg = record_byte_size * MAX_SYMBOLS + node->data.var_idx;
                     emit(node->op == TOKEN_RESET ? OP_TYPED_FILE_RESET : OP_TYPED_FILE_REWRITE, arg);
                 } else if (node->op == TOKEN_RESET) {
                     emit(OP_FILE_RESET, node->data.var_idx);
@@ -1386,15 +1387,25 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
-        case NODE_TYPED_FILE_READ_LEAF:
-            emit(OP_READ_TYPED_FILE_INT, node->data.var_idx);
+        case NODE_TYPED_FILE_READ_LEAF: {
+            Opcode op = node->op == TOKEN_BYTE ? OP_READ_TYPED_FILE_BYTE
+                      : node->op == TOKEN_SHORTINT ? OP_READ_TYPED_FILE_SHORTINT
+                      : node->op == TOKEN_WORD ? OP_READ_TYPED_FILE_WORD
+                      : OP_READ_TYPED_FILE_INT;
+            emit(op, node->data.var_idx);
             break;
+        }
 
-        case NODE_TYPED_FILE_WRITE_LEAF:
+        case NODE_TYPED_FILE_WRITE_LEAF: {
             generate_code(node->left);
-            emit(OP_WRITE_TYPED_FILE_INT, node->data.var_idx);
+            Opcode op = node->op == TOKEN_BYTE ? OP_WRITE_TYPED_FILE_BYTE
+                      : node->op == TOKEN_SHORTINT ? OP_WRITE_TYPED_FILE_SHORTINT
+                      : node->op == TOKEN_WORD ? OP_WRITE_TYPED_FILE_WORD
+                      : OP_WRITE_TYPED_FILE_INT;
+            emit(op, node->data.var_idx);
             generate_code(node->next);
             break;
+        }
 
         // case <selector> of
         //     label1[, label2...]: <stmt1>;

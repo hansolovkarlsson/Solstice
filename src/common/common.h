@@ -113,6 +113,17 @@ typedef enum {
     TOKEN_REAL,       // a real literal, e.g. 3.14 - distinct from
                       // TOKEN_NUMBER (integer literals)
     TOKEN_REAL_TYPE,  // the 'real' type keyword
+    TOKEN_BYTE,      // 'byte' - 0..255, see parse_scalar_type(). Also
+                     // reused (unrelated to its keyword meaning) as a
+                     // NODE_TYPED_FILE_READ_LEAF/WRITE_LEAF 'op' tag
+                     // marking a 1-byte-unsigned on-disk width - see
+                     // those NodeTypes' own comments.
+    TOKEN_SHORTINT,  // 'shortint' - -128..127, see parse_scalar_type().
+                     // Same op-tag reuse as TOKEN_BYTE above, for a
+                     // 1-byte-SIGNED on-disk width.
+    TOKEN_WORD,      // 'word' - 0..65535, see parse_scalar_type(). Same
+                     // op-tag reuse as TOKEN_BYTE above, for a
+                     // 2-byte-unsigned on-disk width.
     TOKEN_TRUNC, TOKEN_ROUND,
     TOKEN_TYPE, TOKEN_RECORD, TOKEN_CLASS,
     TOKEN_CONST,
@@ -388,13 +399,14 @@ typedef enum {
                 // (same blanket ban TYPE_FILE already has), so there's no
                 // per-declaration dedup need an offset range exists for.
                 // Which record/scalar type a given typed-file variable
-                // holds, and its leaf count (record_size), lives in a
-                // parser.c-local side table (TypedFileVarDef) keyed by
-                // sym_table[] index instead - see parser.c. GLOBAL ONLY,
-                // same restriction as TYPE_FILE and for the same reason.
-                // Real state lives in vm_open_files[] (see vm.c),
-                // extended with a record_size field - same indexing
-                // convention as TYPE_FILE's own vm_open_files[] use.
+                // holds, and its on-disk record byte size (byte_size),
+                // lives in a parser.c-local side table (TypedFileVarDef)
+                // keyed by sym_table[] index instead - see parser.c.
+                // GLOBAL ONLY, same restriction as TYPE_FILE and for the
+                // same reason. Real state lives in vm_open_files[] (see
+                // vm.c), extended with a record_byte_size field - same
+                // indexing convention as TYPE_FILE's own vm_open_files[]
+                // use.
                 // Explicitly assigned (not left to auto-increment) since
                 // it must sit strictly past TYPE_PROC_BASE's own range,
                 // mirroring TYPE_PROC_BASE's own explicit assignment just
@@ -1244,14 +1256,19 @@ typedef enum {
     OP_TYPED_FILE_RESET, OP_TYPED_FILE_REWRITE, // Binary-mode twins of
                   // OP_FILE_RESET/OP_FILE_REWRITE, for a TYPE_TYPED_FILE
                   // variable (fopen mode "rb"/"wb" instead of "r"/"w").
-                  // arg is a PACKED value - record_size * MAX_SYMBOLS +
+                  // arg is a PACKED value - record_byte_size * MAX_SYMBOLS +
                   // file_sym_idx - both halves already known at compile
                   // time (mirrors OP_STORE_VTABLE_SLOT's own precomputed-
                   // flat-index precedent exactly, reusing the existing
                   // MAX_SYMBOLS constant as the radix rather than adding
-                  // a new one). Caches record_size into the (extended)
-                  // vm_open_files[idx].record_size for OP_FILE_SEEK/
-                  // OP_FILE_SIZE/OP_TYPED_FILE_EOF to read later.
+                  // a new one). Caches record_byte_size into the (extended)
+                  // vm_open_files[idx].record_byte_size for OP_FILE_SEEK/
+                  // OP_FILE_SIZE/OP_TYPED_FILE_EOF to read later. Named
+                  // record_byte_size (not record_size/leaf count) since
+                  // byte/shortint/word fields: a record's ON-DISK byte
+                  // size is no longer just leaf_count * sizeof(int) once
+                  // any leaf is narrower than a full int - see
+                  // record_type_byte_size() in parser.c.
     OP_READ_TYPED_FILE_INT, // arg = file sym idx (plain, unpacked - see
                   // OP_TYPED_FILE_RESET above for why reset/rewrite's arg
                   // is packed and this one isn't: this opcode has no
@@ -1266,20 +1283,54 @@ typedef enum {
                   // opcode exists anywhere, matching how this compiler's
                   // OTHER record operations (whole-record assignment,
                   // argument passing, comparison) are already unrolled
-                  // entirely at compile time.
+                  // entirely at compile time. Used for a leaf whose
+                  // declared type is NOT byte/shortint/word - see the
+                  // three narrower read opcodes below for those.
     OP_WRITE_TYPED_FILE_INT, // arg = file sym idx. Pops one raw int and
                   // writes it to the file's current position - the write
                   // twin of OP_READ_TYPED_FILE_INT, same one-leaf-at-a-
-                  // time role (see NODE_TYPED_FILE_WRITE_LEAF).
+                  // time role (see NODE_TYPED_FILE_WRITE_LEAF). Same
+                  // "not byte/shortint/word" scope as OP_READ_TYPED_FILE_INT.
+    OP_READ_TYPED_FILE_BYTE,     // arg = file sym idx. Reads exactly 1
+                  // unsigned byte from the file's current position,
+                  // zero-extends it to a full int, and pushes it - the
+                  // 'byte'-typed leaf twin of OP_READ_TYPED_FILE_INT.
+    OP_WRITE_TYPED_FILE_BYTE,    // arg = file sym idx. Pops one value,
+                  // truncates it to its low 8 bits (unsigned), and
+                  // writes exactly 1 byte to the file's current position.
+    OP_READ_TYPED_FILE_SHORTINT, // arg = file sym idx. Reads exactly 1
+                  // SIGNED byte from the file's current position, sign-
+                  // extends it to a full int (via a C 'signed char' ->
+                  // 'int' conversion, which sign-extends automatically),
+                  // and pushes it - the 'shortint'-typed leaf twin of
+                  // OP_READ_TYPED_FILE_INT.
+    OP_WRITE_TYPED_FILE_SHORTINT, // arg = file sym idx. Pops one value,
+                  // truncates it to its low 8 bits (as a signed byte),
+                  // and writes exactly 1 byte to the file's current
+                  // position.
+    OP_READ_TYPED_FILE_WORD,     // arg = file sym idx. Reads exactly 2
+                  // unsigned bytes (a platform-native 'unsigned short',
+                  // no explicit endianness handling - same "platform-
+                  // native, not portable across architectures" stance
+                  // docs/BYTECODE.md's own .bin file format already
+                  // documents) from the file's current position, zero-
+                  // extends to a full int, and pushes it - the 'word'-
+                  // typed leaf twin of OP_READ_TYPED_FILE_INT.
+    OP_WRITE_TYPED_FILE_WORD,    // arg = file sym idx. Pops one value,
+                  // truncates it to its low 16 bits (unsigned), and
+                  // writes exactly 2 bytes (a platform-native 'unsigned
+                  // short') to the file's current position.
     OP_FILE_SEEK, // 'seek(f, n)', a typed file only. arg = file sym idx.
                   // Pops n (the target record index, 0-based); seeks to
-                  // byte offset n * vm_open_files[idx].record_size *
-                  // sizeof(int) from the start of the file.
+                  // byte offset n * vm_open_files[idx].record_byte_size
+                  // from the start of the file (record_byte_size is
+                  // already a byte count, not an int count - no further
+                  // multiplication by sizeof(int) here).
     OP_FILE_SIZE, // 'filesize(f)', a typed file only. arg = file sym
                   // idx. Pushes the file's total record count (current
-                  // end-of-file byte position, divided by record_size *
-                  // sizeof(int)) - doesn't disturb the file's current
-                  // read/write position.
+                  // end-of-file byte position, divided by
+                  // record_byte_size) - doesn't disturb the file's
+                  // current read/write position.
     OP_TYPED_FILE_EOF // 'eof(f)' on a typed file - a GENUINELY separate
                   // opcode from OP_EOF_FILE (text mode's byte-level
                   // fgetc+ungetc peek isn't meaningful for binary
@@ -1959,7 +2010,7 @@ typedef enum {
                        // class's own class_id (OP_STORE_CLASS_PARENT's
                        // arg). Chained via ->next, one entry per class
                        // (not per method, unlike NODE_VTABLE_INIT_ENTRY).
-    NODE_TYPED_FILE_READ_LEAF, // Reads exactly ONE raw int from a typed
+    NODE_TYPED_FILE_READ_LEAF, // Reads exactly ONE value from a typed
                        // file's current position - the leaf-level
                        // building block a typed-file read(f, rec) is
                        // compiled into N of (one per record field),
@@ -1972,9 +2023,14 @@ typedef enum {
                        // its wrapping assignment's target type, so the
                        // EXISTING generic NODE_ASSIGN/NODE_LOCAL_ASSIGN
                        // type check already covers this for free - no
-                       // type_checker.c case needed). left/right/extra/op
-                       // unused. See OP_READ_TYPED_FILE_INT.
-    NODE_TYPED_FILE_WRITE_LEAF // Writes exactly ONE raw int to a typed
+                       // type_checker.c case needed). left/right/extra
+                       // unused. op = TOKEN_BYTE/TOKEN_SHORTINT/
+                       // TOKEN_WORD if this leaf's on-disk width is
+                       // narrower than a full int (see RecordField.
+                       // disk_width/TypedFileVarDef.disk_width), else 0 -
+                       // picks which of OP_READ_TYPED_FILE_INT/_BYTE/
+                       // _SHORTINT/_WORD codegen.c emits.
+    NODE_TYPED_FILE_WRITE_LEAF // Writes exactly ONE value to a typed
                        // file's current position - the leaf-level
                        // building block a typed-file write(f, rec) is
                        // compiled into N of. left = the source value
@@ -1986,8 +2042,10 @@ typedef enum {
                        // until type_checker.c confirms it - see that
                        // file's own case for why this one DOES need
                        // explicit validation, unlike the read leaf
-                       // above). Chained via ->next. See
-                       // OP_WRITE_TYPED_FILE_INT.
+                       // above). Chained via ->next. op = same width tag
+                       // as NODE_TYPED_FILE_READ_LEAF above, same
+                       // OP_WRITE_TYPED_FILE_INT/_BYTE/_SHORTINT/_WORD
+                       // dispatch in codegen.c.
 } NodeType;
 
 typedef struct ASTNode {

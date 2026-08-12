@@ -286,6 +286,16 @@ typedef struct {
     int is_subrange;      // see the Symbol comment in common.h - propagated
     int subrange_lower;   // to the field's mangled global Symbol by
     int subrange_upper;   // add_record_var()
+    TokenType disk_width; // TOKEN_BYTE/TOKEN_SHORTINT/TOKEN_WORD if this
+                           // field's type was literally that keyword, else
+                           // 0 (ordinary 4-byte width) - including for an
+                           // ordinary hand-written subrange whose bounds
+                           // happen to match one of those three ranges
+                           // (see scalar_type_disk_width's own comment for
+                           // why this is NOT inferred from is_subrange/
+                           // bounds). Only meaningful for a typed-file
+                           // leaf's on-disk width - see NODE_TYPED_FILE_
+                           // WRITE_LEAF/READ_LEAF and record_type_byte_size().
     int is_record;        // field's type is itself a record type (nested
                            // records) - mutually exclusive with is_array.
                            // The nested type is guaranteed to have no
@@ -411,6 +421,21 @@ typedef struct {
     int record_type_idx;  // only meaningful if is_record
     DataType scalar_type;  // only meaningful if !is_record
     int leaf_count;
+    TokenType disk_width;  // only meaningful if !is_record - see
+                            // RecordField.disk_width's own comment; the
+                            // record case's per-FIELD widths live on
+                            // record_types[record_type_idx].fields[]
+                            // instead, since a record can mix widths
+                            // across its own fields.
+    int byte_size;          // actual on-disk bytes per record - either
+                            // record_type_byte_size(record_type_idx) or
+                            // this scalar's own disk_width-derived size
+                            // (1/2/4) for the bare-scalar case. What
+                            // actually gets baked into reset/rewrite's
+                            // packed arg now (see codegen.c) - NOT
+                            // leaf_count * sizeof(int), which stops
+                            // being correct the moment any field/element
+                            // has a narrower-than-4-byte disk_width.
 } TypedFileVarDef;
 static TypedFileVarDef typed_file_vars[MAX_TYPED_FILE_VARS];
 static int typed_file_var_count = 0;
@@ -1154,6 +1179,33 @@ static int record_type_leaf_count(int record_type_idx) {
         total += rt->fields[i].is_record
             ? record_type_leaf_count(rt->fields[i].record_type_idx)
             : 1;
+    }
+    return total;
+}
+
+// Typed-file counterpart of record_type_leaf_count() above: total ON-
+// DISK BYTES record_type_idx flattens into, summing each leaf's actual
+// disk_width (1 for TOKEN_BYTE/TOKEN_SHORTINT, 2 for TOKEN_WORD, 4 -
+// sizeof(int) - for everything else, including an ordinary hand-written
+// subrange field) instead of counting 1 per leaf. For an all-ordinary
+// record this returns exactly leaf_count * sizeof(int) - identical to
+// what typed-file I/O already did before byte/shortint/word existed, so
+// a record with no byte/shortint/word field keeps its exact original
+// on-disk layout (see the compatibility note on scalar_type_disk_width).
+static int record_type_byte_size(int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    int total = 0;
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (f->is_record) {
+            total += record_type_byte_size(f->record_type_idx);
+        } else if (f->disk_width == TOKEN_BYTE || f->disk_width == TOKEN_SHORTINT) {
+            total += 1;
+        } else if (f->disk_width == TOKEN_WORD) {
+            total += 2;
+        } else {
+            total += (int)sizeof(int);
+        }
     }
     return total;
 }
@@ -2491,6 +2543,19 @@ static int scalar_type_is_subrange = 0;
 static int scalar_type_subrange_lower = 0;
 static int scalar_type_subrange_upper = 0;
 
+// A second, independent side-channel output of parse_scalar_type():
+// TOKEN_BYTE/TOKEN_SHORTINT/TOKEN_WORD if the type just resolved was
+// literally one of those three keywords, else 0 (ordinary 4-byte
+// width). Deliberately NOT derived from scalar_type_is_subrange/bounds -
+// an ordinary hand-written 'type TByte = 0..255;' subrange must NOT be
+// treated as narrower on disk just because its bounds happen to match
+// 'byte''s own range, or an already-working typed-file program using
+// such a subrange would silently change its on-disk format the moment
+// this feature shipped. Only a literal 'byte'/'shortint'/'word' token
+// sets this - see build_typed_file_write_chain()/build_typed_file_read_
+// chain() and TypedFileVarDef.disk_width, the only things that read it.
+static TokenType scalar_type_disk_width = 0;
+
 // Parses the '<base-type>' after 'set of' and validates it, WITHOUT
 // keeping the bounds around afterward - nothing downstream needs them
 // (see TYPE_SET's comment in common.h for why). Accepts an inline
@@ -2534,21 +2599,52 @@ static void parse_set_base_type(void) {
     }
 }
 
-// A scalar type - one of the five built-in keywords, a previously
-// declared type alias, enumerated type, subrange type, or 'set of ...'
-// resolving to one of them (see TypeAliasDef/EnumTypeDef/SubrangeTypeDef/
-// TYPE_SET above). This is the one centralized function every scalar-
-// type call site goes through (parameters, procedure-locals, record
-// fields, function return types, and plain/array var declarations), so
-// alias/enum/subrange/set support and any future scalar-type keyword
-// only needs to be added here once.
+// A scalar type - one of the eight built-in keywords (integer, boolean,
+// string, char, real, byte, shortint, word), a previously declared type
+// alias, enumerated type, subrange type, or 'set of ...' resolving to
+// one of them (see TypeAliasDef/EnumTypeDef/SubrangeTypeDef/TYPE_SET
+// above). This is the one centralized function every scalar-type call
+// site goes through (parameters, procedure-locals, record fields,
+// function return types, and plain/array var declarations), so alias/
+// enum/subrange/set support and any future scalar-type keyword only
+// needs to be added here once. byte/shortint/word resolve to plain
+// TYPE_INTEGER, exactly like a named subrange type alias does (see
+// scalar_type_is_subrange above) - fully interchangeable with integer
+// everywhere except on-disk width in a typed file (see
+// scalar_type_disk_width above and RecordField.disk_width/
+// TypedFileVarDef.disk_width).
 static DataType parse_scalar_type(void) {
     scalar_type_is_subrange = 0;
+    scalar_type_disk_width = 0;
     if (token.type == TOKEN_INTEGER) { match(TOKEN_INTEGER); return TYPE_INTEGER; }
     if (token.type == TOKEN_BOOLEAN) { match(TOKEN_BOOLEAN); return TYPE_BOOLEAN; }
     if (token.type == TOKEN_STRING_TYPE) { match(TOKEN_STRING_TYPE); return TYPE_STRING; }
     if (token.type == TOKEN_CHAR_TYPE) { match(TOKEN_CHAR_TYPE); return TYPE_CHAR; }
     if (token.type == TOKEN_REAL_TYPE) { match(TOKEN_REAL_TYPE); return TYPE_REAL; }
+    if (token.type == TOKEN_BYTE) {
+        match(TOKEN_BYTE);
+        scalar_type_is_subrange = 1;
+        scalar_type_subrange_lower = 0;
+        scalar_type_subrange_upper = 255;
+        scalar_type_disk_width = TOKEN_BYTE;
+        return TYPE_INTEGER;
+    }
+    if (token.type == TOKEN_SHORTINT) {
+        match(TOKEN_SHORTINT);
+        scalar_type_is_subrange = 1;
+        scalar_type_subrange_lower = -128;
+        scalar_type_subrange_upper = 127;
+        scalar_type_disk_width = TOKEN_SHORTINT;
+        return TYPE_INTEGER;
+    }
+    if (token.type == TOKEN_WORD) {
+        match(TOKEN_WORD);
+        scalar_type_is_subrange = 1;
+        scalar_type_subrange_lower = 0;
+        scalar_type_subrange_upper = 65535;
+        scalar_type_disk_width = TOKEN_WORD;
+        return TYPE_INTEGER;
+    }
     if (token.type == TOKEN_SET) {
         match(TOKEN_SET);
         match(TOKEN_OF);
@@ -2637,6 +2733,11 @@ typedef struct {
     int is_subrange;      // see the Symbol comment in common.h
     int subrange_lower;
     int subrange_upper;
+    TokenType disk_width; // see RecordField.disk_width's own comment -
+                          // only meaningful for a record field's on-disk
+                          // typed-file width; harmless/unused for every
+                          // other NameGroup consumer (var/parameter/local
+                          // declarations).
     int is_record;         // 1 if this group's type is a record type
                           // name (mutually exclusive with is_array -
                           // records as array elements aren't supported
@@ -2736,6 +2837,7 @@ static NameGroup parse_name_group(void) {
     g.is_subrange = scalar_type_is_subrange;
     g.subrange_lower = scalar_type_subrange_lower;
     g.subrange_upper = scalar_type_subrange_upper;
+    g.disk_width = scalar_type_disk_width;
     return g;
 }
 
@@ -6223,6 +6325,7 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int
         f->is_subrange = is_nested_record ? 0 : scalar_type_is_subrange;
         f->subrange_lower = is_nested_record ? 0 : scalar_type_subrange_lower;
         f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
+        f->disk_width = is_nested_record ? 0 : scalar_type_disk_width;
         f->is_private = is_private;
         f->declaring_class_ptr_idx = declaring_class_ptr_idx;
         rt->field_count++;
@@ -6275,6 +6378,7 @@ static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx) {
     tagf->is_record = 0;
     tagf->is_array = 0;
     tagf->is_subrange = 0;
+    tagf->disk_width = 0;
     rt->field_count++;
 
     DataType seen_types[MAX_CASE_LABELS];
@@ -7414,6 +7518,11 @@ static void parse_var_section(void) {
                 }
             }
             int leaf_count = is_record ? record_type_leaf_count(rt_idx) : 1;
+            TokenType scalar_disk_width = is_record ? 0 : scalar_type_disk_width;
+            int byte_size = is_record ? record_type_byte_size(rt_idx)
+                : (scalar_disk_width == TOKEN_BYTE || scalar_disk_width == TOKEN_SHORTINT) ? 1
+                : (scalar_disk_width == TOKEN_WORD) ? 2
+                : (int)sizeof(int);
             for (int i = 0; i < count; i++) {
                 add_var(temporary_names[i], TYPE_TYPED_FILE);
                 int sym_idx = sym_count - 1;
@@ -7426,6 +7535,8 @@ static void parse_var_section(void) {
                 tf->record_type_idx = rt_idx;
                 tf->scalar_type = scalar_type;
                 tf->leaf_count = leaf_count;
+                tf->disk_width = scalar_disk_width;
+                tf->byte_size = byte_size;
             }
         } else {
             DataType target_type = parse_scalar_type();
@@ -9242,6 +9353,7 @@ static void build_typed_file_read_chain(int record_type_idx, int file_sym_idx, i
             ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
             leaf->data.var_idx = file_sym_idx;
             leaf->expression_type = f->type;
+            leaf->op = f->disk_width;
             // A typed-file read ingests untrusted external bytes -
             // unlike an ordinary same-type record copy (build_record_
             // copy(), whose source is already known-valid), a subrange-
@@ -9271,6 +9383,7 @@ static void build_typed_file_write_chain(int record_type_idx, int file_sym_idx, 
             leaf->data.var_idx = file_sym_idx;
             leaf->left = value;
             leaf->expression_type = f->type;
+            leaf->op = f->disk_width;
             if (!*head) *head = leaf; else (*tail)->next = leaf;
             *tail = leaf;
         }
@@ -9342,6 +9455,7 @@ static ASTNode *parse_typed_file_read(TypedFileVarDef *tf) {
         ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
         leaf->data.var_idx = tf->sym_idx;
         leaf->expression_type = tf->scalar_type;
+        leaf->op = tf->disk_width;
         return record_field_assign_node(is_local, scalar_idx, levels_up, leaf);
     }
     RecordTypeDef *rt = &record_types[record_type_idx];
@@ -9355,6 +9469,7 @@ static ASTNode *parse_typed_file_read(TypedFileVarDef *tf) {
         ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
         leaf->data.var_idx = tf->sym_idx;
         leaf->expression_type = f->type;
+        leaf->op = f->disk_width;
         ASTNode *value = f->is_subrange ? wrap_range_check(leaf, 1, f->subrange_lower, f->subrange_upper) : leaf;
         ASTNode *assign = record_field_assign_node(is_local, field_idx_array[i], levels_up, value);
         if (!head) head = assign; else tail->next = assign;
@@ -9376,6 +9491,7 @@ static ASTNode *parse_typed_file_write(TypedFileVarDef *tf) {
         leaf->data.var_idx = tf->sym_idx;
         leaf->left = value;
         leaf->expression_type = tf->scalar_type;
+        leaf->op = tf->disk_width;
         return leaf;
     }
     RecordTypeDef *rt = &record_types[record_type_idx];
@@ -9391,6 +9507,7 @@ static ASTNode *parse_typed_file_write(TypedFileVarDef *tf) {
         leaf->data.var_idx = tf->sym_idx;
         leaf->left = value;
         leaf->expression_type = f->type;
+        leaf->op = f->disk_width;
         if (!head) head = leaf; else tail->next = leaf;
         tail = leaf;
     }
@@ -11523,16 +11640,20 @@ static ASTNode *statement(void) {
         stmt->op = kind;
         stmt->data.var_idx = fidx;
         if ((kind == TOKEN_RESET || kind == TOKEN_REWRITE) && sym_table[fidx].type == TYPE_TYPED_FILE) {
-            // Bakes the file's own record_size in at PARSE time (right
-            // is otherwise unused on NODE_FILE_OP) rather than having
-            // codegen.c look it up itself - typed_file_vars[] is
+            // Bakes the file's own record BYTE size in at PARSE time
+            // (right is otherwise unused on NODE_FILE_OP) rather than
+            // having codegen.c look it up itself - typed_file_vars[] is
             // parser.c-local, the same reason pointer_types[]/
             // record_types[] stay parser.c-local too (see their own
             // comments) - nothing outside this file ever needs to look
             // a typed file up by this index. See codegen.c's
-            // TOKEN_RESET/TOKEN_REWRITE branch.
+            // TOKEN_RESET/TOKEN_REWRITE branch. byte_size, NOT
+            // leaf_count - a byte/shortint/word field's disk width is
+            // narrower than sizeof(int), so "leaf count" and "byte
+            // count" have diverged since typed_file_vars[].byte_size
+            // was introduced; see record_type_byte_size().
             ASTNode *record_size_lit = create_node(NODE_NUMBER);
-            record_size_lit->data.num_value = typed_file_vars[find_typed_file_var(fidx)].leaf_count;
+            record_size_lit->data.num_value = typed_file_vars[find_typed_file_var(fidx)].byte_size;
             record_size_lit->expression_type = TYPE_INTEGER;
             stmt->right = record_size_lit;
         }

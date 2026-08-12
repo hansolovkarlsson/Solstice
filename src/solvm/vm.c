@@ -138,8 +138,11 @@ typedef struct {
     FILE *handle;   // NULL if not currently open
     char filename[MAX_STRING_LEN]; // set by assign(); read by reset()/rewrite()
     int assigned;   // 1 once assign() has been called at least once
-    int record_size; // TYPE_TYPED_FILE only - how many raw ints make up
-                      // one record, cached from OP_TYPED_FILE_RESET/
+    int record_byte_size; // TYPE_TYPED_FILE only - how many BYTES make
+                      // up one record on disk (not an int/leaf count -
+                      // a byte/shortint/word field is narrower than a
+                      // full int, see record_type_byte_size() in
+                      // parser.c), cached from OP_TYPED_FILE_RESET/
                       // REWRITE's own packed arg (see common.h) for
                       // OP_FILE_SEEK/OP_FILE_SIZE/OP_TYPED_FILE_EOF to
                       // read later. Meaningless (0) for a TYPE_FILE
@@ -1236,7 +1239,7 @@ void run_vm(void) {
             case OP_TYPED_FILE_RESET:
             case OP_TYPED_FILE_REWRITE: {
                 int file_sym_idx = instr.arg % MAX_SYMBOLS;
-                int record_size = instr.arg / MAX_SYMBOLS;
+                int record_byte_size = instr.arg / MAX_SYMBOLS;
                 int idx = vm_var_index(file_sym_idx);
                 if (sym_table[idx].type != TYPE_TYPED_FILE) {
                     fprintf(stderr, "VM Runtime Error: '%s' is not a typed file variable\n", sym_table[idx].name);
@@ -1254,7 +1257,7 @@ void run_vm(void) {
                             vm_open_files[idx].filename, (instr.op == OP_TYPED_FILE_RESET) ? "reading" : "writing", strerror(errno));
                     fatal_abort();
                 }
-                vm_open_files[idx].record_size = record_size;
+                vm_open_files[idx].record_byte_size = record_byte_size;
                 break;
             }
 
@@ -1276,11 +1279,65 @@ void run_vm(void) {
                 break;
             }
 
+            case OP_READ_TYPED_FILE_BYTE: {
+                FILE *f = vm_typed_file_handle(instr.arg, "read");
+                unsigned char b;
+                if (fread(&b, 1, 1, f) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fatal_abort();
+                }
+                vm_push(&sp, (int)b);
+                break;
+            }
+
+            case OP_WRITE_TYPED_FILE_BYTE: {
+                FILE *f = vm_typed_file_handle(instr.arg, "write");
+                unsigned char b = (unsigned char)vm_pop(&sp);
+                fwrite(&b, 1, 1, f);
+                break;
+            }
+
+            case OP_READ_TYPED_FILE_SHORTINT: {
+                FILE *f = vm_typed_file_handle(instr.arg, "read");
+                signed char b;
+                if (fread(&b, 1, 1, f) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fatal_abort();
+                }
+                vm_push(&sp, (int)b); // signed char -> int sign-extends
+                break;
+            }
+
+            case OP_WRITE_TYPED_FILE_SHORTINT: {
+                FILE *f = vm_typed_file_handle(instr.arg, "write");
+                signed char b = (signed char)vm_pop(&sp);
+                fwrite(&b, 1, 1, f);
+                break;
+            }
+
+            case OP_READ_TYPED_FILE_WORD: {
+                FILE *f = vm_typed_file_handle(instr.arg, "read");
+                unsigned short w;
+                if (fread(&w, sizeof(unsigned short), 1, f) != 1) {
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fatal_abort();
+                }
+                vm_push(&sp, (int)w);
+                break;
+            }
+
+            case OP_WRITE_TYPED_FILE_WORD: {
+                FILE *f = vm_typed_file_handle(instr.arg, "write");
+                unsigned short w = (unsigned short)vm_pop(&sp);
+                fwrite(&w, sizeof(unsigned short), 1, f);
+                break;
+            }
+
             case OP_FILE_SEEK: {
                 FILE *f = vm_typed_file_handle(instr.arg, "seek");
                 int n = vm_pop(&sp);
                 int idx = vm_var_index(instr.arg);
-                if (fseek(f, (long)n * vm_open_files[idx].record_size * (long)sizeof(int), SEEK_SET) != 0) {
+                if (fseek(f, (long)n * vm_open_files[idx].record_byte_size, SEEK_SET) != 0) {
                     fprintf(stderr, "VM Runtime Error: 'seek' failed on file '%s' (%s)\n", sym_table[idx].name, strerror(errno));
                     fatal_abort();
                 }
@@ -1294,7 +1351,7 @@ void run_vm(void) {
                 fseek(f, 0, SEEK_END);
                 long end = ftell(f);
                 fseek(f, cur, SEEK_SET);
-                vm_push(&sp, (int)(end / (vm_open_files[idx].record_size * (long)sizeof(int))));
+                vm_push(&sp, (int)(end / vm_open_files[idx].record_byte_size));
                 break;
             }
 

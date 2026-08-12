@@ -2227,6 +2227,77 @@ anyway, so this is where they land instead.
       including one specifically built around the interleaved-ordering
       guarantee, 1 error case) and
       [docs/LANGUAGE.md](LANGUAGE.md#warning).
+- [x] Sized integers - `byte` (`0..255`), `shortint` (`-128..127`),
+      `word` (`0..65535`). **`int64` deliberately split off and deferred**
+      (see the new docs/ROADMAP.md entry) once design work showed it's a
+      genuinely different problem: `byte`/`shortint`/`word` are all
+      *narrower* than this VM's one-`int`-sized storage slot, so they fit
+      with zero storage-model changes; `int64` is *wider* and doesn't fit
+      at all, the same architectural fork already deprioritized for
+      `double`.
+
+      Two genuinely different pieces of work, confirmed by design
+      validation before writing code:
+
+      **Part A - ordinary variable use is pure sugar over the EXISTING
+      subrange machinery, zero new opcodes.** Subrange types were never
+      a distinct `DataType` (`type TByte = 0..255;` is plain
+      `TYPE_INTEGER` plus `is_subrange`/`subrange_lower`/`subrange_upper`
+      fields, checked at store time by the existing `OP_CHECK_LOWER`/
+      `OP_CHECK_UPPER`). `byte`/`shortint`/`word` are three new reserved
+      keywords in `parse_scalar_type()` (the one function every
+      declaration site already funnels through) that set those same
+      fields with hardcoded bounds - value bounds-checking, arithmetic,
+      comparisons, `write`/`writeln` all worked correctly with no other
+      code touched.
+
+      **Part B - on-disk width in typed (binary) files is the real new
+      machinery.** `write(f, rec)` previously wrote every leaf field as
+      one raw 4-byte value unconditionally, confirmed directly in
+      `vm.c` before any code was written. Six new opcodes
+      (`OP_READ`/`WRITE_TYPED_FILE_BYTE`/`SHORTINT`/`WORD`, mirroring the
+      existing "two opcodes rather than one with two args" precedent
+      `OP_CHECK_LOWER`/`OP_CHECK_UPPER` already set) truncate/sign-extend
+      through a `signed`/`unsigned char`/`short` intermediate; a new
+      per-leaf width tag reuses `NODE_TYPED_FILE_READ_LEAF`/
+      `WRITE_LEAF`'s previously-unused `op` field (same "field reuse by
+      convention" this codebase already uses for `NODE_FOR`'s
+      `TOKEN_TO`/`TOKEN_DOWNTO`) to pick the right opcode in `codegen.c`;
+      `seek`/`filesize`'s byte-offset math (previously `record_size *
+      sizeof(int)`, wrong once any leaf is narrower) now uses a real
+      per-record byte size (`record_type_byte_size()`, parser.c) cached
+      as `vm_open_files[].record_byte_size` (renamed from `record_size`
+      for clarity).
+
+      **The critical compatibility constraint, found during design
+      before any code was written**: disk-width narrowing had to trigger
+      ONLY on the literal `byte`/`shortint`/`word` keyword, never by
+      matching bounds on an arbitrary subrange - otherwise an *already-
+      working* program with a hand-written `type TByte = 0..255;` field
+      would have silently changed its on-disk format the moment this
+      feature shipped, breaking existing data files with no visible
+      language change. Verified two ways: a dedicated test with such a
+      field confirms it still round-trips at the original 4-byte width,
+      and a byte-for-byte comparison of every existing
+      `examples/test/typedfile/` program's *written output files*
+      (old binary vs. new, not just stdout) came back identical.
+
+      **A pre-existing, unrelated bug noticed along the way - logged,
+      not fixed**: `parse_typed_file_read()`'s bare-scalar-element branch
+      (`file of TSubrange`) never applied the range check on read that
+      the record-field-loop branches already do for a subrange-typed
+      leaf - pre-existing since typed files shipped, unrelated to sized
+      integers (a `byte`/`shortint`/`word`'s own width-constrained read
+      can never produce an out-of-range value by construction, so this
+      feature's own opcodes need no such check), not folded into this
+      change's diff.
+
+      See `examples/test/sizedint/test_sizedint_*.pas` (4 positive cases
+      including a mixed-width typed-file record exercising `seek`'s new
+      byte-stride math and the byte/shortint/word bare-scalar-element
+      case, plus the compatibility test above; 3 error cases, one per
+      type's bounds check) and
+      [docs/LANGUAGE.md](LANGUAGE.md#sized-integers).
 
 ### Shipped from the OOP features survey
 

@@ -141,6 +141,9 @@ is a compiler directive, not an ordinary comment:
 | Record | `type TName = record ... end;` | — | User-defined; see [Records](#records) |
 | Enumerated | `type TName = (Val1, Val2, ...);` | — | User-defined; see [Enumerated types](#enumerated-types) |
 | Subrange | `type TName = lower..upper;` | — | Bounds-checked `integer`; see [Subrange types](#subrange-types) |
+| Byte | `byte` | `0`, `255` | Bounds-checked `0..255`; see [Sized integers](#sized-integers) |
+| Shortint | `shortint` | `-128`, `127` | Bounds-checked `-128..127`; see [Sized integers](#sized-integers) |
+| Word | `word` | `0`, `65535` | Bounds-checked `0..65535`; see [Sized integers](#sized-integers) |
 | Set | `set of T` | `[1, 2, 3]`, `[]` | `T` is `integer`/`char`/`boolean`/an enumerated type, capped at 32 values; see [Sets](#sets) |
 | Pointer | `type TName = ^Target;` | `nil` | `Target` is a scalar or record type; see [Pointers](#pointers) |
 
@@ -1022,19 +1025,22 @@ A file variable's real state (the underlying C `FILE*`, and the
 filename `assign()` bound it to) lives in a fixed-size table indexed by
 the variable's own symbol index — safe only because it's always global,
 so that index never changes. No dynamic allocation, matching everything
-else in this VM. A typed file additionally caches its own record size
-(how many raw ints make up one record) in that same table, set once when
-`reset`/`rewrite` opens it — `seek`/`filesize`/`eof` all read it back
-from there rather than needing it re-supplied at every call site.
+else in this VM. A typed file additionally caches its own record's
+on-disk byte size in that same table, set once when `reset`/`rewrite`
+opens it — `seek`/`filesize`/`eof` all read it back from there rather
+than needing it re-supplied at every call site.
 
 `read(f, rec)`/`write(f, rec)` are compiled entirely at COMPILE TIME into
-one raw-int transfer per leaf field of `rec` (recursing into a nested
+one raw value transfer per leaf field of `rec` (recursing into a nested
 record, exactly like whole-record assignment already does) — there is no
 runtime "copy a whole record" opcode anywhere in this compiler, for
 records OR for typed files; every record-shaped operation is unrolled
 into N ordinary field-level operations ahead of time. A `file of integer`
 (a bare scalar element type) is simply the one-leaf case of the exact
-same mechanism.
+same mechanism. Every leaf transfers a full 4-byte value, **except** a
+[`byte`/`shortint`/`word`](#sized-integers) leaf, which transfers 1 or 2
+bytes instead — decided per leaf at compile time, so a record's actual
+on-disk byte size can be smaller than `4 * (number of fields)`.
 
 ## Real
 
@@ -1558,6 +1564,68 @@ end.
   [docs/BYTECODE.md](BYTECODE.md)) — no `.bin` format change, since a
   subrange-typed variable's `Symbol` entry is otherwise indistinguishable
   from a plain `integer`'s (disassembling one shows `.var age integer`).
+
+## Sized integers
+
+```pascal
+type
+    TRec = record
+        flag: byte;      { 0..255 }
+        delta: shortint;  { -128..127 }
+        count: word;      { 0..65535 }
+        total: integer;   { unchanged, full range }
+    end;
+var
+    f: file of TRec;
+    r: TRec;
+begin
+    r.flag := 200; r.delta := -5; r.count := 40000; r.total := 999;
+    rewrite(f);
+    write(f, r);   { writes 1 + 1 + 2 + 4 = 8 bytes, not 16 }
+end.
+```
+
+`byte` (`0..255`), `shortint` (`-128..127`), and `word` (`0..65535`) are
+three predefined [subrange types](#subrange-types) — everything that
+section says about subrange types applies to all three unchanged
+(fully assignment/arithmetic-compatible with `integer`, bounds-checked
+on every store, no range-checking on arithmetic itself). They exist for
+one additional reason subrange types alone don't cover:
+
+- **In a [typed (binary) file](#typed-binary-files), a `byte`/
+  `shortint`/`word` field or element writes/reads its own narrower
+  width on disk** — 1 byte for `byte`/`shortint`, 2 for `word` — instead
+  of the 4 bytes every other field/element (including an ordinary
+  hand-written subrange like `type TByte = 0..255;`) always uses. This
+  matters for interop with an external fixed-width binary format (a
+  file produced by another program, a documented file layout, a C
+  struct written by something else) where the on-disk byte layout has
+  to match exactly, not just the value's *range*.
+- **This on-disk narrowing is triggered only by writing the literal
+  `byte`/`shortint`/`word` keyword** — never by a subrange's bounds
+  happening to match one of those ranges. A field declared
+  `type TByte = 0..255; ... flag: TByte;` stays at the ordinary 4-byte
+  width on disk even though its value range is identical to `byte`'s.
+  This is deliberate: it means adopting `byte`/`shortint`/`word` in a
+  record is an explicit, visible change to that record's on-disk
+  layout, not something that could silently happen to an existing
+  subrange-typed field.
+- Outside a typed file, `byte`/`shortint`/`word` behave completely like
+  an ordinary subrange-constrained `integer` — same in-memory
+  representation, same `write`/`writeln` formatting, no special
+  behavior of their own.
+- `filesize(f)`/`seek(f, n)` on a typed file with narrower fields still
+  count/index whole **records**, not bytes — the byte-width difference
+  is entirely an on-disk packing detail; `TRec` above is still one
+  record, 8 bytes, and `seek(f, 1)` still means "the second record."
+
+**Not supported**: `int64` (a full 64-bit integer type) — this VM's
+`integer` occupies one native-`int`-sized storage slot everywhere
+(stack, variables, array elements), the same reason `real` is kept to
+32 bits (see [Real](#real)); a genuine 64-bit type needs a wider slot or
+a separate storage region, a larger change than `byte`/`shortint`/
+`word` needed. Tracked as a future item in
+[docs/ROADMAP.md](ROADMAP.md).
 
 ## Enumerated types
 

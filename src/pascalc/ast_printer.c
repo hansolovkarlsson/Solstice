@@ -352,11 +352,13 @@ void print_ast(ASTNode *node, int indent) {
         }
 
         case NODE_TYPED_FILE_READ_LEAF:
-            printf("[Typed File Read Leaf] -> File: %s\n", sym_table[node->data.var_idx].name);
+            printf("[Typed File Read Leaf] -> File: %s%s\n", sym_table[node->data.var_idx].name,
+                   node->op == TOKEN_BYTE ? " (byte)" : node->op == TOKEN_SHORTINT ? " (shortint)" : node->op == TOKEN_WORD ? " (word)" : "");
             break;
 
         case NODE_TYPED_FILE_WRITE_LEAF:
-            printf("[Typed File Write Leaf] -> File: %s\n", sym_table[node->data.var_idx].name);
+            printf("[Typed File Write Leaf] -> File: %s%s\n", sym_table[node->data.var_idx].name,
+                   node->op == TOKEN_BYTE ? " (byte)" : node->op == TOKEN_SHORTINT ? " (shortint)" : node->op == TOKEN_WORD ? " (word)" : "");
             print_ast(node->left, indent + 1);
             if (node->next) {
                 print_ast(node->next, indent);

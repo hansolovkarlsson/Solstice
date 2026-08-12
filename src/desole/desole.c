@@ -148,6 +148,12 @@ static const char *opcode_name(Opcode op) {
         case OP_TYPED_FILE_REWRITE: return "typed_file_rewrite";
         case OP_READ_TYPED_FILE_INT:  return "read_typed_file_int";
         case OP_WRITE_TYPED_FILE_INT: return "write_typed_file_int";
+        case OP_READ_TYPED_FILE_BYTE:  return "read_typed_file_byte";
+        case OP_WRITE_TYPED_FILE_BYTE: return "write_typed_file_byte";
+        case OP_READ_TYPED_FILE_SHORTINT:  return "read_typed_file_shortint";
+        case OP_WRITE_TYPED_FILE_SHORTINT: return "write_typed_file_shortint";
+        case OP_READ_TYPED_FILE_WORD:  return "read_typed_file_word";
+        case OP_WRITE_TYPED_FILE_WORD: return "write_typed_file_word";
         case OP_FILE_SEEK: return "file_seek";
         case OP_FILE_SIZE: return "file_size";
         case OP_TYPED_FILE_EOF: return "typed_file_eof";
@@ -276,6 +282,9 @@ static int is_var_ref(Opcode op) {
         || op == OP_SKIP_PENDING_NEWLINE_FILE
         || op == OP_LOAD_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD || op == OP_STORE_ARRAY_RECORD_FIELD_CHAR
         || op == OP_READ_TYPED_FILE_INT || op == OP_WRITE_TYPED_FILE_INT
+        || op == OP_READ_TYPED_FILE_BYTE || op == OP_WRITE_TYPED_FILE_BYTE
+        || op == OP_READ_TYPED_FILE_SHORTINT || op == OP_WRITE_TYPED_FILE_SHORTINT
+        || op == OP_READ_TYPED_FILE_WORD || op == OP_WRITE_TYPED_FILE_WORD
         || op == OP_FILE_SEEK || op == OP_FILE_SIZE || op == OP_TYPED_FILE_EOF;
 }
 
@@ -300,7 +309,7 @@ static int is_immediate(Opcode op) {
         || op == OP_LOAD_HEAP_ARRAY_FIELD || op == OP_STORE_HEAP_ARRAY_FIELD || op == OP_STORE_HEAP_ARRAY_FIELD_CHAR // operand = combined offset (field offset - array lower bound)
         || op == OP_LOAD_VTABLE_SLOT || op == OP_STORE_VTABLE_SLOT // operand = method slot / precomputed flat vm_vtables[] index
         || op == OP_IS_INSTANCE || op == OP_STORE_CLASS_PARENT // operand = target/own class_id
-        || op == OP_TYPED_FILE_RESET || op == OP_TYPED_FILE_REWRITE // operand = packed record_size * MAX_SYMBOLS + file sym idx
+        || op == OP_TYPED_FILE_RESET || op == OP_TYPED_FILE_REWRITE // operand = packed record_byte_size * MAX_SYMBOLS + file sym idx
         || op == OP_PUSH_STATIC_LINK // operand = hop count
         || op == OP_LOAD_ENCLOSING || op == OP_STORE_ENCLOSING || op == OP_PUSH_ENCLOSING_REF; // operand = packed (levels_up, slot)
 }

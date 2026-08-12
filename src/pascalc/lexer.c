@@ -366,6 +366,9 @@ void next_token(void) {
         else if (strcasecmp(token.text, "nil") == 0) token.type = TOKEN_NIL;
         else if (strcasecmp(token.text, "char") == 0) token.type = TOKEN_CHAR_TYPE;
         else if (strcasecmp(token.text, "real") == 0) token.type = TOKEN_REAL_TYPE;
+        else if (strcasecmp(token.text, "byte") == 0) token.type = TOKEN_BYTE;
+        else if (strcasecmp(token.text, "shortint") == 0) token.type = TOKEN_SHORTINT;
+        else if (strcasecmp(token.text, "word") == 0) token.type = TOKEN_WORD;
         else if (strcasecmp(token.text, "trunc") == 0) token.type = TOKEN_TRUNC;
         else if (strcasecmp(token.text, "round") == 0) token.type = TOKEN_ROUND;
         else if (strcasecmp(token.text, "type") == 0) token.type = TOKEN_TYPE;

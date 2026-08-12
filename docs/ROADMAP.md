@@ -68,17 +68,15 @@ anyway, so this is where they land instead.
       typed (binary) files (see `#typed-binary-files` below) - a `file
       of TRecord` variable's `filesize(f)` returns the record COUNT, not
       a byte count, so computing the file's actual byte size needs
-      `TRecord`'s own on-disk size multiplied in by hand. Today every
-      leaf field is written as one raw 4-byte int/float regardless of
-      its declared type (see typed files' "How this is implemented"),
-      so a `sizeOf` answer would currently just be `4 * (leaf field
-      count)` - genuinely meaningful arithmetic, but only as informative
-      as that uniform-width assumption stays true. Once/if the sized-
-      integers entry below ships and typed-file writes start emitting
-      actual variable-width values on disk, `sizeOf` would need to track
-      real per-field width instead of a flat per-leaf constant - the two
-      ideas are linked, and `sizeOf` is more useful once sized integers
-      exist, not really useful before they do.
+      `TRecord`'s own on-disk size multiplied in by hand. Since
+      `byte`/`shortint`/`word` shipped (see docs/CHANGELOG.md), a
+      record's leaf fields no longer all have the same on-disk width -
+      `record_type_byte_size()` (parser.c) already computes the real
+      per-field-width total internally for `reset`/`rewrite`'s own use,
+      so a future `sizeOf` could reuse that exact function rather than
+      needing its own new width-tracking logic from scratch; still no
+      design for exposing it as a general `sizeOf(x)` builtin (arrays,
+      classes, plain scalars) beyond this one typed-file case.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
@@ -187,27 +185,19 @@ a design/plan yet.
       see [docs/LANGUAGE.md](LANGUAGE.md#variant-records)'s "How this is
       implemented"), so true overlapping storage needs that addressing
       model built first.
-- [ ] Sized integers (`byte`/`word`/`shortint`/`int64`) — moved up from
-      "low value" (an earlier framing that only weighed this against
-      subrange types' existing bounds-checking, e.g. `type TByte =
-      0..255;` already rejecting an out-of-range value at runtime -
-      genuinely redundant for THAT purpose alone). The real motivating
-      case is typed (binary) file interop: `write(f, rec)` currently
-      writes every leaf field as one raw 4-byte int/float unconditionally
-      (see [docs/LANGUAGE.md](LANGUAGE.md#typed-binary-files)'s "How
-      this is implemented"), regardless of the field's declared type -
-      so a record meant to match an external fixed-width binary format
-      (interop with another program, a documented file format, a C
-      struct written by something else) can't actually get the right
-      per-field byte widths on disk today, no matter how the Pascal
-      type is declared; a subrange only bounds-checks the VALUE, it
-      doesn't change the WIDTH `write(f, rec)` emits. Doing this
-      properly means teaching the typed-file read/write path to
-      actually pack/unpack narrower values per field (a `byte` field
-      writing 1 byte, not 4) - real new machinery in the file-I/O layer,
-      not just new type keywords with the same runtime representation
-      as `integer`. Also feeds `sizeOf` (above): a meaningful byte-size
-      answer needs real per-field width to report.
+- [ ] `int64` (a full 64-bit integer type) — split off from the sized-
+      integers entry once `byte`/`shortint`/`word` shipped (see
+      docs/CHANGELOG.md): those three all fit within this VM's existing
+      one-`int`-sized storage slot (they're narrower than `integer`, not
+      wider), so they needed no storage-model change. `int64` doesn't
+      fit at all - `vm_vars[]`/`vm_stack[]`/`vm_array_mem[]`/
+      `vm_frame_stack[]` are homogeneous native-`int` arrays, one slot
+      per scalar, the same constraint that already keeps `real` at 32
+      bits (see the `double` entry above). A genuine 64-bit type needs
+      either a wider slot for every variable (wasteful for the common
+      case) or a separate wide-int storage region - a real architectural
+      fork, the same class of problem as the `double` entry, not a
+      quick add.
 
 **Large, already deprioritized for the same reasons as the OOP survey's
 own equivalent entries:** a `Variant` dynamically-typed type (cuts
