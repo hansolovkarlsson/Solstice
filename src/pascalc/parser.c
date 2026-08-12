@@ -5729,6 +5729,19 @@ static ASTNode *factor(void) {
         node->left = expression();
         match(TOKEN_RPAREN);
         return node;
+    } else if (token.type == TOKEN_INTTOSTR || token.type == TOKEN_STRTOINT
+               || token.type == TOKEN_FLOATTOSTR || token.type == TOKEN_STRTOFLOAT) {
+        // Unary number<->string builtins: IntToStr(n), StrToInt(s),
+        // FloatToStr(x), StrToFloat(s) - same shape as upcase/uppercase/
+        // lowercase just above.
+        TokenType op = token.type;
+        match(op);
+        match(TOKEN_LPAREN);
+        ASTNode *node = create_node(NODE_BUILTIN_CALL);
+        node->op = op;
+        node->left = expression();
+        match(TOKEN_RPAREN);
+        return node;
     } else if (token.type == TOKEN_POS || token.type == TOKEN_INPOS) {
         // pos(needle, haystack) / inpos(needle, haystack) - inpos is just
         // pos under a different name (the two are semantically identical

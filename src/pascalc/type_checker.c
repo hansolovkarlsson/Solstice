@@ -614,6 +614,39 @@ void type_check(ASTNode *node) {
                     }
                     node->expression_type = TYPE_STRING;
                     break;
+                case TOKEN_INTTOSTR:
+                    if (node->left->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'IntToStr' requires an integer argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_STRING;
+                    break;
+                case TOKEN_STRTOINT:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'StrToInt' requires a char or string argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_INTEGER;
+                    break;
+                case TOKEN_FLOATTOSTR:
+                    if (node->left->expression_type != TYPE_INTEGER && node->left->expression_type != TYPE_REAL) {
+                        fprintf(stderr, "%s:%d: Type Error: 'FloatToStr' requires an integer or real argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    widen_to_real(&node->left);
+                    node->expression_type = TYPE_STRING;
+                    break;
+                case TOKEN_STRTOFLOAT:
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'StrToFloat' requires a char or string argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    node->expression_type = TYPE_REAL;
+                    break;
                 case TOKEN_LEFT:
                 case TOKEN_RIGHT:
                     if (!is_string_type(node->left->expression_type)) {

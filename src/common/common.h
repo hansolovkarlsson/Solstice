@@ -109,6 +109,17 @@ typedef enum {
     TOKEN_LENGTH, TOKEN_COPY, TOKEN_POS,
     TOKEN_LOW, TOKEN_HIGH,
     TOKEN_UPCASE, TOKEN_UPPERCASE, TOKEN_LOWERCASE,
+    TOKEN_INTTOSTR,   // 'IntToStr(n)' - integer -> string. See OP_INTTOSTR.
+    TOKEN_STRTOINT,   // 'StrToInt(s)' - string -> integer, whole-string
+                      // only (trailing garbage is a runtime error,
+                      // unlike read's own leading-prefix-only parsing).
+                      // See OP_STRTOINT.
+    TOKEN_FLOATTOSTR, // 'FloatToStr(x)' - integer or real -> string
+                      // (widen_to_real()'d like sqrt/sin/etc). See
+                      // OP_FLOATTOSTR.
+    TOKEN_STRTOFLOAT, // 'StrToFloat(s)' - string -> real, whole-string
+                      // only, same strictness as StrToInt. See
+                      // OP_STRTOFLOAT.
     TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
     TOKEN_REAL,       // a real literal, e.g. 3.14 - distinct from
                       // TOKEN_NUMBER (integer literals)
@@ -657,6 +668,21 @@ typedef enum {
     OP_UPPERCASE_STR, // Pop a string_pool[] index; push a new interned
                      // string with every lowercase letter uppercased.
     OP_LOWERCASE_STR, // Same as above, lowercasing every uppercase letter.
+    OP_INTTOSTR,   // Pops an int, formats with "%d", interns, pushes the
+                   // string_pool[] index.
+    OP_STRTOINT,   // Pops a string_pool[] index. Parses the WHOLE string
+                   // (leading/trailing whitespace trimmed) as an integer
+                   // via sscanf("%d%n") + trailing-content check; pushes
+                   // the value, or VM Runtime Error + fatal_abort() if
+                   // any non-whitespace content isn't part of a single
+                   // valid integer.
+    OP_FLOATTOSTR, // Pops a float (already widened from int at compile
+                   // time if needed - see widen_to_real() in
+                   // type_checker.c), formats with "%.6g" (same default
+                   // write/writeln uses), interns, pushes the
+                   // string_pool[] index.
+    OP_STRTOFLOAT, // String -> real twin of OP_STRTOINT - sscanf("%f%n")
+                   // + the same whole-string validation.
     OP_LEFT,      // Pop count, then a string_pool[] index. Push a new
                   // interned string of the first `count` characters,
                   // clamped to the string's actual length (never errors).

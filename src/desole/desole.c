@@ -71,6 +71,10 @@ static const char *opcode_name(Opcode op) {
         case OP_UPCASE_CHAR:   return "upcase_char";
         case OP_UPPERCASE_STR: return "uppercase_str";
         case OP_LOWERCASE_STR: return "lowercase_str";
+        case OP_INTTOSTR:   return "inttostr";
+        case OP_STRTOINT:   return "strtoint";
+        case OP_FLOATTOSTR: return "floattostr";
+        case OP_STRTOFLOAT: return "strtofloat";
         case OP_LEFT:          return "left";
         case OP_RIGHT:         return "right";
         case OP_PRINT: return "print";

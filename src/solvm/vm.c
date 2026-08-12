@@ -4,6 +4,7 @@
 #include <math.h>
 #include <limits.h>
 #include <errno.h>
+#include <ctype.h>
 #include "vm.h"
 #include "error.h"
 
@@ -1956,6 +1957,59 @@ void run_vm(void) {
                 }
                 buf[i] = '\0';
                 vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_INTTOSTR: {
+                int val = vm_pop(&sp);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%d", val);
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_FLOATTOSTR: {
+                float val = bits_to_float(vm_pop(&sp));
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.6g", val);
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_STRTOINT: {
+                int idx = vm_str_index(vm_pop(&sp));
+                const char *s = string_pool[idx];
+                int val, consumed;
+                int ok = (sscanf(s, "%d%n", &val, &consumed) == 1);
+                if (ok) {
+                    int i = consumed;
+                    while (isspace((unsigned char)s[i])) i++;
+                    ok = (s[i] == '\0');
+                }
+                if (!ok) {
+                    fprintf(stderr, "VM Runtime Error: 'StrToInt' - '%s' is not a valid integer\n", s);
+                    fatal_abort();
+                }
+                vm_push(&sp, val);
+                break;
+            }
+
+            case OP_STRTOFLOAT: {
+                int idx = vm_str_index(vm_pop(&sp));
+                const char *s = string_pool[idx];
+                float val;
+                int consumed;
+                int ok = (sscanf(s, "%f%n", &val, &consumed) == 1);
+                if (ok) {
+                    int i = consumed;
+                    while (isspace((unsigned char)s[i])) i++;
+                    ok = (s[i] == '\0');
+                }
+                if (!ok) {
+                    fprintf(stderr, "VM Runtime Error: 'StrToFloat' - '%s' is not a valid real number\n", s);
+                    fatal_abort();
+                }
+                vm_push(&sp, float_to_bits(val));
                 break;
             }
 

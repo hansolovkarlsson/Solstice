@@ -56,6 +56,42 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
+- [ ] `exit`/`halt` — no early return from a procedure/function
+      (`exit;`, Delphi's `exit(value);`), and no program-terminate-with-
+      code (`halt`/`halt(n)`) - confirmed absent, not just undocumented
+      (see [docs/LANGUAGE.md](LANGUAGE.md#functions): "there's no
+      separate return/exit statement" - the only way out of a function
+      body today is falling through to `end` after assigning its own
+      name). Probably the single most commonly-hit gap for anyone
+      porting real Pascal code.
+- [ ] `Delete`/`Insert` — in-place string-mutation procedures, distinct
+      from `copy` (which only ever builds a new string).
+- [ ] `Random`/`Randomize` — no random number generation exists
+      anywhere in this compiler.
+- [ ] `case` range labels (`2..5: ...;`) — case labels must be listed
+      individually today (`2, 3, 4, 5:`); a Turbo Pascal/Delphi
+      extension over ISO Pascal's discrete-label-only `case`.
+- [ ] Typed constants with array/record initializers
+      (`const arr: array[1..3] of integer = (1, 2, 3);`) — `const` here
+      is scalar-only (see [docs/LANGUAGE.md](LANGUAGE.md#constants)).
+      Turbo Pascal/Delphi's typed constants are really initialized
+      global variables, a different mechanism from this compiler's
+      storage-less `const` (see that section's "How this is
+      implemented").
+- [ ] Untyped files + `BlockRead`/`BlockWrite` — raw byte-oriented file
+      I/O, distinct from both `text` and typed (record) files (see
+      [docs/LANGUAGE.md](LANGUAGE.md#file-io)).
+- [ ] `@`/`Addr` and an untyped `Pointer` type — no address-of operator,
+      no generic pointer that can target any type (see
+      [docs/LANGUAGE.md](LANGUAGE.md#pointers) - only typed pointers
+      exist).
+- [ ] Inline assembly (`asm ... end;`) — not itself a priority (this
+      project's VM isn't x86, so there's no existing assembly dialect to
+      match), but worth a from-scratch equivalent someday: embedding raw
+      `.sasm` directly inside a Pascal source file, letting a procedure
+      body drop to hand-written bytecode the way real Delphi drops to
+      hand-written x86 - genuinely on-brand for a project with its own
+      VM and assembler already under project control.
 
 ### Object-oriented language features under consideration (Delphi-inspired)
 
@@ -82,6 +118,14 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 - [ ] Class references/metaclasses (`TClass = class of TObject;`,
       virtual constructors via `AClass.Create`) — a new "class-typed
       value" distinct from an instance.
+- [ ] `protected` visibility — a third level between `private` and
+      `public` (visible to the declaring class and its descendants, not
+      just the declaring class itself). `private`/`public` already
+      exist and are enforced (see
+      [docs/LANGUAGE.md](LANGUAGE.md#privatepublic) - explicitly "Strict,
+      not 'protected'... There's no `protected` level" today), so this
+      is a bounded extension to already-shipped visibility machinery,
+      not new infrastructure from scratch.
 
 **Large — architecture-changing, lower priority:**
 

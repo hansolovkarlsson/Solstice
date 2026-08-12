@@ -2352,6 +2352,42 @@ anyway, so this is where they land instead.
       the file is ever opened, and a named subrange type confirming the
       same compatibility guarantee sized integers already have; 5 error
       cases) and [docs/LANGUAGE.md](LANGUAGE.md#sizeof).
+- [x] `IntToStr`/`StrToInt`/`FloatToStr`/`StrToFloat` — number/string
+      conversion in memory, the missing counterpart to `write`/
+      `writeln` (number to output) and `read`/`readln` (number from
+      input). Almost entirely reused machinery: the `%d`/`%.6g`
+      `snprintf` formatting `OP_PRINT_PADDED`/`OP_FPRINT_PADDED`
+      already did before printing, `vm_intern_string()` (the same
+      runtime-string-interning primitive `OP_SCONCAT`/`OP_UPPERCASE_STR`
+      /etc. already use), and `widen_to_real()` (the same int-or-real
+      auto-widening `sqrt`/`sin`/etc. already use for `FloatToStr`'s
+      argument) - one new primitive only: `sscanf`-based parsing of an
+      in-memory string, since `read`/`readln` had only ever called
+      `scanf`/`fscanf` against a live stream before this.
+
+      **Two deliberate design decisions, not direct copies of `read`'s
+      own behavior**: (1) `StrToInt`/`StrToFloat` require the WHOLE
+      string (leading/trailing whitespace aside) to be a valid number -
+      `sscanf(s, "%d%n", &val, &consumed)` plus a trailing-content
+      check - stricter than `read`'s own leading-prefix-only leniency,
+      since `StrToInt('42.5')` silently returning `42` would be a much
+      easier mistake to make and miss than anything `read`'s
+      stream-based parsing already tolerates. (2) invalid input is a
+      **fatal** `VM Runtime Error`, matching `read`/`readln`'s own
+      existing invalid-numeric-input convention exactly - not a
+      catchable `raise`, even though real Delphi's `StrToInt` raises a
+      catchable `EConvertError`. Making it catchable would mean
+      duplicating `OP_RAISE`'s own except-stack unwind logic inside an
+      unrelated opcode; staying fatal keeps this a pure compute-and-
+      return opcode, the same shape as every other builtin in this
+      session, rather than reintroducing the control-flow entanglement
+      that ruled out `exit`/`halt` as the alternative pick.
+
+      See `examples/test/strnum/test_strnum_*.pas` (4 positive cases
+      including round-trips through both conversions and `FloatToStr`'s
+      int-argument widening; 3 error cases covering trailing garbage,
+      an empty/whitespace-only string, and an unparseable real) and
+      [docs/LANGUAGE.md](LANGUAGE.md#numberstring-conversion).
 
 ### Shipped from the OOP features survey
 

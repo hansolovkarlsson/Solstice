@@ -317,6 +317,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
+| `IntToStr`, `FloatToStr`, `StrToInt`, `StrToFloat` | functions | Number/string conversion in memory — see [String](#string) |
 | `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type; for a class with a `destructor`, `dispose` calls it first — see [Pointers](#pointers), [Destructors](#destructors) |
 | `ParamCount` | function | Number of command-line arguments passed to the running program |
 | `ParamStr(i)` | function | The `i`th command-line argument as a string — `ParamStr(0)` is the running `.bin`'s own path |
@@ -1266,6 +1267,54 @@ end.
   These aren't ISO standard, but are standard in Turbo Pascal/Delphi/Free
   Pascal. Only affects `a`-`z`/`A`-`Z`; anything else in the string is
   left as-is.
+
+### Number/string conversion
+
+```pascal
+var
+    s: string;
+    n: integer;
+    x: real;
+begin
+    s := 'count: ' + IntToStr(42);        { 'count: 42' }
+    n := StrToInt('  -17 ');              { -17 }
+    s := 'price: ' + FloatToStr(19.9);    { 'price: 19.9' }
+    x := StrToFloat('3.14');              { 3.14 }
+end.
+```
+
+`write`/`writeln` can format a number into *output*, and `read`/
+`readln` can parse a number *from input* — but neither helps when you
+want the string itself as a value (to concatenate, store in a field,
+pass to a procedure). These four functions do that conversion in
+memory, standard in Turbo Pascal/Delphi (not ISO Pascal, which has
+neither):
+
+- `IntToStr(n)` — `integer` to `string`, formatted the same way `write`
+  would (`%d`).
+- `FloatToStr(x)` — `integer` or `real` to `string` (an integer
+  argument widens to `real` first, same as `sqrt`/`sin`/etc.), using the
+  same default `%.6g` formatting `write`/`writeln` use for a bare `real`
+  (see [Printing](#printing) under [Real](#real)) — 6 significant
+  digits, switching to scientific notation for very large/small
+  magnitudes (`FloatToStr(1000000.0)` is `'1e+06'`). No optional
+  precision argument — there's no way to ask for a fixed decimal count
+  the way `write(x:0:2)` can; build that string via `write` if needed.
+- `StrToInt(s)` / `StrToFloat(s)` — `string`/`char` to `integer`/`real`.
+  **The entire string (leading/trailing whitespace aside) must be a
+  single valid number** — `StrToInt('42.5')` and `StrToInt('42abc')`
+  are both errors, not `42`. This is *stricter* than `read`/`readln`'s
+  own number-parsing (which only needs a valid prefix, since it's
+  reading from a live stream with no natural "rest of the input" to
+  validate) — deliberately so, since a silently-truncated conversion
+  here would be a much easier mistake to make and miss.
+- **Invalid input is a fatal `VM Runtime Error`**, matching `read`/
+  `readln`'s own existing behavior on unparseable input — not a
+  catchable condition. Real Delphi's `StrToInt`/`StrToFloat` raise a
+  catchable exception; this compiler's version doesn't, to keep the
+  feature simple (no interaction with `try`/`except`'s own unwind
+  machinery). Validate untrusted input yourself before calling these if
+  a bad value shouldn't crash the program.
 
 ## Char
 

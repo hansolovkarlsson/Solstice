@@ -409,6 +409,10 @@ void next_token(void) {
         else if (strcasecmp(token.text, "upcase") == 0) token.type = TOKEN_UPCASE;
         else if (strcasecmp(token.text, "uppercase") == 0) token.type = TOKEN_UPPERCASE;
         else if (strcasecmp(token.text, "lowercase") == 0) token.type = TOKEN_LOWERCASE;
+        else if (strcasecmp(token.text, "inttostr") == 0) token.type = TOKEN_INTTOSTR;
+        else if (strcasecmp(token.text, "strtoint") == 0) token.type = TOKEN_STRTOINT;
+        else if (strcasecmp(token.text, "floattostr") == 0) token.type = TOKEN_FLOATTOSTR;
+        else if (strcasecmp(token.text, "strtofloat") == 0) token.type = TOKEN_STRTOFLOAT;
         else if (strcasecmp(token.text, "mid") == 0) token.type = TOKEN_MID;
         else if (strcasecmp(token.text, "left") == 0) token.type = TOKEN_LEFT;
         else if (strcasecmp(token.text, "right") == 0) token.type = TOKEN_RIGHT;

@@ -855,6 +855,14 @@ void generate_code(ASTNode *node) {
                 emit(OP_UPPERCASE_STR, 0);
             } else if (node->op == TOKEN_LOWERCASE) {
                 emit(OP_LOWERCASE_STR, 0);
+            } else if (node->op == TOKEN_INTTOSTR) {
+                emit(OP_INTTOSTR, 0);
+            } else if (node->op == TOKEN_STRTOINT) {
+                emit(OP_STRTOINT, 0);
+            } else if (node->op == TOKEN_FLOATTOSTR) {
+                emit(OP_FLOATTOSTR, 0);
+            } else if (node->op == TOKEN_STRTOFLOAT) {
+                emit(OP_STRTOFLOAT, 0);
             } else if (node->op == TOKEN_POS) {
                 generate_code(node->right);
                 emit(OP_POS, 0);

@@ -300,7 +300,15 @@ element, for interop with an external fixed-width binary format
 would `x` occupy as a typed-file record/element" (a record type,
 record/typed-file variable, or scalar type — not "memory size," which
 would always be a flat, uninteresting 4 in this VM's uniform-slot model
-— see [docs/LANGUAGE.md](docs/LANGUAGE.md#sizeof)). Also working: records as
+— see [docs/LANGUAGE.md](docs/LANGUAGE.md#sizeof)); and `IntToStr`/
+`FloatToStr`/`StrToInt`/`StrToFloat`, number/string conversion in
+memory (distinct from `write`/`writeln`'s formatting and `read`/
+`readln`'s parsing, neither of which produces/consumes a `string`
+*value*) — `StrToInt`/`StrToFloat` require the whole string to be a
+valid number, a runtime error otherwise, matching `read`/`readln`'s
+own fatal-on-invalid-input convention rather than a catchable exception
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#numberstring-conversion)).
+Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus
 whole-element copy to/from another array element or a plain record
