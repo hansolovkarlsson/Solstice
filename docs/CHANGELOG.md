@@ -2420,6 +2420,63 @@ anyway, so this is where they land instead.
       test, an explicit determinism test verified by running the
       compiled binary twice, and the `Random(0)` error case) and
       [docs/LANGUAGE.md](LANGUAGE.md#random--randomize).
+- [x] `Delete(var S, Index, Count)` / `Insert(Source, var S, Index)` —
+      in-place string mutation, the missing counterpart to `copy`
+      (which only ever builds a *new* string). Reuses `inc`/`dec`'s own
+      write-back trick exactly: `parse_inc_dec()` desugars `inc(x)` to
+      literally the same AST `x := x + 1;` would produce - read `x`,
+      build a value expression, assign it back through whichever of
+      `NODE_ASSIGN`/`NODE_LOCAL_ASSIGN`/`NODE_VAR_PARAM_ASSIGN` matches
+      where `x` lives. `Delete`/`Insert` do the identical thing for a
+      `string` target, with a new opcode computing the spliced result
+      standing in for `+1`.
+
+      **A design option considered and rejected**: building the
+      replacement purely from existing `copy(...)` + `+` AST nodes
+      (`S := copy(S,1,Index-1) + copy(S,Index+Count,...)`) - rejected
+      because `Index`/`Count`/`Source` would each need to appear more
+      than once in the synthesized tree, and this codebase never shares
+      an `ASTNode` pointer across two parents (confirmed by
+      `OP_RIGHT`'s own existing comment: *"this AST has no safe way to
+      share a subtree"*), and re-parsing or deep-copying an arbitrary
+      expression isn't machinery worth building for this. One new
+      opcode each sidesteps the whole problem: every argument is
+      compiled by ordinary `generate_code()` exactly once, and the new
+      opcode does the splice natively in C.
+
+      **A deliberate split between the two new opcodes, not an
+      inconsistency**: `OP_STR_DELETE` reuses `copy`/`left`/`right`'s
+      lenient clamping (`Delete` can only ever shrink a string, so it
+      can never overflow the string-pool's per-entry limit - no error
+      path needed at all). `OP_STR_INSERT` reuses `OP_SCONCAT`'s
+      detect-and-`fatal_abort()` convention instead, since - like `+`
+      concatenation - it can genuinely grow a string past that limit.
+      The two existing conventions already split along exactly this
+      "can this only shrink/extract, or can it grow" line; `Delete`/
+      `Insert` just each pick the one that already fits.
+
+      **Write-back target scoped down from `inc`/`dec`'s own full
+      resolution chain, a documented v1 cut**: `S` must be a plain
+      global, local, or `var`-parameter identifier - no record fields,
+      `with`-block fields, or static locals (`inc`/`dec`'s own chain
+      covers all of those). Mechanical, low-risk to extend later; not
+      done now to keep the new resolution code proportionate to the
+      feature rather than a near-duplicate of `parse_inc_dec()`'s full
+      150-line chain.
+
+      Also fixed in passing: `docs/LANGUAGE.md`'s `inc`/`dec` section
+      still said this compiler "doesn't support by-reference scalar
+      parameters yet" - stale since `is_var_param`/`NODE_VAR_PARAM_*`
+      already existed and `inc`/`dec` themselves already used them;
+      corrected while documenting `Delete`/`Insert`, which lean on the
+      exact same machinery.
+
+      See `examples/test/deleteinsert/test_deleteinsert_*.pas` (5
+      positive cases including the full lenient-clamping edge-case
+      matrix for both functions and a `var`-parameter target
+      specifically exercising the third write-back path; 3 error cases:
+      `const` parameter, array target, `Insert` overflow) and
+      [docs/LANGUAGE.md](LANGUAGE.md#delete-and-insert).
 
 ### Shipped from the OOP features survey
 

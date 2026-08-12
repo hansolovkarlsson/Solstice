@@ -316,6 +316,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `length(s)`, `s[i]` | function / indexing | String length and character access — see [String](#string) |
 | `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
+| `Delete(var S, Index, Count)`, `Insert(Source, var S, Index)` | statements | In-place string mutation — see [`Delete` and `Insert`](#delete-and-insert) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 | `IntToStr`, `FloatToStr`, `StrToInt`, `StrToFloat` | functions | Number/string conversion in memory — see [String](#string) |
 | `new(p)`, `dispose(p)` | statements | Allocate/release one instance of a pointer's target type; for a class with a `destructor`, `dispose` calls it first — see [Pointers](#pointers), [Destructors](#destructors) |
@@ -328,16 +329,16 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 - `abs`/`sqr` accept `integer` or `real` (preserving whichever was
   given); `odd`/`succ`/`pred`/`inc`/`dec` work on `integer` only;
   `ord`/`chr` are the `char`/`integer` conversion pair.
-- `inc`/`dec`'s target `x` must be a plain integer variable — global or
-  local, but not an array element. Real Pascal's `inc`/`dec` mutate their
-  argument by reference (`var` parameter); this compiler doesn't support
-  by-reference *scalar* parameters yet (only array parameters are by
-  reference), so `inc`/`dec` are handled as a special statement form
-  rather than a general mechanism — `inc(x)` compiles to exactly what
-  `x := x + 1;` would. One consequence: dead-code elimination never
-  removes an `inc`/`dec` on an otherwise-unused global, since `x := x +
-  1;`'s own right-hand side reads `x`, which always makes it look used —
-  purely a missed optimization (the program still runs correctly), not
+- `inc`/`dec`'s target `x` must be a plain integer variable — global,
+  local, or a `var` parameter, but not an array element. Rather than a
+  general by-reference mechanism, `inc`/`dec` are handled as a special
+  statement form: `inc(x)` compiles to exactly what `x := x + 1;` would
+  (reusing whichever of `x`'s existing read/write forms already applies
+  — including the `var`-parameter one, if `x` is one). One consequence:
+  dead-code elimination never removes an `inc`/`dec` on an otherwise-
+  unused global, since `x := x + 1;`'s own right-hand side reads `x`,
+  which always makes it look used — purely a missed optimization (the
+  program still runs correctly), not
   a correctness issue.
 - `inc`/`dec` are statements (no return value, can't be used inside an
   expression), matching real Pascal. The other five are ordinary
@@ -1258,6 +1259,51 @@ end.
 - `pos`/`inpos` with an empty needle is defined as "not found" (`0`),
   avoiding the ambiguous question of what position an empty string
   would be "found at."
+
+### `Delete` and `Insert`
+
+```pascal
+var
+    s: string;
+begin
+    s := 'Hello, World!';
+    Delete(s, 6, 7);           { s = 'Hello!' }
+    Insert(' there', s, 6);    { s = 'Hello there!' }
+    writeln(s);
+end.
+```
+
+`Delete(var S: string; Index, Count: integer)` and `Insert(Source:
+string; var S: string; Index: integer)` are Turbo Pascal/Delphi's
+in-place string-mutation procedures, the missing counterpart to `copy`
+(which only ever builds a *new* string, never touches its argument):
+
+- `Delete(S, Index, Count)` removes `Count` characters from `S`,
+  starting at 1-based `Index`, in place.
+- `Insert(Source, S, Index)` splices `Source` into `S` right before
+  1-based position `Index`, in place. Note the argument order —
+  `Source` comes first, `S` (the thing actually mutated) second,
+  matching real Delphi's own signature.
+- **`Index`/`Count` use the same lenient clamping `copy`/`left`/`right`
+  already use** — an out-of-range `Index` or `Count` never errors, just
+  yields the most sensible result (`Delete` with `Index` past the end
+  of `S` is a no-op; `Insert` with `Index` past the end appends;
+  `Index < 1` is treated as `1`).
+- **`Insert` can raise a runtime error, `Delete` never can** — `Delete`
+  only ever shrinks (or leaves unchanged) a string that already fit
+  within this compiler's string-length limit, so it needs no overflow
+  check. `Insert` can genuinely grow a string past that limit, so
+  (like `+` concatenation) it's a fatal `VM Runtime Error` if the
+  result would be too long.
+- **`S` must be a plain variable — global, local, or a `var`
+  parameter** (not `const`/`out`, not a record field, not a `with`-block
+  field, not an array element) — the same restriction `inc`/`dec`'s own
+  target has, for the same reason: both procedures write back to `S`
+  in place, and this compiler's write-back mechanism only covers a
+  plain variable reference. `Delete`/`Insert` compile down to exactly
+  the same shape `inc`/`dec` do (`x := x + 1;`, `parser.c`'s
+  `parse_inc_dec()`) — read `S`, compute a new value, assign it back —
+  just with a string-splicing computation standing in for `+1`.
 
 ### Case conversion
 

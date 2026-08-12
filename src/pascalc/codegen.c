@@ -870,6 +870,14 @@ void generate_code(ASTNode *node) {
                 emit(OP_STRTOFLOAT, 0);
             } else if (node->op == TOKEN_RANDOM) {
                 emit(OP_RANDOM, 0);
+            } else if (node->op == TOKEN_DELETE) {
+                generate_code(node->right);
+                generate_code(node->extra);
+                emit(OP_STR_DELETE, 0);
+            } else if (node->op == TOKEN_INSERT) {
+                generate_code(node->right);
+                generate_code(node->extra);
+                emit(OP_STR_INSERT, 0);
             } else if (node->op == TOKEN_POS) {
                 generate_code(node->right);
                 emit(OP_POS, 0);

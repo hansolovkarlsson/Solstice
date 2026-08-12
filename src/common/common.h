@@ -126,6 +126,13 @@ typedef enum {
                       // the real Pascal/Delphi calling convention),
                       // seeds the generator from the system clock. See
                       // OP_RANDOMIZE.
+    TOKEN_DELETE, // 'Delete(var S: string; Index, Count: integer);' -
+                  // see OP_STR_DELETE. Desugars like inc/dec: read S,
+                  // compute the spliced result via a NODE_BUILTIN_CALL,
+                  // assign back.
+    TOKEN_INSERT, // 'Insert(Source: string; var S: string; Index: integer);'
+                  // - see OP_STR_INSERT. Same write-back shape as
+                  // TOKEN_DELETE.
     TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
     TOKEN_REAL,       // a real literal, e.g. 3.14 - distinct from
                       // TOKEN_NUMBER (integer literals)
@@ -694,6 +701,17 @@ typedef enum {
                    // runtime bound" convention (array indexing, etc.).
                    // Else pushes rand() % n.
     OP_RANDOMIZE,  // No operand, no stack interaction. srand((unsigned)time(NULL)).
+    OP_STR_DELETE, // Pops count, start, then a string_pool[] index.
+               // Pushes a new interned string with count characters
+               // removed starting at 1-based start - clamped leniently
+               // like OP_COPY, never errors (can only shrink).
+    OP_STR_INSERT, // Pops index, then the TARGET string_pool[] index,
+               // then the SOURCE string_pool[] index. Pushes a new
+               // interned string with source spliced into target at
+               // 1-based index - VM Runtime Error + fatal_abort() if
+               // the result would exceed MAX_STRING_LEN (can grow,
+               // unlike OP_STR_DELETE - see OP_SCONCAT's identical
+               // convention).
     OP_LEFT,      // Pop count, then a string_pool[] index. Push a new
                   // interned string of the first `count` characters,
                   // clamped to the string's actual length (never errors).

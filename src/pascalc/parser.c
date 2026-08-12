@@ -9770,6 +9770,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
            t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING || t == TOKEN_RANDOMIZE ||
+           t == TOKEN_DELETE || t == TOKEN_INSERT ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -9953,6 +9954,80 @@ static ASTNode *parse_inc_dec(TokenType kind) {
     }
     write_node->left = wrap_range_check(value_node, target_is_subrange, target_subrange_lower, target_subrange_upper);
     return write_node;
+}
+
+// Resolves a plain 'string' variable as Delete/Insert's write-back
+// target - global, local/parameter, or 'var' parameter (not 'const'/
+// 'out', not a with-field/record-field/static-local - a deliberate v1
+// scope cut narrower than parse_inc_dec()'s own resolution chain above,
+// documented in docs/LANGUAGE.md, not a silent gap: the overwhelming
+// majority of real use is a plain string variable, and skipping the
+// record/with-field branches keeps this proportionate to the feature
+// rather than a near-duplicate of parse_inc_dec()'s full chain).
+// Returns the correct READ node kind (NODE_VAR_PARAM_READ/
+// NODE_LOCAL_VAR/NODE_VARIABLE) - see string_writeback_assign_node()
+// below for the matching write side.
+static ASTNode *parse_string_writeback_target(const char *builtin_name) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'%s' expects a string variable", builtin_name);
+    }
+    char name[MAX_NAME];
+    strcpy(name, token.text);
+    int line = token.line;
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->is_array || ls->is_array_ref) {
+            compile_error(line, "'%s' expects a plain string variable, not an array", builtin_name);
+        }
+        if (ls->is_const_param) {
+            compile_error(line, "'%s' cannot be used on 'const' parameter '%s'", builtin_name, name);
+        }
+        if (ls->type != TYPE_STRING) {
+            compile_error(line, "'%s' expects a string variable", builtin_name);
+        }
+        match(TOKEN_IDENTIFIER);
+        ASTNode *node = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+        node->data.var_idx = local_idx;
+        node->op = (TokenType)levels_up;
+        node->expression_type = TYPE_STRING;
+        return node;
+    }
+    int sym_idx = find_var(name);
+    if (sym_table[sym_idx].is_array) {
+        compile_error(line, "'%s' expects a plain string variable, not an array", builtin_name);
+    }
+    if (sym_table[sym_idx].type != TYPE_STRING) {
+        compile_error(line, "'%s' expects a string variable", builtin_name);
+    }
+    match(TOKEN_IDENTIFIER);
+    ASTNode *node = create_node(NODE_VARIABLE);
+    node->data.var_idx = sym_idx;
+    node->expression_type = TYPE_STRING;
+    return node;
+}
+
+// Builds the matching write-back node for whatever
+// parse_string_writeback_target() returned as a read - mirrors
+// parse_inc_dec()'s own 3-way write_node dispatch above. Safe to call
+// with read_node reused as-is elsewhere too (e.g. spliced into a
+// NODE_BUILTIN_CALL's own left/right as the "read" operand) - this
+// function only reads read_node's type/data.var_idx/op FIELDS to build
+// a brand new, separate write node; it never attaches read_node itself
+// as a second parent's child, so there's no shared-subtree hazard.
+static ASTNode *string_writeback_assign_node(ASTNode *read_node, ASTNode *value) {
+    NodeType write_type = read_node->type == NODE_VAR_PARAM_READ ? NODE_VAR_PARAM_ASSIGN
+                         : read_node->type == NODE_LOCAL_VAR ? NODE_LOCAL_ASSIGN
+                         : NODE_ASSIGN;
+    ASTNode *node = create_node(write_type);
+    node->data.var_idx = read_node->data.var_idx;
+    if (write_type != NODE_ASSIGN) {
+        node->op = read_node->op; // levels_up
+        node->expression_type = TYPE_STRING;
+    }
+    node->left = value;
+    return node;
 }
 
 // Builds a '<target>^[0] := class_ptr_idx;' statement
@@ -11717,6 +11792,42 @@ static ASTNode *statement(void) {
 
     if (token.type == TOKEN_INC || token.type == TOKEN_DEC) {
         return parse_inc_dec(token.type);
+    }
+
+    if (token.type == TOKEN_DELETE) {
+        match(TOKEN_DELETE);
+        match(TOKEN_LPAREN);
+        ASTNode *read_node = parse_string_writeback_target("Delete");
+        match(TOKEN_COMMA);
+        ASTNode *index_expr = expression();
+        match(TOKEN_COMMA);
+        ASTNode *count_expr = expression();
+        match(TOKEN_RPAREN);
+        ASTNode *value_node = create_node(NODE_BUILTIN_CALL);
+        value_node->op = TOKEN_DELETE;
+        value_node->left = read_node;
+        value_node->right = index_expr;
+        value_node->extra = count_expr;
+        value_node->expression_type = TYPE_STRING;
+        return string_writeback_assign_node(read_node, value_node);
+    }
+
+    if (token.type == TOKEN_INSERT) {
+        match(TOKEN_INSERT);
+        match(TOKEN_LPAREN);
+        ASTNode *source_expr = expression();
+        match(TOKEN_COMMA);
+        ASTNode *read_node = parse_string_writeback_target("Insert");
+        match(TOKEN_COMMA);
+        ASTNode *index_expr = expression();
+        match(TOKEN_RPAREN);
+        ASTNode *value_node = create_node(NODE_BUILTIN_CALL);
+        value_node->op = TOKEN_INSERT;
+        value_node->left = source_expr;
+        value_node->right = read_node;
+        value_node->extra = index_expr;
+        value_node->expression_type = TYPE_STRING;
+        return string_writeback_assign_node(read_node, value_node);
     }
 
     if (token.type == TOKEN_FILE_ASSIGN) {

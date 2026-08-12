@@ -2028,6 +2028,44 @@ void run_vm(void) {
                 srand((unsigned)time(NULL));
                 break;
 
+            case OP_STR_DELETE: {
+                int count = vm_pop(&sp);
+                int start = vm_pop(&sp);
+                int val = vm_pop(&sp);
+                const char *s = string_pool[vm_str_index(val)];
+                int len = (int)strlen(s);
+                if (start < 1) start = 1;
+                if (count < 0) count = 0;
+                int before_len = start - 1;
+                if (before_len > len) before_len = len;
+                int after_start = before_len + count;
+                if (after_start > len) after_start = len;
+                char buf[MAX_STRING_LEN];
+                snprintf(buf, sizeof(buf), "%.*s%s", before_len, s, s + after_start);
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
+            case OP_STR_INSERT: {
+                int index = vm_pop(&sp);
+                int target_val = vm_pop(&sp);
+                int source_val = vm_pop(&sp);
+                const char *target = string_pool[vm_str_index(target_val)];
+                const char *source = string_pool[vm_str_index(source_val)];
+                int target_len = (int)strlen(target);
+                if (index < 1) index = 1;
+                if (index > target_len + 1) index = target_len + 1;
+                int before_len = index - 1;
+                char buf[MAX_STRING_LEN];
+                int written = snprintf(buf, sizeof(buf), "%.*s%s%s", before_len, target, source, target + before_len);
+                if (written < 0 || (size_t)written >= sizeof(buf)) {
+                    fprintf(stderr, "VM Runtime Error: 'Insert' result too long (limit is %d characters)\n", MAX_STRING_LEN - 1);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_intern_string(buf));
+                break;
+            }
+
             case OP_LEFT: {
                 int count = vm_pop(&sp);
                 int val = vm_pop(&sp);

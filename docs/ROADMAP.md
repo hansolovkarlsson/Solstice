@@ -64,8 +64,6 @@ anyway, so this is where they land instead.
       body today is falling through to `end` after assigning its own
       name). Probably the single most commonly-hit gap for anyone
       porting real Pascal code.
-- [ ] `Delete`/`Insert` — in-place string-mutation procedures, distinct
-      from `copy` (which only ever builds a new string).
 - [ ] `case` range labels (`2..5: ...;`) — case labels must be listed
       individually today (`2, 3, 4, 5:`); a Turbo Pascal/Delphi
       extension over ISO Pascal's discrete-label-only `case`.

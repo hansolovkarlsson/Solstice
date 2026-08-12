@@ -77,6 +77,8 @@ static const char *opcode_name(Opcode op) {
         case OP_STRTOFLOAT: return "strtofloat";
         case OP_RANDOM:     return "random";
         case OP_RANDOMIZE:  return "randomize";
+        case OP_STR_DELETE: return "str_delete";
+        case OP_STR_INSERT: return "str_insert";
         case OP_LEFT:          return "left";
         case OP_RIGHT:         return "right";
         case OP_PRINT: return "print";

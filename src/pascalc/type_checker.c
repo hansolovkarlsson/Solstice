@@ -655,6 +655,30 @@ void type_check(ASTNode *node) {
                     }
                     node->expression_type = TYPE_INTEGER;
                     break;
+                case TOKEN_DELETE:
+                    // node->left (S) is already guaranteed TYPE_STRING
+                    // by construction in the parser - only Index/Count
+                    // need checking here.
+                    if (node->right->expression_type != TYPE_INTEGER || node->extra->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'Delete' requires integer Index and Count arguments\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    break;
+                case TOKEN_INSERT:
+                    // node->right (S) is already guaranteed TYPE_STRING
+                    // by construction in the parser.
+                    if (!is_string_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'Insert' requires a char or string Source argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    if (node->extra->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'Insert' requires an integer Index argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    break;
                 case TOKEN_LEFT:
                 case TOKEN_RIGHT:
                     if (!is_string_type(node->left->expression_type)) {

@@ -314,7 +314,15 @@ returning form; Turbo Pascal's parameterless real-valued `Random` isn't
 supported), deterministic across runs unless `Randomize` is called
 first, matching real Pascal's own convention for free from plain C
 `rand()`'s own default behavior (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#random--randomize)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#random--randomize)); and
+`Delete`/`Insert`, in-place string mutation reusing `inc`/`dec`'s own
+write-back trick (read the target, compute a new value, assign it back
+through whichever of `NODE_ASSIGN`/`NODE_LOCAL_ASSIGN`/
+`NODE_VAR_PARAM_ASSIGN` matches where it lives) — `Delete` can only
+shrink a string so it never errors, `Insert` can grow one past this
+compiler's string-length limit so it follows `+` concatenation's own
+fatal-on-overflow convention (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#delete-and-insert)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus
