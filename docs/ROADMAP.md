@@ -114,14 +114,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 - [ ] Class references/metaclasses (`TClass = class of TObject;`,
       virtual constructors via `AClass.Create`) — a new "class-typed
       value" distinct from an instance.
-- [ ] `protected` visibility — a third level between `private` and
-      `public` (visible to the declaring class and its descendants, not
-      just the declaring class itself). `private`/`public` already
-      exist and are enforced (see
-      [docs/LANGUAGE.md](LANGUAGE.md#privatepublic) - explicitly "Strict,
-      not 'protected'... There's no `protected` level" today), so this
-      is a bounded extension to already-shipped visibility machinery,
-      not new infrastructure from scratch.
 
 **Large — architecture-changing, lower priority:**
 

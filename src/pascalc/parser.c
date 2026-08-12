@@ -313,6 +313,11 @@ typedef struct {
                            // declaring_class_ptr_idx below), since a
                            // descendant class doesn't re-declare an
                            // inherited field.
+    int is_protected;     // same convention as is_private, mutually
+                           // exclusive with it - 1 if declared in a
+                           // 'protected' section. See
+                           // class_ptr_idx_is_or_descends_from()'s
+                           // enforcement in resolve_heap_deref_step().
     int declaring_class_ptr_idx; // only meaningful for a CLASS field (-1
                            // for a plain record field) - the pointer_types[]
                            // index of whichever class's OWN 'class ... end;'
@@ -616,6 +621,10 @@ typedef struct {
                                // declared in a 'private' section - see
                                // RecordField.is_private's own comment
                                // (same convention, same reasoning).
+    int is_protected;          // unused by a functional/procedural
+                               // parameter; for a class method, 1 if
+                               // declared in a 'protected' section - see
+                               // RecordField.is_protected's own comment.
     int declaring_class_ptr_idx; // unused by a functional/procedural
                                // parameter; for a class method, the
                                // pointer_types[] index of whichever class
@@ -733,6 +742,10 @@ typedef struct {
                              // through the property (standard Delphi
                              // convention: a public property can front a
                              // private field/method).
+    int is_protected;        // the PROPERTY's OWN 'protected' visibility,
+                             // mutually exclusive with is_private - same
+                             // "gates the property itself, not whatever's
+                             // underneath" reasoning as is_private above.
     int declaring_class_ptr_idx; // pointer_types[] index of whichever
                              // class's own 'class ... end;' first declared
                              // this property - same convention as
@@ -790,6 +803,8 @@ typedef struct {
                                // other class member - gates access to
                                // THIS class var, checked against
                                // current_class_ptr_idx.
+    int is_protected;         // same convention as is_private, mutually
+                               // exclusive with it.
     int declaring_class_ptr_idx; // pointer_types[] index of whichever
                                // class's own 'class ... end;' first
                                // declared this class var - same
@@ -911,6 +926,28 @@ int class_type_is_subtype_of(DataType sub, DataType target) {
     if (!is_pointer_type(sub) || !is_pointer_type(target)) return 0;
     int idx = sub - TYPE_POINTER_BASE;
     int target_idx = target - TYPE_POINTER_BASE;
+    while (idx != -1) {
+        if (idx == target_idx) return 1;
+        idx = pointer_types[idx].is_class ? pointer_types[idx].parent_class_ptr_idx : -1;
+    }
+    return 0;
+}
+
+// 'protected' visibility's own ancestry check: whether sub_idx's class
+// IS target_idx's class, or a (transitively) inherited descendant of
+// it - the exact same parent_class_ptr_idx walk class_type_is_subtype_of()
+// does above, adapted for the raw pointer_types[] indices
+// current_class_ptr_idx/declaring_class_ptr_idx already use (a
+// deliberately separate, narrower helper rather than reusing that
+// DataType-typed one directly - the TYPE_POINTER_BASE conversion it
+// needs doesn't fit a bare index cleanly, and this codebase's own
+// established habit is a small duplicated helper over a forced-generic
+// one - see e.g. vm_typed_file_handle()'s own precedent in vm.c).
+// Correctly returns false when sub_idx is -1 (current_class_ptr_idx
+// outside any method body - never "inside" any class) with no separate
+// guard needed, since the loop condition alone already excludes it.
+static int class_ptr_idx_is_or_descends_from(int sub_idx, int target_idx) {
+    int idx = sub_idx;
     while (idx != -1) {
         if (idx == target_idx) return 1;
         idx = pointer_types[idx].is_class ? pointer_types[idx].parent_class_ptr_idx : -1;
@@ -3036,7 +3073,7 @@ static ASTNode *compound_statement(void);
 static ASTNode *parse_call_arguments(int proc_idx);
 static void subroutine_declaration(int is_function_decl, int header_only, int is_destructor_decl);
 static ASTNode *parse_case_label_value(void);
-static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int declaring_class_ptr_idx);
+static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int is_protected, int declaring_class_ptr_idx);
 static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx);
 static void parse_class_declaration(const char *class_name, int line);
 static void parse_class_method_body(int is_function_decl, const char *class_name, int decl_line, int is_destructor_decl);
@@ -4306,6 +4343,9 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
                     // field/method - standard Delphi convention).
                     compile_error(name_line, "'%s' is a private property of class '%s' and can't be accessed here", name, pointer_types[prop->declaring_class_ptr_idx].name);
                 }
+                if (prop->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, prop->declaring_class_ptr_idx)) {
+                    compile_error(name_line, "'%s' is a protected property of class '%s' and can't be accessed here", name, pointer_types[prop->declaring_class_ptr_idx].name);
+                }
                 RecordTypeDef *target_rt = &record_types[pt->target_record_type_idx];
 
                 if (is_statement_context) {
@@ -4381,13 +4421,21 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
                 compile_error(name_line, "'%s' is a class method of '%s' - call it via '%s.%s', not through an instance", name, pt->name, pt->name, name);
             }
             if (h->is_private && current_class_ptr_idx != h->declaring_class_ptr_idx) {
-                // Strict private (not "protected"): only the DECLARING
-                // class's own methods can call this, not even a
-                // subclass's - current_class_ptr_idx is which class's
-                // method body is CURRENTLY being parsed (-1 outside any
-                // method), matching self-shorthand's own use of it for
-                // the same "am I inside this class right now" question.
+                // Strict private: only the DECLARING class's own methods
+                // can call this, not even a subclass's -
+                // current_class_ptr_idx is which class's method body is
+                // CURRENTLY being parsed (-1 outside any method),
+                // matching self-shorthand's own use of it for the same
+                // "am I inside this class right now" question.
                 compile_error(name_line, "'%s' is a private method of class '%s' and can't be called here", name, pointer_types[h->declaring_class_ptr_idx].name);
+            }
+            if (h->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, h->declaring_class_ptr_idx)) {
+                // 'protected': the declaring class's own methods AND any
+                // (transitively) descendant class's methods can call
+                // this - class_ptr_idx_is_or_descends_from() walks
+                // current_class_ptr_idx's own parent_class_ptr_idx chain
+                // looking for h->declaring_class_ptr_idx.
+                compile_error(name_line, "'%s' is a protected method of class '%s' and can't be called here", name, pointer_types[h->declaring_class_ptr_idx].name);
             }
             // h->mangled_name - NOT "pt->name__name" - is what actually
             // implements this call STATICALLY, for a class matching
@@ -4439,6 +4487,12 @@ static HeapDerefStep resolve_heap_deref_step(ASTNode *base, int is_statement_con
             // ('c.field') and self-shorthand alike, since both already
             // route through this one shared function.
             compile_error(field_line, "'%s' is a private field of class '%s' and can't be accessed here", f->name, pointer_types[f->declaring_class_ptr_idx].name);
+        }
+        if (f->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, f->declaring_class_ptr_idx)) {
+            // Same reasoning as the protected method-call check above -
+            // covers every field read AND write, explicit ('c.field')
+            // and self-shorthand alike.
+            compile_error(field_line, "'%s' is a protected field of class '%s' and can't be accessed here", f->name, pointer_types[f->declaring_class_ptr_idx].name);
         }
         // For a class: heap offset 0 is the hidden runtime type tag (see
         // parse_class_declaration()'s target_elem_size comment and
@@ -4770,6 +4824,9 @@ static ASTNode *build_class_member_access(int class_ptr_idx, int is_statement_co
         if (cv->is_private && current_class_ptr_idx != cv->declaring_class_ptr_idx) {
             compile_error(name_line, "'%s' is a private class variable of class '%s' and can't be accessed here", name, pointer_types[cv->declaring_class_ptr_idx].name);
         }
+        if (cv->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, cv->declaring_class_ptr_idx)) {
+            compile_error(name_line, "'%s' is a protected class variable of class '%s' and can't be accessed here", name, pointer_types[cv->declaring_class_ptr_idx].name);
+        }
         if (is_statement_context) {
             match(TOKEN_ASSIGN);
             ASTNode *value = wrap_range_check(expression(), cv->is_subrange, cv->subrange_lower, cv->subrange_upper);
@@ -4796,6 +4853,9 @@ static ASTNode *build_class_member_access(int class_ptr_idx, int is_statement_co
         if (h->is_private && current_class_ptr_idx != h->declaring_class_ptr_idx) {
             compile_error(name_line, "'%s' is a private class method of class '%s' and can't be called here", name, pointer_types[h->declaring_class_ptr_idx].name);
         }
+        if (h->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, h->declaring_class_ptr_idx)) {
+            compile_error(name_line, "'%s' is a protected class method of class '%s' and can't be called here", name, pointer_types[h->declaring_class_ptr_idx].name);
+        }
         int mangled_idx = find_proc(h->mangled_name);
         if (mangled_idx == -1) {
             compile_error(name_line, "'%s.%s' doesn't have a body yet", pt->name, name);
@@ -4821,6 +4881,9 @@ static ASTNode *build_class_member_access(int class_ptr_idx, int is_statement_co
         ClassProperty *prop = &pt->properties[pi];
         if (prop->is_private && current_class_ptr_idx != prop->declaring_class_ptr_idx) {
             compile_error(name_line, "'%s' is a private class property of class '%s' and can't be accessed here", name, pointer_types[prop->declaring_class_ptr_idx].name);
+        }
+        if (prop->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, prop->declaring_class_ptr_idx)) {
+            compile_error(name_line, "'%s' is a protected class property of class '%s' and can't be accessed here", name, pointer_types[prop->declaring_class_ptr_idx].name);
         }
         if (is_statement_context) {
             if (!prop->has_write) {
@@ -6377,7 +6440,7 @@ static void parse_const_section(void) {
 // callers handle their own trailing separator, since the two contexts
 // use different separator rules (a fixed field always needs a trailing
 // ';', a variant's last field group before ')' doesn't).
-static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int declaring_class_ptr_idx) {
+static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int is_protected, int declaring_class_ptr_idx) {
     #define MAX_FIELD_NAMES_PER_LINE 10
     char field_names[MAX_FIELD_NAMES_PER_LINE][MAX_NAME];
     int fcount = 0;
@@ -6451,6 +6514,7 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int
         f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
         f->disk_width = is_nested_record ? 0 : scalar_type_disk_width;
         f->is_private = is_private;
+        f->is_protected = is_protected;
         f->declaring_class_ptr_idx = declaring_class_ptr_idx;
         rt->field_count++;
     }
@@ -6535,7 +6599,7 @@ static void parse_record_variant_part(RecordTypeDef *rt, int record_type_idx) {
         match(TOKEN_COLON);
         match(TOKEN_LPAREN);
         while (token.type == TOKEN_IDENTIFIER) {
-            parse_record_field_group(rt, record_type_idx, 0, -1); // plain record - no visibility concept
+            parse_record_field_group(rt, record_type_idx, 0, 0, -1); // plain record - no visibility concept
             if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
             break;
         }
@@ -6755,9 +6819,14 @@ static void parse_class_declaration(const char *class_name, int line) {
     // declaring_class_ptr_idx for every field/method/property/class var
     // this class declares itself (as opposed to inherits).
     int current_is_private = 0;
-    while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
-        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
-        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+    int current_is_protected = 0; // mutually exclusive with current_is_private -
+                                   // see is_protected's own comment on
+                                   // RecordField/ProcParamHeader/ClassProperty/
+                                   // ClassVar for the enforcement side.
+    while (token.type == TOKEN_IDENTIFIER || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_PROTECTED || token.type == TOKEN_CLASS) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; current_is_protected = 0; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; current_is_protected = 0; continue; }
+        if (token.type == TOKEN_PROTECTED) { match(TOKEN_PROTECTED); current_is_private = 0; current_is_protected = 1; continue; }
         if (token.type == TOKEN_CLASS) {
             // 'class var Name: Type;' (a class var, handled here since
             // it shares the field loop's own name-group/type syntax) vs.
@@ -6806,6 +6875,7 @@ static void parse_class_declaration(const char *class_name, int line) {
                     cv->subrange_lower = g.subrange_lower;
                     cv->subrange_upper = g.subrange_upper;
                     cv->is_private = current_is_private;
+                    cv->is_protected = current_is_protected;
                     cv->declaring_class_ptr_idx = pointer_type_count;
                 }
                 match(TOKEN_SEMI);
@@ -6826,7 +6896,7 @@ static void parse_class_declaration(const char *class_name, int line) {
         // MAX_RECORD_FIELDS + 1 overflow guard below (this function's own
         // target_elem_size check) catches an oversized combination of
         // either kind at compile time.
-        parse_record_field_group(rt, rt_idx, current_is_private, pointer_type_count);
+        parse_record_field_group(rt, rt_idx, current_is_private, current_is_protected, pointer_type_count);
         match(TOKEN_SEMI);
     }
     record_type_count++;
@@ -6840,9 +6910,10 @@ static void parse_class_declaration(const char *class_name, int line) {
     // it past inherited_method_count).
     int already_overridden[MAX_CLASS_METHODS] = {0};
 
-    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
-        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
-        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+    while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_PROTECTED || token.type == TOKEN_CLASS) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; current_is_protected = 0; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; current_is_protected = 0; continue; }
+        if (token.type == TOKEN_PROTECTED) { match(TOKEN_PROTECTED); current_is_private = 0; current_is_protected = 1; continue; }
         int is_class_method_decl = 0;
         if (token.type == TOKEN_CLASS) {
             // 'class procedure'/'class function' (a TRUE class method) vs.
@@ -6926,6 +6997,7 @@ static void parse_class_declaration(const char *class_name, int line) {
         snprintf(h.mangled_name, MAX_NAME, "%s__%s", class_name, h.name);
         h.is_inherited = 0;
         h.is_private = current_is_private;
+        h.is_protected = current_is_protected;
         h.declaring_class_ptr_idx = pointer_type_count;
 
         int existing_idx = -1;
@@ -6990,9 +7062,10 @@ static void parse_class_declaration(const char *class_name, int line) {
     // class body, and by this point rt->fields[]/pt->methods[] are both
     // guaranteed fully populated (including any inherited entries copied in
     // above), so lookup order within THIS loop doesn't matter.
-    while (token.type == TOKEN_PROPERTY || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_CLASS) {
-        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; continue; }
-        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; continue; }
+    while (token.type == TOKEN_PROPERTY || token.type == TOKEN_PRIVATE || token.type == TOKEN_PUBLIC || token.type == TOKEN_PROTECTED || token.type == TOKEN_CLASS) {
+        if (token.type == TOKEN_PRIVATE) { match(TOKEN_PRIVATE); current_is_private = 1; current_is_protected = 0; continue; }
+        if (token.type == TOKEN_PUBLIC) { match(TOKEN_PUBLIC); current_is_private = 0; current_is_protected = 0; continue; }
+        if (token.type == TOKEN_PROTECTED) { match(TOKEN_PROTECTED); current_is_private = 0; current_is_protected = 1; continue; }
         int is_class_property_decl = 0;
         if (token.type == TOKEN_CLASS) {
             // This is the LAST of the three declaration loops, so unlike
@@ -7056,6 +7129,7 @@ static void parse_class_declaration(const char *class_name, int line) {
         strcpy(prop.name, prop_name);
         prop.type = prop_type;
         prop.is_private = current_is_private;
+        prop.is_protected = current_is_protected;
         prop.declaring_class_ptr_idx = pointer_type_count;
         prop.has_write = 0;
         prop.is_class_property = is_class_property_decl;
@@ -7498,7 +7572,7 @@ static void parse_type_section(void) {
         rt->field_count = 0;
 
         while (token.type == TOKEN_IDENTIFIER) {
-            parse_record_field_group(rt, record_type_count, 0, -1); // plain record - no visibility concept
+            parse_record_field_group(rt, record_type_count, 0, 0, -1); // plain record - no visibility concept
             match(TOKEN_SEMI);
         }
         if (token.type == TOKEN_CASE) {
@@ -10261,6 +10335,12 @@ static ASTNode *parse_new_statement(void) {
             // never sees this call at all, since 'new(c, Init(args))' has
             // its own, separate method lookup here).
             compile_error(method_line, "'%s' is a private method of class '%s' and can't be called here", method_name, pointer_types[ctor_h->declaring_class_ptr_idx].name);
+        }
+        if (ctor_h->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, ctor_h->declaring_class_ptr_idx)) {
+            // Same protected check as an ordinary method call - see the
+            // 'is_private' branch just above for why a constructor isn't
+            // a special case here.
+            compile_error(method_line, "'%s' is a protected method of class '%s' and can't be called here", method_name, pointer_types[ctor_h->declaring_class_ptr_idx].name);
         }
         int ctor_mangled_idx = find_proc(ctor_h->mangled_name);
         if (ctor_mangled_idx == -1) {

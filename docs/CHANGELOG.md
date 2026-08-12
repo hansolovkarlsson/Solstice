@@ -2787,6 +2787,67 @@ open) stays there.
       duplicate `$ELSE`, and nesting past the 16-level limit) and
       [docs/LANGUAGE.md](LANGUAGE.md#compiler-directives).
 
+- [x] `protected` visibility — a third level between `private`
+      (declaring class only) and `public` (everywhere), visible to the
+      declaring class *and* every (transitively) descendant class.
+      **A bounded extension confirmed cheap by design, exactly as the
+      survey entry predicted**: `private`/`public` already existed and
+      were enforced at 7 call sites, all funneling through two shared
+      resolution functions (`resolve_heap_deref_step()` for `obj.field`/
+      `obj.Method`/`obj.Property` access, `build_class_member_access()`
+      for `TClass.member` access) plus one independent 7th site for
+      `new(c, Init(args))` constructor-call sugar - `protected` needed
+      no new `NodeType`/`Opcode`, no `codegen.c`/`vm.c`/`type_checker.c`
+      changes, just a parallel `is_protected` check next to each
+      existing `is_private` one.
+
+      **Separate boolean, not a tri-state enum**: matches this
+      codebase's established `is_var_param`/`is_const_param`/
+      `is_out_param` precedent - `is_protected` added as its own field
+      alongside each existing `is_private` (on `RecordField`,
+      `ProcParamHeader`, `ClassProperty`, `ClassVar`), never both 1 at
+      once. The 3 section-toggle loops in `parse_class_declaration()`
+      (fields/class-vars, methods, properties) each gained a
+      `TOKEN_PROTECTED` branch that clears `is_private` and sets
+      `is_protected`, mirroring the existing `TOKEN_PRIVATE`/
+      `TOKEN_PUBLIC` branches exactly.
+
+      **Reused the existing ancestor-walk logic, not the existing
+      function**: `class_type_is_subtype_of()` already walks
+      `pointer_types[idx].parent_class_ptr_idx` upward for `is`/`as`
+      and assignment compatibility, but it's typed over `DataType`, not
+      the raw `pointer_types[]` indices every enforcement site actually
+      has on hand. Rather than force that function to serve double
+      duty, a small, deliberately separate helper
+      (`class_ptr_idx_is_or_descends_from(int sub_idx, int
+      target_idx)`) mirrors the same walk on raw indices - matching
+      this codebase's habit of a small duplicated helper over a forced-
+      generic one (the `vm_typed_file_handle()` precedent). A member is
+      accessible when the *currently-parsing* class
+      (`current_class_ptr_idx`) is, or transitively descends from, the
+      member's `declaring_class_ptr_idx` - the same
+      `declaring_class_ptr_idx` bookkeeping the inheritance-flattening
+      `private` check already relied on, since flattening copies every
+      ancestor field/method into a descendant's own tables at
+      declaration time while still recording which class *originally*
+      declared each one.
+
+      **`private` stays exactly as strict as before** - confirmed by
+      re-running the pre-existing
+      `examples/test/class/test_class_visibility_bad_subclass.pas`
+      regression test and diffing its error output byte-for-byte
+      unchanged; `private` and `protected` are independently enforced
+      even within the same class (see
+      `test_protected_bad_private_still_strict.pas` below - a subclass
+      may touch a protected sibling field but is still denied on a
+      private one). See `examples/test/protected/test_protected_*.pas`
+      (7 positive cases covering fields, properties, class vars, class
+      methods, an `inherited`-called protected `Init`, and access two
+      inheritance levels down through an intermediate class with no
+      protected members of its own; 3 error cases: top-level code, an
+      unrelated class, and private-vs-protected independence) and
+      [docs/LANGUAGE.md](LANGUAGE.md#privateprotectedpublic).
+
 ## Known issues (found via AddressSanitizer)
 
 Both surfaced by a proactive ASan/UBSan sweep during the virtual

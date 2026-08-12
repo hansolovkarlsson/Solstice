@@ -214,6 +214,11 @@ typedef enum {
                       // ProcParamHeader.is_private in parser.c.
     TOKEN_PUBLIC,     // a 'public' section - the default visibility anyway,
                       // but needed to switch back after a 'private' section.
+    TOKEN_PROTECTED,  // a 'protected' section - like 'private', but also
+                      // visible to a (transitively) descendant class's
+                      // own methods, not just the declaring class's -
+                      // see RecordField.is_protected/ProcParamHeader.
+                      // is_protected in parser.c.
     TOKEN_TRY,        // 'try ... except ... end' - see NODE_TRY.
     TOKEN_EXCEPT,     // the 'except' half of a 'try' statement.
     TOKEN_RAISE,      // 'raise <message>;' - see NODE_RAISE/OP_RAISE.

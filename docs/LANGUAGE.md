@@ -3132,7 +3132,7 @@ end;
   yet`) — not a new limitation, the same one ordinary method calls
   already have.
 
-### `private`/`public`
+### `private`/`protected`/`public`
 
 ```pascal
 type
@@ -3140,14 +3140,24 @@ type
     private
         count: integer;
         procedure Bump;
+    protected
+        procedure ResetToDefault;
     public
         procedure Inc3;
         function Value: integer;
+    end;
+    TResettableCounter = class(TCounter)
+        procedure Reset;
     end;
 
 procedure TCounter.Bump;
 begin
     count := count + 1;
+end;
+
+procedure TCounter.ResetToDefault;
+begin
+    count := 0;              { fine - protected, declaring class itself }
 end;
 
 procedure TCounter.Inc3;
@@ -3160,39 +3170,57 @@ begin
     Value := count;
 end;
 
-var c: TCounter;
+procedure TResettableCounter.Reset;
+begin
+    ResetToDefault;          { fine - protected, inherited by a descendant }
+end;
+
+var c: TResettableCounter;
 begin
     new(c);
     c.Inc3;
     writeln(c.Value);        { 3 }
+    c.Reset;
+    writeln(c.Value);        { 0 }
     c.count := 0;            { Compile Error: 'count' is a private
                                 field of class 'TCounter' and can't be
                                 accessed here }
 end.
 ```
 
-- `private`/`public` are section markers inside a `class ... end;`
-  body — every field/method declared until the next marker (or the
-  class's own `end`) takes on that visibility. Default (no marker at
-  all) is `public`, so an existing class using neither keyword is
-  completely unaffected.
-- **Strict, not "protected"**: `private` means only the *declaring*
-  class's own methods can access it — not even a subclass's methods
-  can. There's no `protected` level.
+- `private`/`protected`/`public` are section markers inside a
+  `class ... end;` body — every field/method declared until the next
+  marker (or the class's own `end`) takes on that visibility. Default
+  (no marker at all) is `public`, so an existing class using none of
+  these keywords is completely unaffected.
+- **`private`**: only the *declaring* class's own methods can access
+  it — not even a subclass's methods can.
+- **`protected`**: the declaring class's own methods, *and* every
+  (transitively) descendant class's own methods, can access it —
+  everywhere else it's exactly as inaccessible as `private`. There's no
+  distance limit: a member declared `protected` on a base class is
+  still reachable from a grandchild, great-grandchild, and so on down
+  the hierarchy (see `examples/test/protected/test_protected_grandchild.pas`).
 - **Per-class, not per-instance**: any method of `TFoo` can read/write
-  *any* `TFoo` instance's private members, not just `self`'s own
-  (`if self.x = other.x then ...` is fine from inside a `TFoo` method).
-- A constructor (`new(c, Init(args))`) isn't a special case — a private
-  `Init` follows the same rule as any other private method.
+  *any* `TFoo` instance's private/protected members, not just `self`'s
+  own (`if self.x = other.x then ...` is fine from inside a `TFoo`
+  method).
+- A constructor (`new(c, Init(args))`) isn't a special case — a
+  private/protected `Init` follows the same rule as any other
+  private/protected method. A `protected` `Init`, in particular, is a
+  common way to force construction only through some other, `public`
+  factory method or a descendant's own constructor
+  (`examples/test/protected/test_protected_inherited_init.pas` calls an
+  ancestor's protected `Init` via `inherited`).
 - **Section ordering**: this compiler's class grammar parses all
   fields first, then all methods (not Pascal's free interleaving of
-  the two) — `private`/`public` sections work within each of those two
-  groups (all field-visibility sections, then all method-visibility
-  sections), not interleaved field/method-by-field/method the way real
-  Pascal allows.
-- Overriding an inherited *private* method is still permitted
-  syntactically — this only checks access (reading/writing a field,
-  calling a method), not override eligibility.
+  the two) — `private`/`protected`/`public` sections work within each
+  of those two groups (all field-visibility sections, then all
+  method-visibility sections), not interleaved field/method-by-
+  field/method the way real Pascal allows.
+- Overriding an inherited *private* or *protected* method is still
+  permitted syntactically — this only checks access (reading/writing a
+  field, calling a method), not override eligibility.
 
 **Not implemented yet:**
 
@@ -3210,8 +3238,9 @@ end.
   (e.g. `new(head^.next)` where `next`'s type is a class) — allocate
   into a plain class variable first, then assign it into the field.
 - **Multiple inheritance** — doesn't exist even as a plan yet beyond
-  the scoping note. `protected`/`strict private` visibility levels
-  also don't exist — only `private`/`public` (see above).
+  the scoping note. Delphi's `strict private`/`strict protected`
+  visibility levels also don't exist — only `private`/`protected`/
+  `public` (see above).
 
 ### Properties
 
@@ -3263,10 +3292,11 @@ end.
   widen an integer literal/expression to `real` exactly like a plain
   `real` field would.
 - **Property visibility governs access to the property itself** — the
-  underlying field's/method's own `private`/`public` is not consulted
-  once reached through the property. A `public` property may front a
-  `private` field or setter (see the worked example above: `FRadius`
-  and `SetRadius` are both `private`, but `Radius` itself is `public`).
+  underlying field's/method's own `private`/`protected`/`public` is not
+  consulted once reached through the property. A `public` property may
+  front a `private` field or setter (see the worked example above:
+  `FRadius` and `SetRadius` are both `private`, but `Radius` itself is
+  `public`).
 - **Self-shorthand** (a bare `Radius`/`Radius := x` inside another
   method of the same class) works exactly like it does for an ordinary
   field or method.
@@ -3295,9 +3325,6 @@ end.
 - **Indexed class properties** and `default` array properties — same gap
   as above, on the class-level form (see [Class members](#class-members)).
 - **Property overriding** in a subclass.
-- **`protected`-level visibility** — a property's own visibility is
-  only ever strict `private`/`public`, matching the class visibility
-  model as a whole (see above).
 
 ### Class members
 
@@ -3380,8 +3407,6 @@ end.
 - **Instance-qualified access to a class member** (`c.Total`) — only the
   `TCounter.Total` form works; see the bullet above.
 - **Class method virtual dispatch/overriding** — see the bullet above.
-- **`protected`-level visibility**, same gap as ordinary
-  fields/methods/properties.
 
 ### Abstract methods
 
