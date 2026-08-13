@@ -65,17 +65,6 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] Record typed constants — `const`/`type`/`var` section interleaving
-      has shipped (see
-      [docs/LANGUAGE.md](LANGUAGE.md#program-structure)), so a record
-      type declared earlier in the source is now visible at the point a
-      typed constant is parsed. What's still missing is the parsing
-      itself: `parse_typed_const_declaration()` only ever learned a
-      positional *array-element* initializer (`(v1, v2, ...)`); a record
-      needs a parenthesized *field* initializer instead (`(FieldName:
-      value; ...)`, real Pascal/Delphi syntax) — a different shape, not
-      something the ordering fix unlocks for free. See
-      [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
 - [ ] Untyped files + `BlockRead`/`BlockWrite` — raw byte-oriented file
       I/O, distinct from both `text` and typed (record) files (see
       [docs/LANGUAGE.md](LANGUAGE.md#file-io)).

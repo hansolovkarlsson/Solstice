@@ -6902,17 +6902,81 @@ static ASTNode *parse_typed_const_value(const char *const_name, const char *what
 // tail - see parse_typed_const_value()'s own comment above for why the
 // initializer values are safe to walk through type_check()/
 // optimize_ast() a second time later.
+// Parses the typed-constant form of a 'const' declaration whose type is
+// a RECORD - 'Name : RecordType = (Field1: v1; Field2: v2; ...);' -
+// called from parse_typed_const_declaration() below once it's peeked a
+// record type name after ':'. v1 scope, mirroring the array case's own:
+// every field must be a scalar (no array-typed or nested-record field
+// anywhere in the type - rejected up front, clearly, rather than
+// producing a confusing error partway through the initializer), fields
+// must be given in the record type's own declared order (matching real
+// Delphi's own rule for typed record constants - this isn't a struct
+// literal with named-in-any-order fields), and every field is required
+// (no partial initialization, no defaults).
+//
+// Reuses add_record_var() completely unmodified - the exact same
+// mechanism 'var p: TRecord;' already uses to create one hidden global
+// per field - so a typed constant record gets real storage, correct
+// field-access codegen, and dead-code elimination for free, exactly
+// like the array case reuses add_array_var(). Each field's initializer
+// becomes one plain-scalar NODE_ASSIGN (left = value, right unused -
+// see NODE_ASSIGN's own comment in common.h; this is NOT the array-
+// element overload the array case above uses, since a field's own leaf
+// symbol is an ordinary scalar, never itself is_array here).
+static void parse_typed_const_record_declaration(const char *name, int decl_line, int record_type_idx) {
+    RecordTypeDef *rt = &record_types[record_type_idx];
+    for (int i = 0; i < rt->field_count; i++) {
+        if (rt->fields[i].is_array || rt->fields[i].is_record) {
+            compile_error(decl_line, "Typed constant '%s': record type '%s' has an array or nested-record field '%s' - "
+                           "only all-scalar record types are supported as a typed constant's type yet",
+                           name, rt->name, rt->fields[i].name);
+        }
+    }
+    match(TOKEN_IDENTIFIER); // the record type name, already confirmed by the caller
+    match(TOKEN_EQ);
+
+    add_record_var(name, record_type_idx); // one hidden global leaf per field, exactly like 'var name: RecordType;'
+    RecordVarDef *rv = &record_vars[record_var_count - 1]; // the one add_record_var() just appended
+
+    match(TOKEN_LPAREN);
+    for (int i = 0; i < rt->field_count; i++) {
+        RecordField *f = &rt->fields[i];
+        if (token.type != TOKEN_IDENTIFIER || strcmp(token.text, f->name) != 0) {
+            compile_error(token.line, "Typed constant '%s': expected field '%s' next (fields must be given in the "
+                           "record type's own declared order, and every field is required)", name, f->name);
+        }
+        match(TOKEN_IDENTIFIER);
+        match(TOKEN_COLON);
+        ASTNode *value = parse_typed_const_value(name, "Field");
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = rv->field_sym_idx[i];
+        stmt->left = wrap_range_check(value, f->is_subrange, f->subrange_lower, f->subrange_upper);
+        append_typed_const_init(stmt);
+        sym_table[rv->field_sym_idx[i]].is_const = 1;
+        if (i < rt->field_count - 1) {
+            if (token.type != TOKEN_SEMI) {
+                compile_error(token.line, "Typed constant '%s': expected ';' between fields", name);
+            }
+            match(TOKEN_SEMI);
+        }
+    }
+    if (token.type == TOKEN_SEMI) {
+        compile_error(decl_line, "Typed constant '%s': too many fields (expected %d)", name, rt->field_count);
+    }
+    match(TOKEN_RPAREN);
+    match(TOKEN_SEMI);
+}
+
 static void parse_typed_const_declaration(const char *name, int decl_line) {
     match(TOKEN_COLON);
 
+    if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+        parse_typed_const_record_declaration(name, decl_line, find_record_type(token.text));
+        return;
+    }
+
     if (token.type != TOKEN_ARRAY) {
-        // A record type - even one already declared earlier in the
-        // source, now that 'const'/'type' sections can interleave (see
-        // this function's own comment above) - still isn't supported as
-        // a typed constant's own type; only 'array' is. This one message
-        // covers both "not 'array' at all" and "named a record type"
-        // uniformly, since neither is accepted here.
-        compile_error(token.line, "Typed constant '%s': expected 'array' after ':' (a named record type, even one already declared earlier in the source, isn't supported as a typed constant's own type yet)", name);
+        compile_error(token.line, "Typed constant '%s': expected 'array' or a record type name after ':'", name);
     }
     match(TOKEN_ARRAY);
     match(TOKEN_LBRACKET);

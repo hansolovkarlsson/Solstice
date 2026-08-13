@@ -1,9 +1,14 @@
 program TestConstTypedArrBadRecord;
 const
-    { record typed constants aren't supported: 'const' is always parsed
-      before 'type' in this compiler, so a record type - always
-      declared in 'type' - doesn't exist yet at this point regardless
-      of where it appears in the source }
+    { Record typed constants ARE supported now (see
+      test_const_typed_record_basic.pas), but only if the record type is
+      declared BEFORE the const that uses it - const/type sections can
+      interleave, but ordering still matters (see
+      docs/LANGUAGE.md#program-structure). Here TPoint is declared
+      AFTER Origin tries to use it, so TPoint isn't recognized as a
+      record type (or anything else) yet at this point - falls through
+      to the generic "expected 'array' or a record type name" message,
+      the same one a genuinely unknown type would get. }
     Origin: TPoint = (X, Y);
 type
     TPoint = record

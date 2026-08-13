@@ -277,15 +277,10 @@ initialized global variable.
   (`integer`, `real`, `char`, `boolean`, `byte`, `shortint`, `word`) —
   **not** a named type (a `type`-section type alias, subrange, or
   enumerated type), and **not a record**, even one already declared
-  earlier in the source. `const`/`type` sections can interleave/repeat
-  (see [Program structure](#program-structure)), so this is no longer a
-  side effect of declaration order the way it used to be — it's an
-  explicit v1 scope restriction now. Record typed constants specifically
-  need a genuinely different, not-yet-implemented parsing path (a
-  parenthesized *field* initializer, `(FieldName: value; ...)`, rather
-  than this feature's positional *array-element* initializer) — the
-  ordering that used to block them outright no longer does, but nothing
-  yet knows how to parse one.
+  earlier in the source. This array-element restriction is unrelated to
+  [record typed constants](#typed-constants-record-initializers) below —
+  a bare record type is a fully supported typed-constant *type*, just
+  not as an *array element* type yet.
 - A typed constant **can't be reassigned** — `Fib[1] := 9;` is a
   compile-time error ("Cannot assign to constant"), checked directly at
   the point of assignment.
@@ -296,6 +291,56 @@ initialized global variable.
   array, and the procedure *could* mutate it through its own array
   parameter. Direct assignment to the constant itself is fully blocked;
   this indirect path isn't yet.
+
+### Typed constants (record initializers)
+
+```pascal
+type
+    TPoint = record
+        x, y: integer;
+    end;
+
+const
+    Origin: TPoint = (x: 1; y: 2);
+
+begin
+    writeln(Origin.x, ' ', Origin.y);   { 1 2 }
+end.
+```
+
+A record type used as a typed constant's own type, initialized with a
+parenthesized **field** initializer (`(FieldName: value; ...)`) — a
+different shape from the array case above's positional
+(`(v1, v2, ...)`) one, matching real Pascal/Delphi's own typed record
+constant syntax. Reuses `add_record_var()` — the exact same mechanism
+`var p: TRecord;` already uses (one hidden global per field) — so a
+typed constant record gets real storage and ordinary field access
+(`Origin.x`), with zero new runtime machinery.
+
+- **Every field is required, in the record type's own declared order**
+  — `(y: 2; x: 1)` (wrong order) or `(x: 1)` (missing `y`) are both
+  compile-time errors. This isn't a named-in-any-order struct literal;
+  it must match field declaration order exactly, same as Delphi.
+- **Only an all-scalar record type is supported** — a record type with
+  an array-typed or nested-record-typed field is rejected up front, as
+  soon as the typed constant's own type is recognized, with a clear
+  message naming the offending field (not a confusing error partway
+  through parsing the initializer).
+- **The record type must already be declared** at the point the typed
+  constant is parsed — `const`/`type` sections can interleave/repeat
+  (see [Program structure](#program-structure)), so a record type
+  declared *earlier* in the source works; one declared *later* is
+  still an ordinary declare-before-use error (the record type name
+  simply isn't recognized as anything yet at that point).
+- Each field's own type-matching and subrange-bounds-checking (for a
+  `byte`/`shortint`/`word`/named-subrange field) works exactly like the
+  array case above — including an out-of-range field value being a
+  **runtime** error at program start, not a compile-time one.
+- A typed constant record's field **can't be reassigned** —
+  `Origin.x := 9;` is a compile-time error, exactly like an array typed
+  constant's element (each field's own hidden global is marked
+  constant, and field assignment already resolves down to that same
+  symbol regardless of whether it came from `var` or a typed constant).
 
 ## Literals
 

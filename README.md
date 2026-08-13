@@ -331,12 +331,15 @@ matching real Pascal; `halt` deliberately does not) (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#exit-and-halt)); `case` range
 labels (`2..5: ...;`), mixing freely with plain-value labels and working
 for any ordinal selector type (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)); and typed constants
-(`const arr: array[1..3] of integer = (1, 2, 3);`), a genuinely
-initialized global array rather than a plain `const`'s storage-less
-substitution (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)); typed constants
+(`const arr: array[1..3] of integer = (1, 2, 3);` or `const p: TPoint =
+(x: 1; y: 2);`), a genuinely initialized global array or record rather
+than a plain `const`'s storage-less substitution (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#typed-constants-array-initializers));
-and dynamic arrays (`var arr: array of integer; SetLength(arr, n);`), a
+`const`/`type`/`var` declaration sections that repeat and interleave
+freely (Delphi-style) rather than each appearing once in a fixed order
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#program-structure)); and
+dynamic arrays (`var arr: array of integer; SetLength(arr, n);`), a
 resizable array with reference semantics (assignment/value-parameter
 passing shares storage, matching real Delphi) built on the same heap
 `new`/`dispose` already allocate from, rather than a second allocator

@@ -3000,6 +3000,56 @@ anyway, so this is where they land instead.
       requiring the new capability differing in outcome, plus the one
       deliberately-reworded error message - everything else byte-for-
       byte identical before/after.
+- [x] Record typed constants - `const Origin: TPoint = (x: 1; y: 2);`,
+      closing out the follow-up the `const`/`type`/`var` interleaving
+      entry above left open. A record type used as a typed constant's
+      own type, initialized with a parenthesized *field* initializer
+      (`(FieldName: value; ...)`) - a different shape from the array
+      form's positional (`(v1, v2, ...)`) one, matching real Pascal/
+      Delphi's own typed record constant syntax.
+
+      **Small because it reuses everything**: `add_record_var()` - the
+      exact same mechanism `var p: TRecord;` already uses to create one
+      hidden global per field - is called completely unmodified, so a
+      typed constant record gets real storage, correct field-access
+      codegen, and dead-code elimination for free. Each field's
+      initializer becomes one plain-scalar `NODE_ASSIGN` (not the array-
+      element overload the array case uses - a field's own leaf symbol
+      is an ordinary scalar, confirmed via `NODE_ASSIGN`'s own comment in
+      `common.h`: "Scalar: left = value expr, right unused"). Field-
+      assignment rejection (`Origin.x := 9;`) needed no new code either -
+      `parse_global_assignment()` already checks `is_const` on whichever
+      leaf symbol a field resolves to, generically, regardless of
+      whether that symbol came from `var` or a typed constant.
+
+      **v1 scope, mirroring the array case's own restrictions**: every
+      field is required, in the record type's own declared order (not a
+      named-in-any-order struct literal - matches real Delphi); only an
+      all-scalar record type is supported (a record type with an array-
+      typed or nested-record-typed field is rejected up front, naming
+      the offending field, rather than failing confusingly partway
+      through the initializer); the record type must already be
+      declared at the point the typed constant is parsed (ordinary
+      declare-before-use, now that section interleaving makes "already
+      declared" position-dependent rather than keyword-dependent).
+
+      See `examples/test/const/test_const_typed_record_*.pas` (4
+      positive cases - basic field access, a `byte`/subrange field, the
+      exact type-before-const scenario the interleaving work's own
+      roadmap bullet was framed around, and using a field as an ordinary
+      expression/argument; 7 error cases - field assignment rejected,
+      fields out of order, missing a field, too many fields, an array-
+      typed field rejected up front, a nested-record-typed field
+      rejected up front, and a non-compile-time-constant field value;
+      plus a runtime-range-check case for an out-of-range `byte` field,
+      mirroring the array form's own equivalent) and
+      [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-record-initializers).
+      A full regression sweep (844 test files) found only the 11 new
+      test files differing in outcome/message, plus the pre-existing
+      `test_const_typed_array_badrecord.pas`'s message (accurate again,
+      now that record typed constants exist in general - it specifically
+      tests the still-correct "declared too late" case) - everything
+      else byte-for-byte identical before/after.
 
 ### Shipped from the OOP features survey
 
