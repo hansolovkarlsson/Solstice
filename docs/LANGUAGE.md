@@ -35,13 +35,40 @@ end.
   list is accepted purely as syntax and has no effect: any identifiers
   are allowed (not just `input`/`output`), and they're neither
   validated nor stored anywhere.
-- The `const` section is optional, and comes before `type`/`var` — see
-  [Constants](#constants).
-- The `type` section is optional, and declares record types, type
-  aliases, enumerated types, and/or subrange types (any mix, in any
-  order) — see [Records](#records), [Type aliases](#type-aliases),
-  [Enumerated types](#enumerated-types), and
-  [Subrange types](#subrange-types).
+- **`const`/`type`/`var` can repeat and interleave freely**, in any
+  order, as many times as needed — Delphi's more permissive style,
+  rather than standard/ISO Pascal's fixed single-occurrence order:
+  ```pascal
+  const
+      MaxScore = 100;
+  type
+      TScores = record
+          values: array[1..MaxScore] of integer;
+      end;
+  var
+      s: TScores;
+  const
+      DefaultValue = 0;
+  begin
+      s.values[1] := DefaultValue;
+  end.
+  ```
+  `TScores`'s array field reaches back to `MaxScore` (an earlier
+  `const`), `s`'s declaration reaches back to `TScores` (an earlier
+  `type`), and a *second* `const` block — something no single-occurrence
+  section could ever do — appears after `var`.
+  Ordering still matters — whatever's declared **before** a given point
+  in the source is visible to it, whatever comes after isn't, exactly
+  like every other declare-before-use rule in this language. What's
+  different from before is that visibility is no longer tied to which
+  section *keyword* introduced something: a `type` can now use an
+  earlier `const` (for an array bound) and a later `const`/`var` can, in
+  turn, reference that `type` (or vice versa — whichever order the
+  actual dependency needs), all in the same declaration part. See
+  [Constants](#constants), [Records](#records),
+  [Type aliases](#type-aliases), [Enumerated types](#enumerated-types),
+  and [Subrange types](#subrange-types) for what each section can
+  declare.
 - The `var` section is optional — omit it entirely if the program declares
   no variables.
 - The final `.` after `end` is required.
@@ -183,8 +210,9 @@ begin
 end.
 ```
 
-- A `const` section, if present, comes right after `program Name;` and
-  before `type`/`var` (see [Program structure](#program-structure)).
+- A `const` section can appear right after `program Name;`, or later,
+  interleaved with `type`/`var` sections — see
+  [Program structure](#program-structure).
 - Each constant's value must be a compile-time-constant expression —
   arithmetic and comparisons on integer/real literals (`+ - * / div mod
   and or xor shl shr ** = <> < > <= >=`, including unary `-`/`not`),
@@ -248,15 +276,16 @@ initialized global variable.
 - **The element type must be a built-in primitive scalar type**
   (`integer`, `real`, `char`, `boolean`, `byte`, `shortint`, `word`) —
   **not** a named type (a `type`-section type alias, subrange, or
-  enumerated type), and **not a record**. This isn't an arbitrary
-  restriction: this compiler parses a program's `const` section strictly
-  before its `type` section (standard Wirth/ISO Pascal's fixed
-  declaration order — `const`, then `type`, then `var` — rather than
-  Delphi's more permissive interleaved/repeatable sections), so nothing
-  from `type` exists yet at the point a typed constant is parsed,
-  regardless of where `type` appears in the source file. Record typed
-  constants specifically are ruled out for the same reason, since a
-  record type is always `type`-section-declared.
+  enumerated type), and **not a record**, even one already declared
+  earlier in the source. `const`/`type` sections can interleave/repeat
+  (see [Program structure](#program-structure)), so this is no longer a
+  side effect of declaration order the way it used to be — it's an
+  explicit v1 scope restriction now. Record typed constants specifically
+  need a genuinely different, not-yet-implemented parsing path (a
+  parenthesized *field* initializer, `(FieldName: value; ...)`, rather
+  than this feature's positional *array-element* initializer) — the
+  ordering that used to block them outright no longer does, but nothing
+  yet knows how to parse one.
 - A typed constant **can't be reassigned** — `Fib[1] := 9;` is a
   compile-time error ("Cannot assign to constant"), checked directly at
   the point of assignment.
@@ -2164,10 +2193,16 @@ end.
   name.
 - **Array bounds can't reference an enum value** (`array[Red..Blue] of
   ...` doesn't work) — bounds stay integer-literal-or-integer-`const`
-  only (see [Arrays](#arrays)); a `const` also can't be given an enum
-  value from a type declared *after* it, since `const` is always parsed
-  before `type` (see [Program structure](#program-structure)) — a
-  `const` can only ever reference an earlier `const`.
+  only (see [Arrays](#arrays)).
+- **A plain `const` CAN be given an enum value** (`const Favorite =
+  Green;`), as long as that enum type is declared *earlier* in the
+  source — `const`/`type` sections can interleave (see
+  [Program structure](#program-structure)), so this is just the same
+  declare-before-use rule every other reference already follows, not
+  something special-cased for enums. A **typed** constant (`const
+  Favorite: TColor = Green;` — an array initializer, see [Typed
+  constants](#typed-constants-array-initializers)) is a different,
+  narrower feature that doesn't support an enum element type yet.
 
 ## Sets
 

@@ -6887,18 +6887,14 @@ static ASTNode *parse_typed_const_value(const char *const_name, const char *what
 // docs/LANGUAGE.md: 1D arrays only (no 2D/ND), and the element type
 // must be a built-in PRIMITIVE scalar type (integer/real/char/boolean/
 // byte/shortint/word) - not a named type-alias/subrange/enum type, and
-// not a record. This isn't an arbitrary restriction: this compiler
-// parses 'const' sections strictly before 'type' sections (standard
-// Wirth/ISO Pascal's fixed declaration order, unlike Delphi, which
-// allows interleaving/repeating const/type sections), so at the point a
-// typed constant is parsed, nothing from a 'type' section exists yet to
-// reference - parse_scalar_type()'s own name lookups
-// (find_type_alias()/find_enum_type()/find_subrange_type()) simply find
-// nothing and fall through to its existing "Unknown type" error,
-// enforcing this restriction for free, with no extra checks needed
-// here. Record typed constants specifically are ruled out for the same
-// reason (a record type is always type-section-declared) - see
-// docs/ROADMAP.md for the const/type interleaving this would need.
+// not a record - both enforced by explicit checks below (a named-type-
+// alias/enum/subrange element type, and a record itself as the typed
+// constant's own type - see the TOKEN_ARRAY check at the top of this
+// function). 'const'/'type' sections can repeat and interleave
+// (Delphi-style - see parse_ast()/load_unit()), so a type declared
+// earlier in the source IS visible by the time a typed constant here
+// gets parsed - these checks can no longer rely on strict const-before-
+// type ordering to keep them out the way they used to.
 // Declares real storage (add_array_var() - the exact same helper the
 // 'var' section uses, which already gives this feature duplicate-name
 // protection against every other kind of global for free) and appends
@@ -6910,14 +6906,13 @@ static void parse_typed_const_declaration(const char *name, int decl_line) {
     match(TOKEN_COLON);
 
     if (token.type != TOKEN_ARRAY) {
-        // Deliberately no "is this a record type?" lookup here: 'const'
-        // always parses before 'type' (see this function's own comment
-        // above), so a record type declared later in this same source
-        // file doesn't exist yet as far as the parser is concerned right
-        // now - find_record_type() would always report -1 regardless,
-        // making that check dead code. This one message covers both "not
-        // 'array' at all" and "named a record type" uniformly.
-        compile_error(token.line, "Typed constant '%s': expected 'array' after ':' (a named type - including a record type - isn't available here, since 'const' is always parsed before 'type')", name);
+        // A record type - even one already declared earlier in the
+        // source, now that 'const'/'type' sections can interleave (see
+        // this function's own comment above) - still isn't supported as
+        // a typed constant's own type; only 'array' is. This one message
+        // covers both "not 'array' at all" and "named a record type"
+        // uniformly, since neither is accepted here.
+        compile_error(token.line, "Typed constant '%s': expected 'array' after ':' (a named record type, even one already declared earlier in the source, isn't supported as a typed constant's own type yet)", name);
     }
     match(TOKEN_ARRAY);
     match(TOKEN_LBRACKET);
@@ -6930,6 +6925,19 @@ static void parse_typed_const_declaration(const char *name, int decl_line) {
     match(TOKEN_OF);
     if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
         compile_error(decl_line, "Typed constant '%s': array-of-record constants aren't supported yet", name);
+    }
+    // v1 scope: a built-in PRIMITIVE element type only - explicit check,
+    // not left to fall out of declaration order the way it used to
+    // (before 'const'/'type' interleaving, a named type-alias/enum/
+    // subrange type could never resolve here anyway, since 'type' always
+    // parsed after 'const' - now that a 'type' declared earlier in the
+    // source IS visible here, this must be enforced directly instead of
+    // relying on that accident of ordering).
+    if (token.type == TOKEN_IDENTIFIER && (find_type_alias(token.text) != -1 ||
+        find_enum_type(token.text) != -1 || find_subrange_type(token.text) != -1)) {
+        compile_error(decl_line, "Typed constant '%s': array element type must be a built-in primitive type "
+                       "(integer/real/char/boolean/byte/shortint/word) - a named type-alias/enum/subrange type "
+                       "isn't supported here yet", name);
     }
     DataType elem_type = parse_scalar_type();
     int elem_is_subrange = scalar_type_is_subrange;
@@ -8171,10 +8179,22 @@ static void parse_type_section(void) {
         match(TOKEN_SEMI);
         record_type_count++;
     }
+}
 
-    // Resolve every pointer type left pending (forward-referencing a
-    // record type by name - see the TOKEN_CARET branch above) now that
-    // every type this section declares, in any order, is known.
+// Resolves every pointer type left pending (forward-referencing a
+// record type by name - see parse_type_section()'s own TOKEN_CARET
+// branch) - callers run this once their whole declaration part's
+// repeated/interleaved 'const'/'type'/'var' sections are ALL done, not
+// once per individual 'type' keyword block, so a self-referential pair
+// split across two separate 'type' blocks (with a 'const'/'var' in
+// between) still resolves correctly - see the plan for why this used to
+// be inlined at the end of parse_type_section() itself, which broke
+// exactly that case. Scans the ENTIRE pointer_types[] array (not just
+// whatever the most recent parse_type_section() call added) and skips
+// anything already resolved, so calling this once per independent
+// declaration-part scope (main program; a unit's interface; that same
+// unit's implementation, separately) is correct and sufficient.
+static void resolve_pending_pointer_types(void) {
     for (int i = 0; i < pointer_type_count; i++) {
         PointerTypeDef *pt = &pointer_types[i];
         if (!pt->is_pending) continue;
@@ -8512,18 +8532,36 @@ static void load_unit(const char *name, int use_line) {
     if (token.type == TOKEN_USES) {
         parse_uses_clause();
     }
-    if (token.type == TOKEN_CONST) parse_const_section();
-    if (token.type == TOKEN_TYPE) parse_type_section();
-    if (token.type == TOKEN_VAR) parse_var_section();
+    // 'const'/'type'/'var' repeat and interleave freely (Delphi-style,
+    // not standard Pascal's fixed single-occurrence order) - whatever
+    // was declared textually before a given point is visible to it,
+    // regardless of which of the three keywords introduced it. See
+    // resolve_pending_pointer_types()'s own comment for why it runs
+    // once here, after the whole loop, rather than inside
+    // parse_type_section() itself.
+    while (token.type == TOKEN_CONST || token.type == TOKEN_TYPE || token.type == TOKEN_VAR) {
+        if (token.type == TOKEN_CONST) parse_const_section();
+        else if (token.type == TOKEN_TYPE) parse_type_section();
+        else parse_var_section();
+    }
+    resolve_pending_pointer_types();
     while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR) {
         subroutine_declaration(token.type == TOKEN_FUNCTION, 1, token.type == TOKEN_DESTRUCTOR); // header_only
     }
 
     match(TOKEN_IMPLEMENTATION);
     current_section_is_implementation = 1;
-    if (token.type == TOKEN_CONST) parse_const_section();
-    if (token.type == TOKEN_TYPE) parse_type_section();
-    if (token.type == TOKEN_VAR) parse_var_section();
+    // A separate, independent interleaving scope from the interface
+    // section above - a pending pointer declared in the interface must
+    // NOT resolve against a type only declared here, and vice versa
+    // (matches the existing is_unit_private visibility split between
+    // the two sections).
+    while (token.type == TOKEN_CONST || token.type == TOKEN_TYPE || token.type == TOKEN_VAR) {
+        if (token.type == TOKEN_CONST) parse_const_section();
+        else if (token.type == TOKEN_TYPE) parse_type_section();
+        else parse_var_section();
+    }
+    resolve_pending_pointer_types();
     while (token.type == TOKEN_PROCEDURE || token.type == TOKEN_FUNCTION || token.type == TOKEN_DESTRUCTOR) {
         subroutine_declaration(token.type == TOKEN_FUNCTION, 0, token.type == TOKEN_DESTRUCTOR);
     }
@@ -8710,17 +8748,16 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         parse_label_section();
     }
 
-    if (token.type == TOKEN_CONST) {
-        parse_const_section();
+    // 'const'/'type'/'var' repeat and interleave freely (Delphi-style) -
+    // see the matching comment in load_unit() for the full rationale and
+    // why resolve_pending_pointer_types() runs once here, after the
+    // whole loop.
+    while (token.type == TOKEN_CONST || token.type == TOKEN_TYPE || token.type == TOKEN_VAR) {
+        if (token.type == TOKEN_CONST) parse_const_section();
+        else if (token.type == TOKEN_TYPE) parse_type_section();
+        else parse_var_section();
     }
-
-    if (token.type == TOKEN_TYPE) {
-        parse_type_section();
-    }
-
-    if (token.type == TOKEN_VAR) {
-        parse_var_section();
-    }
+    resolve_pending_pointer_types();
 
     // The main program's own label declarations (if any) must survive
     // parsing every procedure/function below - each one resets and

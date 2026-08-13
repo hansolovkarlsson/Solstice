@@ -2929,6 +2929,77 @@ anyway, so this is where they land instead.
       sweep (all 811 pre-existing test files, byte-for-byte identical
       `.bin` output before/after) confirmed zero effect on any existing
       procedural-value or nested-procedure behavior.
+- [x] `const`/`type`/`var` section interleaving - these three sections
+      can now repeat and interleave freely (Delphi-style), rather than
+      each appearing at most once in a fixed `const`, then `type`, then
+      `var` order (standard Wirth/ISO Pascal). Whatever's declared
+      *before* a given point in the source is visible to it regardless
+      of which of the three keywords introduced it - a `type` can use an
+      earlier `const` (an array bound) and a later `const`/`var` can, in
+      turn, reference that `type`, in whichever order the actual
+      dependency needs.
+
+      **Smaller than it sounds**: `parse_const_section()`/
+      `parse_type_section()`/`parse_var_section()` needed zero changes to
+      their own bodies - none of the three ever reset a counter at its
+      own top, they only ever `match()` their own keyword and append to
+      already-global, already-reused-across-calls tables. The entire
+      fix was replacing the fixed `if (CONST)...; if (TYPE)...; if
+      (VAR)...;` sequence with a `while` loop, at all 3 declaration-
+      parsing call sites (main program; a unit's interface; that same
+      unit's implementation, each an independent scope).
+
+      **The one real wrinkle**: `parse_type_section()` used to resolve
+      forward-referenced pointer types (`PNode = ^TNode;` written before
+      `TNode` exists - the classic self-referential linked-list pattern)
+      in a loop inlined at its own end, implicitly assuming every type
+      the CURRENT `type` section would ever declare was already done.
+      Under interleaving, a self-referential pair split across two
+      separate `type` blocks (with a `const`/`var` in between) would
+      have wrongly errored at the end of the *first* block. Fixed by
+      extracting that loop into its own function,
+      `resolve_pending_pointer_types()` (finally matching the name a
+      stale comment had already promised), called once *after* the whole
+      repeated-section loop exits instead of once per `type` keyword -
+      it already scanned the entire `pointer_types[]` array and skipped
+      already-resolved entries, so relocating the call site was the
+      entire fix, no change to the loop body itself.
+
+      **A scope leak caught during implementation, not shipped**:
+      `parse_typed_const_declaration()`'s restriction to primitive
+      array-element types (no named type-alias/enum/subrange) had never
+      been an explicit check - it relied entirely on `type` always
+      parsing after `const`, so `parse_scalar_type()`'s own name lookups
+      always found nothing. Interleaving would have silently, untestedly
+      widened this the moment a matching named type was declared
+      earlier in the source. Caught by re-reading the existing comment's
+      own reasoning (not by a test failing), and fixed by adding an
+      explicit guard before the fact, keeping this exact restriction
+      exactly as narrow as it was before - see
+      [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
+
+      Explicitly does **not** include record typed constants themselves
+      (`const foo: TPoint = (...)`) - interleaving removes the ordering
+      block, but `parse_typed_const_declaration()` never learned to
+      parse a record's own (differently-shaped, field-named) initializer
+      syntax at all; tracked as its own roadmap item.
+
+      See `examples/test/declorder/test_declorder_*.pas` (5 positive
+      cases - type-then-const, a const/type/const chain where a later
+      const references an earlier type's enum value, var-then-type-then-
+      var, a self-referential pointer pair split across two `type`
+      blocks with a `const` in between, and a unit interleaving
+      independently in both its interface and implementation; 4 error/
+      edge cases - a still-position-dependent undeclared reference, a
+      pointer target that genuinely never resolves, a named element type
+      still correctly rejected post-interleaving, and the existing
+      `test_const_typed_array_badrecord.pas` regression test with its
+      message reworded to stay accurate) and
+      [docs/LANGUAGE.md](LANGUAGE.md#program-structure). A full
+      regression sweep (832 test files) found only the 5 new tests
+      requiring the new capability differing in outcome, plus the one
+      deliberately-reworded error message - everything else byte-for-
+      byte identical before/after.
 
 ### Shipped from the OOP features survey
 
