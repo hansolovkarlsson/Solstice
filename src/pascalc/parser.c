@@ -1181,7 +1181,13 @@ static ASTNode *record_field_read_node(int is_local, int field_or_sym_idx, int l
 // NODE_LOCAL_ASSIGN needs its own ->expression_type set explicitly (type_
 // checker.c has no visibility into parser.c's current_locals[] to look it
 // up by index, unlike NODE_ASSIGN, which type_checker.c checks straight
-// against sym_table[]).
+// against sym_table[]). No is_const check here (unlike
+// parse_global_assignment() below): a typed constant is always a plain
+// array symbol (record typed constants aren't supported - see
+// parse_typed_const_declaration()), and an array symbol never reaches
+// this function, only ever record_field_assign_node()'s record-specific
+// callers - so field_or_sym_idx here is never a typed constant's own
+// storage.
 static ASTNode *record_field_assign_node(int is_local, int field_or_sym_idx, int levels_up, ASTNode *value) {
     ASTNode *node = create_node(is_local ? NODE_LOCAL_ASSIGN : NODE_ASSIGN);
     node->data.var_idx = field_or_sym_idx;
@@ -1522,6 +1528,7 @@ static void add_var(const char *name, DataType type) {
     sym_table[sym_count].is_subrange = 0; // defensive reset (see comment above the Symbol struct)
     sym_table[sym_count].subrange_lower = 0;
     sym_table[sym_count].subrange_upper = 0;
+    sym_table[sym_count].is_const = 0; // defensive reset
     sym_count++;
 }
 
@@ -1564,6 +1571,7 @@ static void add_array_var(const char *name, DataType elem_type, int lower, int u
     sym_table[sym_count].subrange_upper = 0;
     sym_table[sym_count].is_record_array = 0; // defensive reset
     sym_table[sym_count].record_elem_field_count = 0;
+    sym_table[sym_count].is_const = 0; // defensive reset
     array_mem_count += size;
     sym_count++;
 }
@@ -1614,6 +1622,7 @@ static void add_array_var_2d(const char *name, DataType elem_type, int lower, in
     sym_table[sym_count].subrange_upper = 0;
     sym_table[sym_count].is_record_array = 0; // defensive reset
     sym_table[sym_count].record_elem_field_count = 0;
+    sym_table[sym_count].is_const = 0; // defensive reset
     array_mem_count += size;
     sym_count++;
 }
@@ -1677,6 +1686,7 @@ static void add_array_var_nd(const char *name, DataType elem_type, int dims, con
     sym_table[sym_count].subrange_upper = 0;
     sym_table[sym_count].is_record_array = 0; // defensive reset
     sym_table[sym_count].record_elem_field_count = 0;
+    sym_table[sym_count].is_const = 0; // defensive reset
     array_mem_count += size;
     sym_count++;
 }
@@ -1749,6 +1759,7 @@ static void add_array_var_rec(const char *name, int record_type_idx, int lower, 
     sym_table[sym_count].subrange_upper = 0;
     sym_table[sym_count].is_record_array = 1;
     sym_table[sym_count].record_elem_field_count = rt->field_count;
+    sym_table[sym_count].is_const = 0; // defensive reset
     array_mem_count += size;
     sym_count++;
 }
@@ -6388,12 +6399,154 @@ static void check_all_labels_defined(void) {
     }
 }
 
+// Typed-constant module state: the flat chain of synthesized NODE_ASSIGN
+// nodes that initialize every typed constant's storage (see
+// parse_typed_const_declaration() below) - real storage/runtime
+// machinery, unlike the plain ConstDef mechanism above, since a typed
+// constant is an array or record, which (like every array/record in
+// this compiler) needs an actual sym_table[] entry, not just a parser-
+// side substitution table. Spliced onto the very front of the main
+// program's body in parse_ast(), using the exact same "walk to tail,
+// prepend" pattern vtable_init/class_parent_init already use there.
+// Reset at the top of parse_ast() alongside const_def_count and
+// friends, so a second compile in the same long-lived process (see
+// test_recovery) doesn't leak the previous compile's chain.
+static ASTNode *typed_const_init_head = NULL;
+static ASTNode *typed_const_init_tail = NULL;
+
+static void append_typed_const_init(ASTNode *stmt) {
+    if (!typed_const_init_head) typed_const_init_head = stmt;
+    else typed_const_init_tail->next = stmt;
+    typed_const_init_tail = stmt;
+}
+
+// Parses and fully resolves ONE typed-constant initializer value (an
+// array element, or a record field's value) - the same "type_check() +
+// optimize_ast() right now, at parse time" trick the scalar-const path
+// above already uses, requiring the result to fold down to a literal (a
+// genuine compile-time constant, not just any expression - 'what' names
+// the value's role, e.g. "Array element"/"Field", for the error
+// message). Unlike the scalar path, the resulting literal node is kept
+// (not extracted into a raw value and discarded) - it gets embedded
+// directly as an ordinary NODE_ASSIGN's right-hand side by this
+// function's callers below, so it's walked by type_check()/
+// optimize_ast() a second time, harmlessly, once more as part of the
+// whole-program pass (every literal node type falls through both
+// passes' generic/default case - a no-op) - which is also what performs
+// the actual value-vs-declared-type check (matching how any ordinary
+// assignment's own right-hand side is validated), so this function
+// doesn't need to duplicate that logic.
+static ASTNode *parse_typed_const_value(const char *const_name, const char *what) {
+    int line = token.line;
+    ASTNode *value = expression();
+    type_check(value);
+    value = optimize_ast(value);
+    switch (value->type) {
+        case NODE_NUMBER:
+        case NODE_REAL_NUMBER:
+        case NODE_BOOLEAN:
+        case NODE_STRING:
+            break;
+        default:
+            compile_error(line, "%s of typed constant '%s' is not a compile-time constant expression", what, const_name);
+    }
+    return value;
+}
+
+// Parses the typed-constant form of a 'const' declaration - 'Name :
+// array[lower..upper] of ScalarType = (v1, v2, ...);' - called right
+// after parse_const_section() has matched the identifier and found ':'
+// instead of '=' (see there). v1 scope, documented in
+// docs/LANGUAGE.md: 1D arrays only (no 2D/ND), and the element type
+// must be a built-in PRIMITIVE scalar type (integer/real/char/boolean/
+// byte/shortint/word) - not a named type-alias/subrange/enum type, and
+// not a record. This isn't an arbitrary restriction: this compiler
+// parses 'const' sections strictly before 'type' sections (standard
+// Wirth/ISO Pascal's fixed declaration order, unlike Delphi, which
+// allows interleaving/repeating const/type sections), so at the point a
+// typed constant is parsed, nothing from a 'type' section exists yet to
+// reference - parse_scalar_type()'s own name lookups
+// (find_type_alias()/find_enum_type()/find_subrange_type()) simply find
+// nothing and fall through to its existing "Unknown type" error,
+// enforcing this restriction for free, with no extra checks needed
+// here. Record typed constants specifically are ruled out for the same
+// reason (a record type is always type-section-declared) - see
+// docs/ROADMAP.md for the const/type interleaving this would need.
+// Declares real storage (add_array_var() - the exact same helper the
+// 'var' section uses, which already gives this feature duplicate-name
+// protection against every other kind of global for free) and appends
+// one synthesized NODE_ASSIGN per element onto typed_const_init_head/
+// tail - see parse_typed_const_value()'s own comment above for why the
+// initializer values are safe to walk through type_check()/
+// optimize_ast() a second time later.
+static void parse_typed_const_declaration(const char *name, int decl_line) {
+    match(TOKEN_COLON);
+
+    if (token.type != TOKEN_ARRAY) {
+        // Deliberately no "is this a record type?" lookup here: 'const'
+        // always parses before 'type' (see this function's own comment
+        // above), so a record type declared later in this same source
+        // file doesn't exist yet as far as the parser is concerned right
+        // now - find_record_type() would always report -1 regardless,
+        // making that check dead code. This one message covers both "not
+        // 'array' at all" and "named a record type" uniformly.
+        compile_error(token.line, "Typed constant '%s': expected 'array' after ':' (a named type - including a record type - isn't available here, since 'const' is always parsed before 'type')", name);
+    }
+    match(TOKEN_ARRAY);
+    match(TOKEN_LBRACKET);
+    int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
+    int dims = parse_array_bounds(lower, upper);
+    if (dims != 1) {
+        compile_error(decl_line, "Typed constant '%s': multi-dimensional array constants aren't supported yet (only 1D)", name);
+    }
+    match(TOKEN_RBRACKET);
+    match(TOKEN_OF);
+    if (token.type == TOKEN_IDENTIFIER && find_record_type(token.text) != -1) {
+        compile_error(decl_line, "Typed constant '%s': array-of-record constants aren't supported yet", name);
+    }
+    DataType elem_type = parse_scalar_type();
+    int elem_is_subrange = scalar_type_is_subrange;
+    int elem_subrange_lower = scalar_type_subrange_lower;
+    int elem_subrange_upper = scalar_type_subrange_upper;
+    match(TOKEN_EQ);
+
+    int array_sym_idx = sym_count; // add_array_var() is about to append here
+    add_array_var(name, elem_type, lower[0], upper[0]);
+    sym_table[array_sym_idx].is_subrange = elem_is_subrange;
+    sym_table[array_sym_idx].subrange_lower = elem_subrange_lower;
+    sym_table[array_sym_idx].subrange_upper = elem_subrange_upper;
+
+    int count = upper[0] - lower[0] + 1;
+    match(TOKEN_LPAREN);
+    for (int i = 0; i < count; i++) {
+        ASTNode *value = parse_typed_const_value(name, "Array element");
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = array_sym_idx;
+        stmt->left = make_default_value_node(TYPE_INTEGER, lower[0] + i, decl_line);
+        stmt->right = wrap_range_check(value, elem_is_subrange, elem_subrange_lower, elem_subrange_upper);
+        append_typed_const_init(stmt);
+        if (i < count - 1) {
+            if (token.type != TOKEN_COMMA) {
+                compile_error(token.line, "Typed constant '%s': expected %d elements, got fewer", name, count);
+            }
+            match(TOKEN_COMMA);
+        }
+    }
+    if (token.type == TOKEN_COMMA) {
+        compile_error(token.line, "Typed constant '%s': expected %d elements, got more", name, count);
+    }
+    match(TOKEN_RPAREN);
+    match(TOKEN_SEMI);
+    sym_table[array_sym_idx].is_const = 1;
+}
+
 // Parses a 'type' section: one or more 'TypeName = record ... end;'
 // declarations. Only record types exist right now - there's no type
 // aliasing ('type TAge = integer;') and no nested records (a field can't
 // itself be a record type).
-// 'const Name1 = expr1; Name2 = expr2; ...' - see the comment above
-// ConstDef for the overall approach.
+// 'const Name1 = expr1; Name2 = expr2; ...' (or, for an array/record,
+// 'Name3 : Type = (initializer);' - see parse_typed_const_declaration()
+// above) - see the comment above ConstDef for the overall approach.
 static void parse_const_section(void) {
     match(TOKEN_CONST);
     while (token.type == TOKEN_IDENTIFIER) {
@@ -6404,6 +6557,12 @@ static void parse_const_section(void) {
             compile_error(line, "Duplicate constant declaration '%s'", name);
         }
         match(TOKEN_IDENTIFIER);
+
+        if (token.type == TOKEN_COLON) {
+            parse_typed_const_declaration(name, line);
+            continue;
+        }
+
         match(TOKEN_EQ);
         ASTNode *value = expression();
         match(TOKEN_SEMI);
@@ -8071,6 +8230,8 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     pointer_type_count = 0;
     proc_type_count = 0;
     const_def_count = 0;
+    typed_const_init_head = NULL;
+    typed_const_init_tail = NULL;
     type_alias_count = 0;
     enum_type_count = 0;
     subrange_type_count = 0;
@@ -8180,6 +8341,18 @@ ASTNode *parse_ast(const char *source, const char *filename) {
         while (tail->next) tail = tail->next;
         tail->next = root->left;
         root->left = loaded_unit_init[i];
+    }
+
+    if (typed_const_init_head) {
+        // Prepended LAST among this whole block's prepends, so typed
+        // constants - the closest thing this compiler has to a static
+        // data segment - are established before anything else runs,
+        // including unit initialization sections (which may legitimately
+        // want to read a typed constant). Same "walk to tail, prepend"
+        // pattern as vtable_init/class_parent_init/unit-init above.
+        ASTNode *tail = typed_const_init_tail;
+        tail->next = root->left;
+        root->left = typed_const_init_head;
     }
 
     // Unit finalization sections run last, after the main program's own
@@ -10766,6 +10939,9 @@ static ASTNode *parse_record_array_write(int arr_sym_idx) {
 // global-variable assignment and record field assignment - mirrors
 // parse_global_symbol_reference on the read side.
 static ASTNode *parse_global_assignment(int idx) {
+    if (sym_table[idx].is_const) {
+        compile_error(token.line, "Cannot assign to constant '%s'", sym_table[idx].name);
+    }
     if (sym_table[idx].is_array) {
         if (token.type != TOKEN_LBRACKET) {
             compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);

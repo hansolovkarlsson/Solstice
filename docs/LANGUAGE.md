@@ -216,6 +216,57 @@ end.
   accepted, since array bounds must already be compile-time-constant
   integers in this language (see [Arrays](#arrays)).
 
+### Typed constants (array initializers)
+
+```pascal
+const
+    Fib: array[1..5] of integer = (1, 1, 2, 3, 5);
+    Letters: array[1..3] of char = ('a', 'b', 'c');
+```
+
+A Turbo Pascal/Delphi extension: giving a `const` declaration a **type**
+and an **aggregate initializer** creates a 1D array with real storage —
+unlike the plain `const` form above (which has no storage at all and is
+purely a compile-time substitution), a typed constant is genuinely an
+initialized global variable.
+
+- Only **1D arrays** are supported (`array[lower..upper] of ElementType`
+  — no 2D/ND array constants). The initializer must supply exactly
+  `upper - lower + 1` values, in order, comma-separated and parenthesized
+  — too few or too many is a compile-time error.
+- Each element's own type-matching, subrange-bounds-checking (for a
+  `byte`/`shortint`/`word`/named-subrange element type), and every other
+  assignment rule works exactly like an ordinary assignment into that
+  array, since each initializer element compiles to an ordinary
+  assignment under the hood, run once, automatically, before any of the
+  program's own code — including a subrange element whose initializer
+  value is out of range: that's a **runtime** error at program start
+  (the same range-check ordinary subrange assignment already performs),
+  not a compile-time one, since the check is the same generic mechanism
+  either way.
+- **The element type must be a built-in primitive scalar type**
+  (`integer`, `real`, `char`, `boolean`, `byte`, `shortint`, `word`) —
+  **not** a named type (a `type`-section type alias, subrange, or
+  enumerated type), and **not a record**. This isn't an arbitrary
+  restriction: this compiler parses a program's `const` section strictly
+  before its `type` section (standard Wirth/ISO Pascal's fixed
+  declaration order — `const`, then `type`, then `var` — rather than
+  Delphi's more permissive interleaved/repeatable sections), so nothing
+  from `type` exists yet at the point a typed constant is parsed,
+  regardless of where `type` appears in the source file. Record typed
+  constants specifically are ruled out for the same reason, since a
+  record type is always `type`-section-declared.
+- A typed constant **can't be reassigned** — `Fib[1] := 9;` is a
+  compile-time error ("Cannot assign to constant"), checked directly at
+  the point of assignment.
+- **Known limitation**: this compiler has no `const`-parameter concept
+  for array parameters (only scalar parameters support `const` — see
+  [`const` parameters](#const-parameters)), so passing a typed constant
+  array into an ordinary procedure still passes it by reference like any
+  array, and the procedure *could* mutate it through its own array
+  parameter. Direct assignment to the constant itself is fully blocked;
+  this indirect path isn't yet.
+
 ## Literals
 
 - **Integers**: a run of digits, e.g. `123`. A leading `-` is handled by

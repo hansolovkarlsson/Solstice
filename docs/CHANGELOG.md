@@ -2642,6 +2642,102 @@ anyway, so this is where they land instead.
       range, mismatched bound types, and a range that doesn't widen to
       swallow an out-of-range selector with no `else`) and
       [docs/LANGUAGE.md](LANGUAGE.md#case--of).
+- [x] Typed constants (array initializers) - `const arr: array[1..3] of
+      integer = (1, 2, 3);`. Unlike this compiler's existing plain
+      `const` (a pure parse-time substitution with no storage at all -
+      see the `ConstDef` comment in `parser.c`), a typed constant is
+      genuinely an initialized global variable, matching what Turbo
+      Pascal/Delphi's typed constants really are.
+
+      **Design pivot mid-implementation**: the original plan (see the
+      ROADMAP bullet this closes) also covered record constants
+      (`const p: TPoint = (X: 0; Y: 0);`). Building the first smoke test
+      surfaced a real conflict: this compiler parses a program's
+      declaration part in the fixed Wirth/ISO Pascal order - `const`,
+      then `type`, then `var`, each at most once - not Delphi's
+      interleaved/repeatable sections. A record type is always
+      `type`-section-declared, so at the point `const` is parsed, it
+      doesn't exist yet, regardless of where it appears in the source.
+      The same restriction actually caps the ARRAY form too: an element
+      type must be a built-in primitive (`integer`/`real`/`char`/
+      `boolean`/`byte`/`shortint`/`word`), not a named type-alias/
+      subrange/enum type from `type` either - `parse_scalar_type()`'s
+      own name lookups (`find_type_alias()`/`find_enum_type()`/
+      `find_subrange_type()`) simply find nothing yet and fall through
+      to its existing "Unknown type" error, enforcing this for free with
+      no extra code needed. Presented this tradeoff explicitly (drop
+      record support vs. relax section ordering across all 3
+      declaration-parsing call sites - main program, unit interface,
+      unit implementation) rather than silently picking one; chose to
+      drop record support for v1, logged as its own ROADMAP bullet
+      (`const`/`type` section interleaving) rather than bundled into
+      this one.
+
+      **The key design insight that kept the rest of the implementation
+      small**: a global record field write already compiles to a plain
+      `NODE_ASSIGN` (see `record_field_assign_node()`), and `NODE_ASSIGN`
+      is already fully generic over scalar-vs-array targets in
+      `type_checker.c`/`codegen.c` (and needs no case at all in
+      `optimizer.c`/`ast_printer.c`). So a typed constant's initializer
+      is just a chain of ordinary `NODE_ASSIGN` nodes, synthesized at
+      parse time (one per array element, `stmt->left` = the element's
+      index literal, `stmt->right` = the initializer value) and spliced
+      onto the front of the main program body in `parse_ast()` - reusing
+      the EXACT SAME "walk to tail, prepend" pattern already used there
+      for `vtable_init`/`class_parent_init`/unit-init chains. Result:
+      **zero changes** to `type_checker.c`, `optimizer.c`, `codegen.c`,
+      or `ast_printer.c`. Storage declaration reuses `add_array_var()`
+      verbatim - the same helper the `var` section itself uses - which
+      gives typed constants duplicate-name protection against every
+      other kind of global for free.
+
+      Immutability (new `Symbol.is_const`, checked in
+      `parse_global_assignment()`) is enforced in the PARSER, not
+      `type_checker.c`: the whole program's AST - including the typed
+      constant's own synthesized init-chain assignments - gets walked by
+      `type_check()` as a single pass after parsing finishes, so a
+      `type_checker.c` check would reject the feature's own initializer
+      writes right alongside genuine user mistakes, with no clean way to
+      tell them apart in that later pass. Checking at the exact parser
+      call site that only fires for user-written `:=` sidesteps this
+      entirely, since the init chain is built directly via
+      `create_node()`, never through that guarded call site.
+
+      Each initializer element is resolved via the same "run
+      `type_check()` + `optimize_ast()` right now, at parse time, and
+      require the result to fold to a literal" trick the existing scalar
+      `const` path already uses (catching a non-constant element, e.g.
+      string concatenation, which this compiler's optimizer doesn't
+      fold) - but unlike the scalar path, the resulting literal node is
+      kept (not extracted into a raw value and discarded), embedded
+      directly as the synthesized assignment's right-hand side, and so
+      gets walked by `type_check()`/`optimize_ast()` a second time,
+      harmlessly, as part of the whole-program pass - confirmed safe
+      since every literal node type takes both passes' generic/default
+      (no-op) case. That later pass is also what performs the actual
+      value-vs-declared-type check and the subrange range-check
+      (`wrap_range_check()`, the same helper ordinary subrange-target
+      assignment already uses) - a subrange element value out of range
+      is caught at RUNTIME, when the synthesized initializer assignment
+      actually executes at program start, not at compile time.
+
+      **Known, documented limitation**: no `const`-array-parameter
+      concept exists in this compiler (only scalar parameters support
+      `const`), so a typed constant array passed into an ordinary
+      procedure is still passed by reference like any array and could be
+      mutated indirectly through the callee's own array parameter.
+      Direct assignment to the constant itself is fully blocked; this
+      indirect path is a stated v1 gap, not a silent one.
+
+      See `examples/test/const/test_const_typed_array_*.pas` (5 positive
+      cases - integer/char/boolean/real elements, a `byte`-subrange
+      element type, an initializer expression referencing an earlier
+      plain `const`, and a typed constant read from inside a procedure
+      confirming init-before-any-call ordering; 7 error cases - direct
+      element assignment, too few/too many initializer elements, a
+      non-constant element, a 2D array constant, a record-typed
+      constant, and an out-of-range subrange element caught at runtime)
+      and [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
 
 ### Shipped from the OOP features survey
 

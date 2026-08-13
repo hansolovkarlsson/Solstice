@@ -328,10 +328,14 @@ function (or the main program), and immediate program termination with
 an OS exit code, both correctly unwinding through any enclosing
 `try`/`finally` on the way out (`exit` runs every enclosing `finally`,
 matching real Pascal; `halt` deliberately does not) (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#exit-and-halt)); and `case` range
+[docs/LANGUAGE.md](docs/LANGUAGE.md#exit-and-halt)); `case` range
 labels (`2..5: ...;`), mixing freely with plain-value labels and working
 for any ordinal selector type (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)); and typed constants
+(`const arr: array[1..3] of integer = (1, 2, 3);`), a genuinely
+initialized global array rather than a plain `const`'s storage-less
+substitution (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-constants-array-initializers)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus

@@ -559,6 +559,23 @@ typedef struct {
                               // 0 (visible everywhere) for anything
                               // declared in the main program or a unit's
                               // 'interface'.
+    int is_const;             // 1 if this symbol is a typed constant's
+                              // storage (the array symbol itself, or -
+                              // for a record typed constant - one of its
+                              // mangled per-field symbols) - see
+                              // parse_const_section()'s typed-const
+                              // branch in parser.c. Checked at the
+                              // specific parser call sites that handle a
+                              // user-written ':=' or 'var' argument
+                              // (parse_global_assignment(),
+                              // record_field_assign_node(),
+                              // parse_var_argument()) to reject writes -
+                              // NOT in type_checker.c, since the typed
+                              // constant's OWN synthesized initializer
+                              // assignments are ordinary NODE_ASSIGN
+                              // nodes too, built before is_const is set
+                              // and never routed through those guarded
+                              // call sites. 0 for every ordinary 'var'.
 } Symbol;
 
 typedef enum {

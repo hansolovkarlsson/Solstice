@@ -56,13 +56,17 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] Typed constants with array/record initializers
-      (`const arr: array[1..3] of integer = (1, 2, 3);`) — `const` here
-      is scalar-only (see [docs/LANGUAGE.md](LANGUAGE.md#constants)).
-      Turbo Pascal/Delphi's typed constants are really initialized
-      global variables, a different mechanism from this compiler's
-      storage-less `const` (see that section's "How this is
-      implemented").
+- [ ] `const`/`type` section interleaving — this compiler currently
+      parses a program's declaration part in a fixed `const`, then
+      `type`, then `var` order (standard Wirth/ISO Pascal), each section
+      appearing at most once, rather than Delphi's more permissive
+      interleaved/repeatable sections. This is what blocks **record**
+      typed constants specifically (see
+      [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers)
+      — a record type is always `type`-section-declared, so it doesn't
+      exist yet at the point `const` is parsed today) - relaxing this
+      ordering would need touching all 3 declaration-parsing call sites
+      (main program, unit interface, unit implementation).
 - [ ] Untyped files + `BlockRead`/`BlockWrite` — raw byte-oriented file
       I/O, distinct from both `text` and typed (record) files (see
       [docs/LANGUAGE.md](LANGUAGE.md#file-io)).
