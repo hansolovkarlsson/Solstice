@@ -1,4 +1,4 @@
-# Ouroboros
+# Solstice
 
 A multi-language toolchain built around one custom stack-based virtual
 machine (**SolVM**) and its bytecode format — designed from scratch, under

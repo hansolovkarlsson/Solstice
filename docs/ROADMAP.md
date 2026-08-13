@@ -1,6 +1,6 @@
 # Roadmap
 
-Where Ouroboros is headed, and — more usefully — what's actually left to
+Where Solstice is headed, and — more usefully — what's actually left to
 do to get there. The [README](../README.md)'s Roadmap section is the
 one-paragraph version of this; this is the working version, with the
 current phase broken down into concrete, checkable tasks. Update this
@@ -14,7 +14,7 @@ scoped to what's still open.
 
 ## Origin
 
-Ouroboros started from a long-standing interest in stack-based
+Solstice started from a long-standing interest in stack-based
 postfix VMs (Forth, HP calculators) and in how Pascal implementations are
 often built on one. The goal isn't P-Code or any other VM's
 compatibility — SolVM is designed from scratch, under this project's own
@@ -148,7 +148,7 @@ counting, `OleVariant`, packages/DLLs, RTTI attributes, and the
 VCL/component/message model (`TComponent`, published properties,
 message handlers) all exist in Delphi specifically to support
 Windows/COM interop and the VCL's design-time component architecture —
-none of that fits Ouroboros's own trajectory (a from-scratch VM, not
+none of that fits Solstice's own trajectory (a from-scratch VM, not
 Windows-hosted). Threading (`TThread`) is out for a different reason:
 SolVM's whole design (`run_vm()`'s single dispatch loop, global VM
 state) has no concept of concurrency — that would be a VM redesign, not

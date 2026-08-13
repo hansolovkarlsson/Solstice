@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**Ouroboros**: a multi-language toolchain built around one custom
+**Solstice**: a multi-language toolchain built around one custom
 stack-based virtual machine (`solvm`) and its bytecode format. Not aiming
 for P-Code or any existing VM compatibility — the bytecode format and
 machine are designed from scratch, under project control, so that

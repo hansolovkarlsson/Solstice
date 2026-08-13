@@ -1,8 +1,8 @@
-# Ouroboros Session Handoff
+# Solstice Session Handoff
 
 ## Core Goal
 
-Ouroboros is a multi-language toolchain built around a custom stack-based
+Solstice is a multi-language toolchain built around a custom stack-based
 VM (`solvm`) and its own bytecode format. The only front end under active
 development is `pascalc`, a Wirth-style Pascal compiler, built alongside
 the assembler (`solas`) and disassembler (`desole`) for the VM's own
