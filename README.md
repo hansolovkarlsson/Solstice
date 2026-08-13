@@ -340,7 +340,11 @@ and dynamic arrays (`var arr: array of integer; SetLength(arr, n);`), a
 resizable array with reference semantics (assignment/value-parameter
 passing shares storage, matching real Delphi) built on the same heap
 `new`/`dispose` already allocate from, rather than a second allocator
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#dynamic-arrays)).
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#dynamic-arrays)); and lambda
+literals (`cmp := function(a, b: integer): boolean begin exit(a < b);
+end;`), non-capturing anonymous procedures/functions usable anywhere a
+top-level procedure/function name is already accepted as a procedural
+value (see [docs/LANGUAGE.md](docs/LANGUAGE.md#lambda-literals)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus

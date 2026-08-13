@@ -2846,6 +2846,89 @@ anyway, so this is where they land instead.
       element caught at runtime, `SetLength` on a non-array, and
       `SetLength` on a `const` parameter) and
       [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays).
+- [x] Lambda literals (non-capturing) - an anonymous `function(...)...
+      end`/`procedure(...)...end` expression, usable anywhere a bare
+      top-level procedure/function name was already accepted as a
+      procedural value (assignment, argument-passing, a record/class
+      field, a function's own return value). A scoped-down alternative to
+      full closures (design-complete in `~/.claude/plans/closures.md`,
+      explicitly shelved - see that plan for the closures investigation
+      this one built on): no variable capture, so none of the risk
+      closures would have carried.
+
+      **Key design insight**: a procedural value is already just a plain
+      int (a top-level procedure's entry address); whether a procedure's
+      prologue/call sites need a static link is decided PURELY by one
+      field, `lexical_parent_idx != -1` (confirmed by reading
+      `codegen.c`'s prologue emission and `emit_static_link_for_call()`,
+      and the two existing "is this nested?" rejections in `parser.c`)
+      - completely independent of how identifiers resolve during parsing
+      (`find_local_outward()`'s own `nesting_depth`/`scope_locals[]`
+      stack). So a lambda whose body is verified, immediately after
+      parsing, to never reach outside its own parameters/locals can just
+      have `lexical_parent_idx` forced to `-1` - making it byte-for-byte
+      indistinguishable, to every downstream pass, from an ordinary top-
+      level procedure. Zero new opcodes, zero new AST node types
+      (reuses `NODE_PROC_REF` exactly), zero changes to codegen, the type
+      checker, the optimizer, or the VM - confirmed by reading (not
+      assuming) `pascalc.c`'s own driver loops, which already iterate
+      `proc_table[]` uniformly for every pass.
+
+      **Why this is much smaller than closures**: closures needed a
+      whole-program analysis because a NAMED nested procedure's value
+      could escape far from its own declaration site, deferred past
+      parsing. A lambda literal is always USED at exactly the syntax site
+      it's DECLARED at, so the "did this capture anything?" check
+      (walking the lambda's freshly-parsed body for the same closed set
+      of node types the closures investigation identified - any of
+      `NODE_LOCAL_VAR`/`NODE_LOCAL_ASSIGN`/`NODE_LOCAL_VAR_REF`/
+      `NODE_VAR_PARAM_READ`/`NODE_VAR_PARAM_ASSIGN`/
+      `NODE_REF_ARRAY_ACCESS`(`_2D`/`_ND`)/`NODE_REF_ARRAY_ASSIGN`(`_2D`/
+      `_ND`)/`NODE_LOCAL_STRING_INDEX`(`_ASSIGN`) with a nonzero
+      `levels_up` tag) runs synchronously right after parsing, not as a
+      deferred pass - no new `common.h` state at all.
+
+      **A bonus inherited for free, not new work**: an enclosing
+      procedure's local ARRAY or `static` local is still reachable from a
+      lambda and isn't treated as a capture, since both were already
+      confirmed (during the closures investigation) to compile to a
+      plain global reference with no `levels_up` tag - not in the closed
+      set the capture check looks for. Lets a lambda close over a
+      `static` counter (the "counter factory" idiom) while still
+      correctly rejecting the classic `MakeAdder(n)` idiom (capturing a
+      plain parameter/local BY VALUE), which stays unsupported - the
+      exact scope boundary the shelved closures plan would also have
+      drawn.
+
+      A new, small, self-contained `parse_lambda_literal()` in
+      `parser.c` (deliberately NOT a refactor of the ~500-line
+      `subroutine_declaration()`, which handles forward declarations,
+      class-method bodies, and a full local declaration section a
+      lambda never needs) is wired into exactly the two existing
+      functions every procedural-value context already funnels through
+      (`parse_proc_value()` for a named procedural-type target,
+      `parse_proc_argument()` for an inline functional/procedural
+      parameter) - no call site of either needed to change. `subroutine_
+      declaration()` itself is untouched. Scalar (optionally `var`)
+      parameters only, no local `var` section, no nested declarations
+      inside a lambda body; return value set via the already-existing
+      `exit(value);` (no new `Result` keyword). `(` is optional for a
+      zero-parameter lambda, matching a named procedural type's own
+      signature grammar - caught during testing, not anticipated in the
+      design (the first cut required parens unconditionally).
+
+      See `examples/test/lambda/test_lambda_*.pas` (9 positive cases -
+      a named-procedural-type assignment, a procedure-typed lambda, direct
+      argument-passing, a `var` parameter, a record field, capturing a
+      `static` local, capturing an array, a lambda literal nested inside
+      another lambda's body, and one written directly in the main
+      program; 3 error cases - capturing an ordinary local, capturing an
+      ordinary parameter (the `MakeAdder(n)` idiom), and a signature
+      mismatch) and
+      [docs/LANGUAGE.md](LANGUAGE.md#lambda-literals). A full regression
+      sweep (all 811 pre-existing test files, byte-for-byte identical
+      `.bin` output before/after) confirmed zero effect on any existing
+      procedural-value or nested-procedure behavior.
 
 ### Shipped from the OOP features survey
 

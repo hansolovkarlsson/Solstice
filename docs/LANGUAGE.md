@@ -4516,6 +4516,94 @@ exactly like a pointer).
   an argument to another call (a plain function's or a class method's
   own procedural parameter).
 
+### Lambda literals
+
+```pascal
+type
+    TCmp = function(a, b: integer): boolean;
+
+var
+    cmp: TCmp;
+
+begin
+    cmp := function(a, b: integer): boolean begin exit(a < b); end;
+    writeln(cmp(3, 5));   { TRUE }
+end.
+```
+
+An anonymous `function(...)...end` / `procedure(...)...end` expression,
+usable anywhere a bare top-level procedure/function name is already
+accepted as a procedural value — assigned to a procedural-typed
+variable/local/record-or-class-field/array element, returned from a
+function, or passed directly as an argument to a functional/procedural
+parameter:
+
+```pascal
+function Apply(function f(n: integer): integer; v: integer): integer;
+begin
+    Apply := f(v);
+end;
+
+begin
+    writeln(Apply(function(n: integer): integer begin exit(n * n); end, 5));  { 25 }
+end.
+```
+
+- **Parameters are scalar only** (optionally `var`), matching the exact
+  same restriction every OTHER value used as a procedural value already
+  has (`proc_has_only_scalar_params`) — no arrays, records, or nested
+  procedural parameters. No default parameter values.
+- **Set the return value with `exit(value);`** — the same statement
+  already used to return early from an ordinary function. A lambda has
+  no user-writable name of its own to assign to (unlike an ordinary
+  function's `FuncName := value;` form), so this is the only way.
+- **No local `var` section, and no nested procedure/function
+  declarations, inside a lambda body** — a lambda's own declaration part
+  is just its parameter list (and return type, for a function-lambda).
+- **No capture.** A lambda body can read/write its own parameters,
+  any global, and (see below) an enclosing procedure's array or
+  `static` local — but referencing an *ordinary* local or parameter of
+  whatever procedure the lambda text happens to sit inside is a
+  compile-time error, not a runtime trap:
+  ```pascal
+  function MakeAdder(n: integer): TF;
+  begin
+      { Compile error: lambda body can't reference 'n' - it's an
+        ordinary parameter of the enclosing function MakeAdder. }
+      MakeAdder := function(x: integer): integer begin exit(x + n); end;
+  end;
+  ```
+  This is the one thing a lambda literal here can't do that a real
+  closure could — capturing a parameter/local *by value* (the classic
+  `MakeAdder(n)` factory idiom) isn't supported. A lambda literal is
+  never a closure: it carries no captured environment, just a plain
+  runtime code address, exactly like an ordinary top-level procedure/
+  function used as a procedural value.
+- **An enclosing procedure's local *array* or `static` local is still
+  reachable**, and this is *not* considered a capture — both already
+  compile to an ordinary hidden global reference under the hood (see
+  "Nested procedures and functions" above), with nothing for a lambda's
+  calling convention to depend on:
+  ```pascal
+  procedure Outer;
+      var
+          static callCount: integer;
+          tick: TTick;
+  begin
+      tick := procedure begin
+          callCount := callCount + 1;
+      end;
+      tick; tick; tick;    { callCount: 1, 2, 3 }
+  end;
+  ```
+- **A lambda literal can itself appear inside another lambda's body**
+  (as an argument, an assignment, etc.) — ordinary recursive parsing,
+  no special support needed.
+- **Not supported yet**: an immediately-invoked lambda
+  (`(function(...) ... end)(5)`) or otherwise chaining a call directly
+  off a lambda expression — assign it to a variable first, matching the
+  same existing cut for `GetHandler()`'s own returned value above.
+
 ## Functions
 
 ```pascal

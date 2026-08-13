@@ -3667,7 +3667,227 @@ static int proc_has_only_scalar_params(int proc_idx) {
     return 1;
 }
 
+// Walks a just-parsed lambda literal's body looking for any reference
+// that reaches OUTSIDE the lambda's own parameters/locals into an
+// ordinary local or parameter of whatever procedure the lambda text
+// happens to sit inside - lambda literals can't capture (see
+// docs/LANGUAGE.md#procedural-types). The closed set of node types
+// below is exactly the set find_local_outward()'s own callers tag with
+// a 'levels_up' value in node->op (see that function's comment in
+// common.h's Opcode-adjacent field-reuse notes) - an enclosing local
+// ARRAY or 'static' local deliberately isn't in this set, since both
+// already resolve to a plain sym_table[] global reference with no
+// levels_up tag at all, so they're left alone here on purpose (a lambda
+// CAN read/write an enclosing array or static local - see the plan).
+// Same generic-recursion idiom as mark_used_variables() in optimizer.c.
+static void reject_lambda_captures(ASTNode *node) {
+    if (!node) return;
+    if ((node->type == NODE_LOCAL_VAR || node->type == NODE_LOCAL_ASSIGN || node->type == NODE_LOCAL_VAR_REF ||
+         node->type == NODE_VAR_PARAM_READ || node->type == NODE_VAR_PARAM_ASSIGN ||
+         node->type == NODE_REF_ARRAY_ACCESS || node->type == NODE_REF_ARRAY_ASSIGN ||
+         node->type == NODE_REF_ARRAY_ACCESS_2D || node->type == NODE_REF_ARRAY_ASSIGN_2D ||
+         node->type == NODE_REF_ARRAY_ACCESS_ND || node->type == NODE_REF_ARRAY_ASSIGN_ND ||
+         node->type == NODE_LOCAL_STRING_INDEX || node->type == NODE_LOCAL_STRING_INDEX_ASSIGN)
+        && (int)node->op > 0) {
+        compile_error(node->line, "Lambda body can't reference an enclosing procedure's local variable or parameter "
+                                   "- lambda literals can't capture (an enclosing array or 'static' local is still reachable)");
+    }
+    reject_lambda_captures(node->left);
+    reject_lambda_captures(node->right);
+    reject_lambda_captures(node->next);
+    reject_lambda_captures(node->extra);
+}
+
+// Parses an anonymous 'function(...)...end' / 'procedure(...)...end'
+// literal, appearing as an expression wherever a bare top-level
+// procedure/function name is already accepted as a procedural value
+// (see parse_proc_value()/parse_proc_argument()'s own new leading
+// branches, the only two callers). Registers a synthetic top-level-
+// equivalent proc_table[] entry (a fresh, compiler-generated name, never
+// user-visible) and returns its index.
+//
+// Deliberately NOT a reuse of subroutine_declaration()'s own (much
+// larger) parameter-group parser, which also handles array-ref/record/
+// procedural/default-value parameters and forward declarations that a
+// lambda can never have - see the plan for why a small, self-contained
+// duplicate is preferred here over refactoring that function.
+//
+// Only scalar (optionally 'var') parameters are accepted - matches
+// proc_has_only_scalar_params()'s own existing requirement for ANY
+// value used as a procedural value, named or anonymous, so this isn't a
+// new restriction. No local 'var' section, no nested procedure/function
+// declarations inside the body - see the plan's explicit v1 cuts. A
+// function-lambda sets its return value via the already-existing
+// 'exit(value);' statement (see build_return_assign_node(), keyed off
+// current_function_idx alone) - there's no user-writable name to assign
+// to via the ordinary 'FuncName := value;' form.
+static int parse_lambda_literal(void) {
+    int is_function = (token.type == TOKEN_FUNCTION);
+    int decl_line = token.line;
+    match(is_function ? TOKEN_FUNCTION : TOKEN_PROCEDURE);
+
+    char name[MAX_NAME];
+    snprintf(name, MAX_NAME, "__lambda%d", proc_count);
+    int proc_idx = add_proc(name);
+    // Forced to -1 (top-level-equivalent) immediately, long before the
+    // body is parsed - safe to do this early because nothing at PARSE
+    // time consults lexical_parent_idx (identifier resolution runs off
+    // nesting_depth/scope_locals[] instead, untouched by this), and the
+    // capture check below guarantees, before this function returns, that
+    // the body never actually needed a static link in the first place.
+    // See the plan's "The mechanism" section for the full chain of
+    // reasoning (codegen.c:1794/1797 gate OP_ENTER/OP_POP_STATIC_LINK
+    // purely on this field; emit_static_link_for_call() and the two
+    // existing "is this nested?" rejections in this file do too).
+    proc_table[proc_idx].lexical_parent_idx = -1;
+    proc_table[proc_idx].lexical_depth = 0;
+
+    int saved_function_idx = current_function_idx;
+    int saved_proc_idx = current_proc_idx;
+    current_proc_idx = proc_idx;
+    nesting_depth++;
+    if (nesting_depth >= MAX_NESTING_DEPTH) {
+        compile_error(decl_line, "Lambda literal is nested too deeply (limit is %d levels)", MAX_NESTING_DEPTH);
+    }
+    current_local_count = 0;
+
+    int param_count = 0;
+    DataType param_types[MAX_PARAMS];
+    char param_names[MAX_PARAMS][MAX_NAME];
+    int param_is_var[MAX_PARAMS];
+    int param_is_subrange[MAX_PARAMS];
+    int param_subrange_lower[MAX_PARAMS];
+    int param_subrange_upper[MAX_PARAMS];
+
+    // '(' itself is optional for a zero-parameter lambda - matches the
+    // same convention a named procedural type's own signature already
+    // uses (parse_proc_signature_tail(): 'procedure;' needs no parens).
+    if (token.type == TOKEN_LPAREN) {
+    match(TOKEN_LPAREN);
+    if (token.type != TOKEN_RPAREN) {
+        while (1) {
+            int is_var = 0;
+            if (token.type == TOKEN_VAR) {
+                is_var = 1;
+                match(TOKEN_VAR);
+            }
+            int group_start = param_count;
+            while (1) {
+                if (token.type != TOKEN_IDENTIFIER) {
+                    compile_error(token.line, "Expected a lambda parameter name");
+                }
+                if (param_count >= MAX_PARAMS) {
+                    compile_error(token.line, "Too many lambda parameters (limit is %d)", MAX_PARAMS);
+                }
+                strcpy(param_names[param_count], token.text);
+                match(TOKEN_IDENTIFIER);
+                param_count++;
+                if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+                break;
+            }
+            match(TOKEN_COLON);
+            DataType type = parse_scalar_type();
+            for (int i = group_start; i < param_count; i++) {
+                param_types[i] = type;
+                param_is_var[i] = is_var;
+                param_is_subrange[i] = scalar_type_is_subrange;
+                param_subrange_lower[i] = scalar_type_subrange_lower;
+                param_subrange_upper[i] = scalar_type_subrange_upper;
+                if (is_var) {
+                    add_local_var_param(param_names[i], type, scalar_type_is_subrange, scalar_type_subrange_lower,
+                                         scalar_type_subrange_upper, 0, 0);
+                } else {
+                    int idx = add_local(param_names[i], type);
+                    current_locals[idx].is_subrange = scalar_type_is_subrange;
+                    current_locals[idx].subrange_lower = scalar_type_subrange_lower;
+                    current_locals[idx].subrange_upper = scalar_type_subrange_upper;
+                }
+            }
+            if (token.type == TOKEN_SEMI) { match(TOKEN_SEMI); continue; }
+            break;
+        }
+    }
+    match(TOKEN_RPAREN);
+    }
+
+    proc_table[proc_idx].param_count = param_count;
+    proc_table[proc_idx].param_slot_count = current_local_count;
+    for (int i = 0; i < param_count; i++) {
+        proc_table[proc_idx].param_types[i] = param_types[i];
+        strcpy(proc_table[proc_idx].param_names[i], param_names[i]);
+        proc_table[proc_idx].param_is_array_ref[i] = 0;
+        proc_table[proc_idx].param_is_2d[i] = 0;
+        proc_table[proc_idx].param_is_nd[i] = 0;
+        proc_table[proc_idx].param_is_subrange[i] = param_is_subrange[i];
+        proc_table[proc_idx].param_subrange_lower[i] = param_subrange_lower[i];
+        proc_table[proc_idx].param_subrange_upper[i] = param_subrange_upper[i];
+        proc_table[proc_idx].param_is_record[i] = 0;
+        proc_table[proc_idx].param_is_var[i] = param_is_var[i];
+        proc_table[proc_idx].param_is_const[i] = 0;
+        proc_table[proc_idx].param_is_out[i] = 0;
+        proc_table[proc_idx].param_has_default[i] = 0;
+        proc_table[proc_idx].param_default_type[i] = TYPE_UNKNOWN;
+        proc_table[proc_idx].param_is_proc[i] = 0;
+    }
+
+    proc_table[proc_idx].is_function = is_function;
+    if (is_function) {
+        match(TOKEN_COLON);
+        proc_table[proc_idx].return_type = parse_scalar_type();
+        proc_table[proc_idx].return_is_subrange = scalar_type_is_subrange;
+        proc_table[proc_idx].return_subrange_lower = scalar_type_subrange_lower;
+        proc_table[proc_idx].return_subrange_upper = scalar_type_subrange_upper;
+        proc_table[proc_idx].return_slot = current_local_count++;
+        current_function_idx = proc_idx;
+    } else {
+        current_function_idx = -1;
+    }
+
+    ASTNode *body = compound_statement();
+
+    proc_table[proc_idx].body = body;
+    proc_table[proc_idx].local_count = current_local_count;
+    proc_table[proc_idx].is_forward = 0;
+
+    reject_lambda_captures(body);
+
+    current_local_count = 0;
+    nesting_depth--;
+    current_proc_idx = saved_proc_idx;
+    current_function_idx = saved_function_idx;
+    return proc_idx;
+}
+
 static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
+    int expected_is_function = proc_table[proc_idx].param_proc_is_function[param_index];
+    DataType expected_return_type = proc_table[proc_idx].param_proc_return_type[param_index];
+    int expected_param_count = proc_table[proc_idx].param_proc_param_count[param_index];
+    DataType *expected_param_types = proc_table[proc_idx].param_proc_param_types[param_index];
+    int *expected_param_is_var = proc_table[proc_idx].param_proc_param_is_var[param_index];
+
+    if (token.type == TOKEN_FUNCTION || token.type == TOKEN_PROCEDURE) {
+        int lambda_line = token.line;
+        int target_proc_idx = parse_lambda_literal();
+        // lexical_parent_idx is already -1 (forced by parse_lambda_literal())
+        // - matches a top-level procedure/function exactly, so the "is this
+        // nested?" rejection every OTHER path through this function still
+        // has (further down, unreached here) simply never applies.
+        if (!proc_has_only_scalar_params(target_proc_idx) ||
+            !proc_signatures_match(proc_table[target_proc_idx].is_function, proc_table[target_proc_idx].return_type,
+                                    proc_table[target_proc_idx].param_count, proc_table[target_proc_idx].param_types,
+                                    proc_table[target_proc_idx].param_is_var,
+                                    expected_is_function, expected_return_type, expected_param_count,
+                                    expected_param_types, expected_param_is_var)) {
+            compile_error(lambda_line, "Lambda literal does not match the required signature for parameter %d of '%s'",
+                           param_index + 1, proc_table[proc_idx].name);
+        }
+        ASTNode *node = create_node(NODE_PROC_REF);
+        node->line = lambda_line;
+        node->data.var_idx = target_proc_idx;
+        node->expression_type = TYPE_INTEGER; // meaningless beyond "one int" - see is_proc_param's comment
+        return node;
+    }
+
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "Parameter %d of '%s' is a procedural/functional parameter - expects a procedure/function name, not an expression",
                        param_index + 1, proc_table[proc_idx].name);
@@ -3675,12 +3895,6 @@ static ASTNode *parse_proc_argument(int proc_idx, int param_index) {
     char name[MAX_NAME];
     int line = token.line;
     strcpy(name, token.text);
-
-    int expected_is_function = proc_table[proc_idx].param_proc_is_function[param_index];
-    DataType expected_return_type = proc_table[proc_idx].param_proc_return_type[param_index];
-    int expected_param_count = proc_table[proc_idx].param_proc_param_count[param_index];
-    DataType *expected_param_types = proc_table[proc_idx].param_proc_param_types[param_index];
-    int *expected_param_is_var = proc_table[proc_idx].param_proc_param_is_var[param_index];
 
     int levels_up;
     int local_idx = find_local_outward(name, &levels_up);
@@ -3825,6 +4039,24 @@ static ASTNode *parse_proc_value(int proc_type_idx, int line) {
         node->line = line;
         node->data.num_value = -1;
         node->expression_type = TYPE_NIL;
+        return node;
+    }
+    if (token.type == TOKEN_FUNCTION || token.type == TOKEN_PROCEDURE) {
+        int lambda_line = token.line;
+        int target_proc_idx = parse_lambda_literal();
+        if (!proc_has_only_scalar_params(target_proc_idx) ||
+            !proc_signatures_match(proc_table[target_proc_idx].is_function, proc_table[target_proc_idx].return_type,
+                                    proc_table[target_proc_idx].param_count, proc_table[target_proc_idx].param_types,
+                                    proc_table[target_proc_idx].param_is_var,
+                                    sig->is_function, sig->return_type, sig->param_count,
+                                    sig->param_types, sig->param_is_var)) {
+            compile_error(lambda_line, "Lambda literal does not match the required signature for procedural type '%s'",
+                           proc_types[proc_type_idx].name);
+        }
+        ASTNode *node = create_node(NODE_PROC_REF);
+        node->line = lambda_line;
+        node->data.var_idx = target_proc_idx;
+        node->expression_type = (DataType)(TYPE_PROC_BASE + proc_type_idx);
         return node;
     }
     if (token.type != TOKEN_IDENTIFIER) {
