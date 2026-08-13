@@ -2592,6 +2592,56 @@ anyway, so this is where they land instead.
       `halt`-does-NOT-run-`finally` negative test), plus a `solas`/
       `desole` round-trip on the new `HALT_CODE` opcode, and
       [docs/LANGUAGE.md](LANGUAGE.md#exit-and-halt).
+- [x] `case` range labels (`2..5: ...;`) — a Turbo Pascal/Delphi
+      extension over ISO Pascal's discrete-label-only `case`; works
+      uniformly for every ordinal type an ordinary `case` label already
+      accepted (`integer`, `char`, `boolean`, enumerated types), not just
+      `integer`, because `boolean`/enum values are already plain ints at
+      runtime and `char` reuses the exact `OP_SCMP`+`PUSH 0`+comparison
+      idiom ordinary `<`/`<=` on chars already takes (see
+      `emit_ordering()` in `codegen.c`, inlined here rather than called
+      since this site already has the `sel_is_char` bool on hand that
+      `emit_ordering()` would otherwise re-derive from a full
+      `ASTNode*`).
+
+      New `NODE_CASE_RANGE` node (`left`/`right` = low/high bound leaves)
+      takes the place of an ordinary leaf inside a `NODE_CASE_ARM`'s
+      label chain - mixes freely with plain-value labels in the same
+      list, consumed only by `NODE_CASE`'s own codegen (never reached via
+      `generate_code()`'s generic dispatch, mirroring how
+      `NODE_CASE_ARM` itself is handled). Compiles to `LOAD sel; <low>;
+      GTE; LOAD sel; <high>; LTE; AND` (the char variant swaps `GTE`/
+      `LTE` for the `SCMP`+`PUSH 0` detour), OR'd into the same running
+      per-arm accumulator a plain label's `EQ`/`SEQ` result already uses
+      - no separate accumulation path needed for mixed label lists.
+
+      `type_checker.c` and `optimizer.c` needed **no changes at all**:
+      the existing per-label loop already reads `label->expression_type`
+      generically regardless of the label node's concrete shape, and
+      both `optimize_ast()`/`mark_used_variables()` already recurse into
+      every node's `left`/`right`/`next` unconditionally before their own
+      type-specific logic, so a label-chain node that only reuses those
+      three pointers needed nothing added.
+
+      The one real design change: generalized the pre-existing exact-
+      duplicate-label check (pairwise `(type, value)` equality) into a
+      full interval-overlap check (`new_lo <= seen_hi && seen_lo <=
+      new_hi`, tracking `seen_lo[]`/`seen_hi[]` instead of a single
+      `seen_values[]`, via a new `case_label_ordinal()` parser helper
+      that reads a char label's `string_pool[]`-indexed character code as
+      an ordinal) - required for correctness once ranges exist (`1..5:
+      ...; 3: ...;` must be caught, not just two identical ranges), and
+      correctly subsumes the old exact-duplicate check as its degenerate
+      `lo == hi` case. Error message broadened from "Duplicate case
+      label" to "Duplicate or overlapping case label" accordingly.
+
+      See `examples/test/case/test_case_range_*.pas` (4 positive cases -
+      mixed integer ranges and plain values, boundary-inclusive checks,
+      a char range, an enum range; 6 error cases - overlapping ranges, a
+      plain value inside a range in both declaration orders, a backwards
+      range, mismatched bound types, and a range that doesn't widen to
+      swallow an out-of-range selector with no `else`) and
+      [docs/LANGUAGE.md](LANGUAGE.md#case--of).
 
 ### Shipped from the OOP features survey
 

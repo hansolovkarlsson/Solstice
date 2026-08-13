@@ -328,7 +328,10 @@ function (or the main program), and immediate program termination with
 an OS exit code, both correctly unwinding through any enclosing
 `try`/`finally` on the way out (`exit` runs every enclosing `finally`,
 matching real Pascal; `halt` deliberately does not) (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#exit-and-halt)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#exit-and-halt)); and `case` range
+labels (`2..5: ...;`), mixing freely with plain-value labels and working
+for any ordinal selector type (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#case--of)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus

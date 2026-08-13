@@ -9285,13 +9285,55 @@ static ASTNode *parse_case_label_value(void) {
     return NULL; // unreachable - compile_error() never returns
 }
 
+// Returns a case-label leaf's ordinal value for comparison/ordering
+// purposes: data.num_value directly for NODE_NUMBER/NODE_BOOLEAN (already
+// the ordinal), or the character code of a NODE_STRING (char) label,
+// whose data.var_idx is a string_pool[] index rather than an ordinal
+// itself. Used only for parse-time bookkeeping (range-bound validation,
+// overlap detection below) - codegen keeps using the leaf node itself
+// (var_idx + OP_SEQ) for actual char equality/ordering.
+static int case_label_ordinal(ASTNode *label) {
+    if (label->type == NODE_STRING) {
+        return (unsigned char)string_pool[label->data.var_idx][0];
+    }
+    return label->data.num_value;
+}
+
+// Parses one case label: a single value (parse_case_label_value()), or,
+// if '..' follows, a 'low..high' range. Range bounds must share a type
+// and low must not exceed high - both checked here since case_label_ordinal()
+// already gives an ordinal to compare regardless of the underlying type
+// (int/char/bool/enum all resolve to a plain int this way).
+static ASTNode *parse_case_label(void) {
+    int low_line = token.line;
+    ASTNode *low = parse_case_label_value();
+    if (token.type != TOKEN_DOTDOT) {
+        return low;
+    }
+    match(TOKEN_DOTDOT);
+    int high_line = token.line;
+    ASTNode *high = parse_case_label_value();
+    if (low->expression_type != high->expression_type) {
+        compile_error(high_line, "Case range bounds must have the same type");
+    }
+    if (case_label_ordinal(low) > case_label_ordinal(high)) {
+        compile_error(low_line, "Case range's low bound must not exceed its high bound");
+    }
+    ASTNode *range = create_node(NODE_CASE_RANGE);
+    range->left = low;
+    range->right = high;
+    range->expression_type = low->expression_type;
+    return range;
+}
+
 // 'case selector of label1[, label2...]: statement1; ... [else
-// statementN] end' - see the NODE_CASE/NODE_CASE_ARM comments in
-// common.h for the AST shape this builds. Case-label constants must be
-// pairwise distinct across the WHOLE statement (checked here, at parse
-// time - comparing (type, value) pairs is all that's needed, and needs
-// nothing the selector's own type resolution would add). Whether each
-// label's type actually matches the selector is checked later, by
+// statementN] end' - see the NODE_CASE/NODE_CASE_ARM/NODE_CASE_RANGE
+// comments in common.h for the AST shape this builds. Case labels
+// (values and ranges alike) must not overlap across the WHOLE statement
+// (checked here, at parse time, via an interval-overlap test - a plain
+// value is tracked as the degenerate range [ordinal, ordinal] - which
+// needs nothing the selector's own type resolution would add). Whether
+// each label's type actually matches the selector is checked later, by
 // type_checker.c, once the selector is fully resolved.
 static ASTNode *parse_case_statement(void) {
     match(TOKEN_CASE);
@@ -9300,7 +9342,8 @@ static ASTNode *parse_case_statement(void) {
     match(TOKEN_OF);
 
     DataType seen_types[MAX_CASE_LABELS];
-    int seen_values[MAX_CASE_LABELS];
+    int seen_lo[MAX_CASE_LABELS];
+    int seen_hi[MAX_CASE_LABELS];
     int seen_count = 0;
 
     ASTNode *arm_head = NULL;
@@ -9310,17 +9353,25 @@ static ASTNode *parse_case_statement(void) {
         ASTNode *label_tail = NULL;
         while (1) {
             int label_line = token.line;
-            ASTNode *label = parse_case_label_value();
+            ASTNode *label = parse_case_label();
+            int lo, hi;
+            if (label->type == NODE_CASE_RANGE) {
+                lo = case_label_ordinal(label->left);
+                hi = case_label_ordinal(label->right);
+            } else {
+                lo = hi = case_label_ordinal(label);
+            }
             for (int i = 0; i < seen_count; i++) {
-                if (seen_types[i] == label->expression_type && seen_values[i] == label->data.num_value) {
-                    compile_error(label_line, "Duplicate case label");
+                if (seen_types[i] == label->expression_type && lo <= seen_hi[i] && seen_lo[i] <= hi) {
+                    compile_error(label_line, "Duplicate or overlapping case label");
                 }
             }
             if (seen_count >= MAX_CASE_LABELS) {
                 compile_error(label_line, "Too many case labels in one 'case' statement (limit is %d)", MAX_CASE_LABELS);
             }
             seen_types[seen_count] = label->expression_type;
-            seen_values[seen_count] = label->data.num_value; // aliases data.var_idx too (same union member) - fine for a char label, which sets var_idx instead
+            seen_lo[seen_count] = lo;
+            seen_hi[seen_count] = hi;
             seen_count++;
 
             if (!label_head) label_head = label; else label_tail->next = label;

@@ -1571,9 +1571,31 @@ void generate_code(ASTNode *node) {
             for (ASTNode *arm = node->right; arm; arm = arm->next) {
                 int label_count = 0;
                 for (ASTNode *label = arm->left; label; label = label->next) {
-                    emit(OP_LOAD, sel_var);
-                    generate_code(label);
-                    emit(sel_is_char ? OP_SEQ : OP_EQ, 0);
+                    if (label->type == NODE_CASE_RANGE) {
+                        emit(OP_LOAD, sel_var);
+                        generate_code(label->left); // low bound
+                        if (sel_is_char) {
+                            emit(OP_SCMP, 0);
+                            emit(OP_PUSH, 0);
+                            emit(OP_GTE, 0);
+                        } else {
+                            emit(OP_GTE, 0);
+                        }
+                        emit(OP_LOAD, sel_var);
+                        generate_code(label->right); // high bound
+                        if (sel_is_char) {
+                            emit(OP_SCMP, 0);
+                            emit(OP_PUSH, 0);
+                            emit(OP_LTE, 0);
+                        } else {
+                            emit(OP_LTE, 0);
+                        }
+                        emit(OP_AND, 0);
+                    } else {
+                        emit(OP_LOAD, sel_var);
+                        generate_code(label);
+                        emit(sel_is_char ? OP_SEQ : OP_EQ, 0);
+                    }
                     if (label_count > 0) emit(OP_OR, 0);
                     label_count++;
                 }
@@ -1614,6 +1636,12 @@ void generate_code(ASTNode *node) {
             // generate_code(child) call every other node type gets), so
             // this case exists only to satisfy -Wswitch's exhaustiveness
             // check.
+            break;
+
+        case NODE_CASE_RANGE:
+            // Never reached via generate_code()'s ordinary dispatch -
+            // NODE_CASE's own case above handles a range label specially
+            // (label->left/label->right), same as NODE_CASE_ARM above.
             break;
 
         case NODE_VAR_REF:

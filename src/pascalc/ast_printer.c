@@ -397,6 +397,16 @@ void print_ast(ASTNode *node, int indent) {
             break;
         }
 
+        case NODE_CASE_RANGE:
+            printf("[Case Range]\n");
+            print_indent(indent + 1);
+            printf("Low:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("High:\n");
+            print_ast(node->right, indent + 2);
+            break;
+
         case NODE_VAR_REF:
             printf("[Var Ref] -> Variable: %s\n", sym_table[node->data.var_idx].name);
             break;

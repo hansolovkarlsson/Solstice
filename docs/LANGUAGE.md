@@ -413,18 +413,37 @@ ordinal). The selector can be any expression of one of those types, not
 just a bare variable. Each case label is a compile-time constant of the
 same type as the selector: an (optionally negative) integer literal, a
 one-character string or `#NNN` char-code literal, `true`/`false`, a
-`const` reference, or a bare enumerated value name — not a general
-expression, and not a range (`2..5:` isn't accepted; list the values
-individually). A label list can name more than one value for the same
-branch (`2, 3:` above). Case labels must be pairwise distinct across the
-whole statement — a repeated label is a compile-time error.
+`const` reference, or a bare enumerated value name. A label list can name
+more than one value for the same branch (`2, 3:` above).
+
+A label can also be a range, `low..high`, matching any selector value
+from `low` to `high` inclusive — both bounds use the same constant forms
+as a plain label, must share the selector's type, and `low` must not
+exceed `high`. Ranges and plain values mix freely in the same label list:
+
+```pascal
+case grade of
+    90..100: writeln('A');
+    80..89: writeln('B');
+    0, 60..69: writeln('D or bare pass');
+else
+    writeln('lower');
+end;
+```
+
+Case labels — ranges and plain values alike — must not overlap anywhere
+in the statement: two ranges sharing a value, or a plain value falling
+inside a range (in either declaration order), is a compile-time error,
+same as a repeated plain label.
 
 `else` is optional, matching `if`/`then`. If the selector's value matches
 no label and there's no `else`, it's a runtime error (this compiler
 follows the common implementation choice here — a runtime error, not
-undefined behavior). Each branch (and the `else` branch) is a single
-statement, exactly like `if`/`then` — use `begin...end` for multiple
-statements in a branch.
+undefined behavior); a range doesn't widen this — a value outside every
+label (range or plain) still falls through to `else` or the runtime
+error. Each branch (and the `else` branch) is a single statement, exactly
+like `if`/`then` — use `begin...end` for multiple statements in a
+branch.
 
 ### `while` / `do`
 

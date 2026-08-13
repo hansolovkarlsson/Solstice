@@ -56,9 +56,6 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] `case` range labels (`2..5: ...;`) — case labels must be listed
-      individually today (`2, 3, 4, 5:`); a Turbo Pascal/Delphi
-      extension over ISO Pascal's discrete-label-only `case`.
 - [ ] Typed constants with array/record initializers
       (`const arr: array[1..3] of integer = (1, 2, 3);`) — `const` here
       is scalar-only (see [docs/LANGUAGE.md](LANGUAGE.md#constants)).

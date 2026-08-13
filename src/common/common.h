@@ -1724,9 +1724,17 @@ typedef enum {
     NODE_CASE_ARM,     // One 'label1, label2: statement' arm of a
                        // NODE_CASE. left = head of that arm's case-label-
                        // value chain (leaf nodes - NODE_NUMBER/
-                       // NODE_STRING/NODE_BOOLEAN - each already carrying
-                       // its own expression_type, chained via ->next).
-                       // right = the arm's statement.
+                       // NODE_STRING/NODE_BOOLEAN/NODE_CASE_RANGE - each
+                       // already carrying its own expression_type, chained
+                       // via ->next). right = the arm's statement.
+    NODE_CASE_RANGE,   // A 'low..high' case label, taking the place of a
+                       // leaf inside a NODE_CASE_ARM's label chain (linked
+                       // via its own ->next exactly like a leaf is). left =
+                       // low-bound leaf, right = high-bound leaf,
+                       // expression_type = the shared bound type. Never
+                       // reached via generate_code()'s generic dispatch -
+                       // only ever consumed specially by NODE_CASE's own
+                       // codegen, same as NODE_CASE_ARM itself.
     NODE_VAR_REF,      // A 'var' argument that resolves to a GLOBAL
                        // scalar (or a static local, or a global record's
                        // field - all of which ARE a global under the
