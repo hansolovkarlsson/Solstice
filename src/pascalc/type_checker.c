@@ -52,6 +52,13 @@ static int is_proc_type(DataType t) {
     return t >= TYPE_PROC_BASE && t < TYPE_PROC_BASE + MAX_PROC_TYPES;
 }
 
+// Same bounded-range idea, for a specific dynamic-array shape ('array of
+// ElementType', encoded as TYPE_DYNARRAY_BASE + its parser.c-local
+// dynarray_types[] index).
+static int is_dynarray_type(DataType t) {
+    return t >= TYPE_DYNARRAY_BASE && t < TYPE_DYNARRAY_BASE + MAX_DYNARRAY_TYPES;
+}
+
 // True if 'value' (an expression's own type) can be nil against 'target'
 // (an assignment/argument's expected type) - target is a pointer OR a
 // procedural type, and value is literally TYPE_NIL. Factored out since
@@ -490,6 +497,32 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_DYNARRAY_ACCESS:
+            // node->left (the array pointer expression) is already
+            // guaranteed a dynamic-array type by construction in the
+            // parser - only the index needs checking here.
+            if (node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
+        case NODE_DYNARRAY_ASSIGN:
+            if (node->right->expression_type != TYPE_INTEGER) {
+                fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            if (!(is_string_type(node->extra->expression_type) && is_string_type(node->expression_type))
+                && node->extra->expression_type != node->expression_type
+                && !try_widen_for_assignment(&node->extra, node->expression_type)) {
+                fprintf(stderr, "%s:%d: Type Error: Cannot assign expression to dynamic array element\n",
+                        get_current_filename(), node->line);
+                fatal_abort();
+            }
+            break;
+
         case NODE_REF_ARRAY_ASSIGN:
             if (node->left->expression_type != TYPE_INTEGER) {
                 fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",
@@ -582,8 +615,8 @@ void type_check(ASTNode *node) {
         case NODE_BUILTIN_CALL:
             switch (node->op) {
                 case TOKEN_LENGTH:
-                    if (!is_string_type(node->left->expression_type)) {
-                        fprintf(stderr, "%s:%d: Type Error: 'length' requires a char or string argument\n",
+                    if (!is_string_type(node->left->expression_type) && !is_dynarray_type(node->left->expression_type)) {
+                        fprintf(stderr, "%s:%d: Type Error: 'length' requires a char, string, or dynamic array argument\n",
                                 get_current_filename(), node->line);
                         fatal_abort();
                     }
@@ -688,6 +721,16 @@ void type_check(ASTNode *node) {
                     }
                     if (node->extra->expression_type != TYPE_INTEGER) {
                         fprintf(stderr, "%s:%d: Type Error: 'Insert' requires an integer Index argument\n",
+                                get_current_filename(), node->line);
+                        fatal_abort();
+                    }
+                    break;
+                case TOKEN_SETLENGTH:
+                    // node->left (arr) is already guaranteed a dynamic-
+                    // array type by construction in the parser - only n
+                    // needs checking here.
+                    if (node->right->expression_type != TYPE_INTEGER) {
+                        fprintf(stderr, "%s:%d: Type Error: 'SetLength' requires an integer length argument\n",
                                 get_current_filename(), node->line);
                         fatal_abort();
                     }

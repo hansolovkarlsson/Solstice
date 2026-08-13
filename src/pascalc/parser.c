@@ -504,6 +504,82 @@ static int is_proc_type(DataType t) {
     return t >= TYPE_PROC_BASE && t < TYPE_PROC_BASE + MAX_PROC_TYPES;
 }
 
+// Forward-declared (defined much later in this file) purely so
+// find_or_add_dynarray_type() below can report "too many distinct
+// element types" the same way every other table-overflow error in this
+// file does - mirrors the same forward-declaration this file's typed-
+// constants support needed (and later removed) for the identical reason.
+static void compile_error(int line, const char *fmt, ...);
+
+// Same bounded-range idea, for a specific dynamic-array shape ('array of
+// ElementType', encoded as TYPE_DYNARRAY_BASE + its dynarray_types[]
+// index - see the comment in common.h).
+static int is_dynarray_type(DataType t) {
+    return t >= TYPE_DYNARRAY_BASE && t < TYPE_DYNARRAY_BASE + MAX_DYNARRAY_TYPES;
+}
+
+// One declared dynamic-array SHAPE - just its element type. Unlike
+// pointer_types[]/proc_types[]/etc., 'array of T' has no name of its own
+// (it's always written out inline at each declaration site, never given a
+// 'type TFoo = array of T;' alias - see docs/LANGUAGE.md#dynamic-arrays
+// for why that's out of scope for now), so there's no name-equivalence
+// rule to encode here the way pointer types have. Instead this table is
+// deduped STRUCTURALLY by find_or_add_dynarray_type() below: every
+// 'array of integer' anywhere in a program resolves to the SAME
+// dynarray_types[] index, so two independently-declared dynamic arrays of
+// the same element type share one DataType value and are freely
+// assignment-compatible via the ordinary exact-type-match rule every
+// other DataType already uses - no dynamic-array-specific case needed in
+// type_checker.c's NODE_ASSIGN handling at all.
+// elem_is_subrange/elem_subrange_lower/elem_subrange_upper mirror
+// Symbol.is_subrange for a STATIC array's element type (byte/shortint/
+// word - see parse_scalar_type()'s own scalar_type_is_subrange output) -
+// needed so an element WRITE can still be wrapped in the same
+// wrap_range_check() every other subrange-typed target already gets. Not
+// used for a plain (non-subrange) element type.
+typedef struct {
+    DataType elem_type;
+    int elem_is_subrange;
+    int elem_subrange_lower;
+    int elem_subrange_upper;
+} DynArrayTypeDef;
+static DynArrayTypeDef dynarray_types[MAX_DYNARRAY_TYPES];
+static int dynarray_type_count = 0;
+
+static int find_or_add_dynarray_type(DataType elem_type, int is_subrange, int lower, int upper) {
+    for (int i = 0; i < dynarray_type_count; i++) {
+        DynArrayTypeDef *d = &dynarray_types[i];
+        if (d->elem_type == elem_type && d->elem_is_subrange == is_subrange
+            && (!is_subrange || (d->elem_subrange_lower == lower && d->elem_subrange_upper == upper))) {
+            return i;
+        }
+    }
+    if (dynarray_type_count >= MAX_DYNARRAY_TYPES) {
+        compile_error(token.line, "Too many distinct dynamic-array element types (limit is %d)", MAX_DYNARRAY_TYPES);
+    }
+    DynArrayTypeDef *d = &dynarray_types[dynarray_type_count];
+    d->elem_type = elem_type;
+    d->elem_is_subrange = is_subrange;
+    d->elem_subrange_lower = lower;
+    d->elem_subrange_upper = upper;
+    return dynarray_type_count++;
+}
+
+// Parses the 'of ElementType' tail of a dynamic-array declaration,
+// assuming 'array' has ALREADY been matched and the current token is
+// (or should be) 'of' - shared by parse_scalar_type() (which matches
+// 'array' itself, for a parameter/local/nested type reference) and the
+// two call sites that special-case 'array' BEFORE parse_scalar_type() is
+// ever reached (parse_var_section()/the param-local shared group-parser -
+// each must peek for '[' first to tell a STATIC array declaration apart
+// from this one, so neither can just delegate to parse_scalar_type()
+// directly without first consuming 'array' themselves). Defined after
+// parse_scalar_type() itself (this is just a forward declaration) since
+// its body needs to call that function, which in turn calls this one -
+// genuinely mutually recursive, unlike most of this file's top-to-bottom
+// definition order.
+static DataType parse_dynarray_of(void);
+
 // One declared pointer type ('type PFoo = ^Target;'). target_type is any
 // DataType parse_scalar_type() can already resolve (a scalar, an alias,
 // an enum, a subrange) - OR the pointer targets a RECORD type instead,
@@ -2725,6 +2801,17 @@ static DataType parse_scalar_type(void) {
         parse_set_base_type();
         return TYPE_SET;
     }
+    if (token.type == TOKEN_ARRAY) {
+        // 'array of ElementType' (no '[lo..hi]') - a DYNAMIC array (see
+        // TYPE_DYNARRAY_BASE in common.h). The two call sites that parse
+        // 'array[...] of T' directly (parse_var_section() and the
+        // param/local shared group-parser) each peek for '[' BEFORE
+        // reaching this function at all, so this branch only ever fires
+        // once 'of' is confirmed to follow 'array' with no bracket in
+        // between.
+        match(TOKEN_ARRAY);
+        return parse_dynarray_of();
+    }
     if (token.type == TOKEN_TEXT_TYPE) {
         // Deliberately NOT '{ match(TOKEN_TEXT_TYPE); return TYPE_FILE; }'
         // like every other branch here - a file variable can only be a
@@ -2778,6 +2865,32 @@ static DataType parse_scalar_type(void) {
     }
     compile_error(token.line, "Unknown type (expected 'integer', 'boolean', 'string', 'char', 'real', 'set of ...', a declared type alias, an enumerated type, a subrange type, a pointer type, or a procedural type)");
     return TYPE_UNKNOWN;
+}
+
+static DataType parse_dynarray_of(void) {
+    match(TOKEN_OF);
+    // Restricted to the built-in primitive keywords only - no named type
+    // (alias/subrange/enum/pointer/procedural), record, or nested
+    // 'array of ...'/'array[...] of ...' element type yet (see
+    // docs/LANGUAGE.md#dynamic-arrays). byte/shortint/word ARE included
+    // (unlike typed constants' own primitive-only cut) since
+    // parse_scalar_type() already resolves their subrange bounds as a
+    // side effect below - reusing that costs nothing extra here.
+    if (token.type != TOKEN_INTEGER && token.type != TOKEN_REAL_TYPE
+        && token.type != TOKEN_CHAR_TYPE && token.type != TOKEN_BOOLEAN
+        && token.type != TOKEN_STRING_TYPE && token.type != TOKEN_BYTE
+        && token.type != TOKEN_SHORTINT && token.type != TOKEN_WORD) {
+        compile_error(token.line, "Dynamic array element type must be 'integer', 'real', 'char', 'boolean', 'string', 'byte', 'shortint', or 'word' - a named type, record, or nested array isn't supported yet (see docs/LANGUAGE.md)");
+    }
+    DataType elem_type = parse_scalar_type();
+    int idx = find_or_add_dynarray_type(elem_type, scalar_type_is_subrange, scalar_type_subrange_lower, scalar_type_subrange_upper);
+    // This function's own scalar_type_is_subrange/etc. globals must NOT
+    // leak the ELEMENT's subrange-ness out to whatever CALLER asked for
+    // this dynamic array's own type - a dynamic array variable itself is
+    // never subrange-checked (only its individual elements are, via
+    // NODE_DYNARRAY_ASSIGN - see codegen.c).
+    scalar_type_is_subrange = 0;
+    return (DataType)(TYPE_DYNARRAY_BASE + idx);
 }
 
 // Parses 'name {, name} : scalar-type' or 'name {, name} : array[lo..hi]
@@ -2861,6 +2974,21 @@ static NameGroup parse_name_group(void) {
     match(TOKEN_COLON);
     if (token.type == TOKEN_ARRAY) {
         match(TOKEN_ARRAY);
+        if (token.type != TOKEN_LBRACKET) {
+            // No '[lo..hi]' - a DYNAMIC array parameter or local (see
+            // parse_dynarray_of()). Needs NO new machinery here at all:
+            // it's just an ordinary (or 'var') SCALAR, since its whole
+            // runtime value is one int (a heap pointer - see
+            // TYPE_DYNARRAY_BASE) - g.is_array stays 0 (its own struct
+            // default), so this group falls through to the exact same
+            // plain-scalar path every other non-array type already takes.
+            g.type = parse_dynarray_of();
+            g.is_subrange = scalar_type_is_subrange;
+            g.subrange_lower = scalar_type_subrange_lower;
+            g.subrange_upper = scalar_type_subrange_upper;
+            g.disk_width = scalar_type_disk_width;
+            return g;
+        }
         match(TOKEN_LBRACKET);
         int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
         int dims = parse_array_bounds(lower, upper);
@@ -5335,6 +5463,20 @@ static ASTNode *parse_global_symbol_reference(int idx, int line) {
             match(TOKEN_RBRACKET);
             return node;
         }
+        if (is_dynarray_type(sym_table[idx].type)) {
+            match(TOKEN_LBRACKET);
+            ASTNode *base = create_node(NODE_VARIABLE);
+            base->line = line;
+            base->data.var_idx = idx;
+            base->expression_type = sym_table[idx].type;
+            ASTNode *node = create_node(NODE_DYNARRAY_ACCESS);
+            node->line = line;
+            node->left = base;
+            node->right = expression(); // index
+            node->expression_type = dynarray_types[sym_table[idx].type - TYPE_DYNARRAY_BASE].elem_type;
+            match(TOKEN_RBRACKET);
+            return node;
+        }
         compile_error(token.line, "'%s' is not an array, cannot be indexed", sym_table[idx].name);
     }
     ASTNode *node = create_node(NODE_VARIABLE);
@@ -5779,18 +5921,46 @@ static ASTNode *factor(void) {
         return node;
     } else if (token.type == TOKEN_LOW || token.type == TOKEN_HIGH) {
         // low(arr)/high(arr) - arr's declared bounds, as a compile-time
-        // constant. Only supports arrays (not e.g. an ordinal type name)
-        // in this increment.
+        // constant for a STATIC array. A dynamic array's bounds are only
+        // known at runtime (see TYPE_DYNARRAY_BASE) and are always
+        // 0-based (Delphi convention, unlike this compiler's existing
+        // lo..hi static arrays) - low() is still a compile-time constant
+        // 0 there, but high() desugars to 'length(arr) - 1', reusing
+        // TOKEN_LENGTH's own dynamic-array runtime path (see codegen.c)
+        // the same way succ()/pred() desugar to 'x+1'/'x-1' above.
         TokenType kind = token.type;
         match(kind);
         match(TOKEN_LPAREN);
         int lower, upper;
-        if (!try_get_array_bounds_here(&lower, &upper)) {
+        if (try_get_array_bounds_here(&lower, &upper)) {
+            match(TOKEN_RPAREN);
+            ASTNode *node = create_node(NODE_NUMBER);
+            node->data.num_value = (kind == TOKEN_LOW) ? lower : upper;
+            node->expression_type = TYPE_INTEGER;
+            return node;
+        }
+        ASTNode *arg = expression();
+        match(TOKEN_RPAREN);
+        if (!is_dynarray_type(arg->expression_type)) {
             compile_error(token.line, "'%s' requires an array argument", kind == TOKEN_LOW ? "low" : "high");
         }
-        match(TOKEN_RPAREN);
-        ASTNode *node = create_node(NODE_NUMBER);
-        node->data.num_value = (kind == TOKEN_LOW) ? lower : upper;
+        if (kind == TOKEN_LOW) {
+            ASTNode *node = create_node(NODE_NUMBER);
+            node->data.num_value = 0;
+            node->expression_type = TYPE_INTEGER;
+            return node;
+        }
+        ASTNode *len_call = create_node(NODE_BUILTIN_CALL);
+        len_call->op = TOKEN_LENGTH;
+        len_call->left = arg;
+        len_call->expression_type = TYPE_INTEGER;
+        ASTNode *one = create_node(NODE_NUMBER);
+        one->data.num_value = 1;
+        one->expression_type = TYPE_INTEGER;
+        ASTNode *node = create_node(NODE_BINARY_OP);
+        node->op = TOKEN_MINUS;
+        node->left = len_call;
+        node->right = one;
         node->expression_type = TYPE_INTEGER;
         return node;
     } else if (token.type == TOKEN_UPCASE || token.type == TOKEN_UPPERCASE || token.type == TOKEN_LOWERCASE) {
@@ -6067,6 +6237,16 @@ static ASTNode *factor(void) {
                 node->data.var_idx = local_idx;
                 node->op = (TokenType)levels_up;
                 node->expression_type = ls->type;
+                if (is_dynarray_type(node->expression_type) && token.type == TOKEN_LBRACKET) {
+                    match(TOKEN_LBRACKET);
+                    ASTNode *access = create_node(NODE_DYNARRAY_ACCESS);
+                    access->line = line;
+                    access->left = node;
+                    access->right = expression(); // index
+                    access->expression_type = dynarray_types[node->expression_type - TYPE_DYNARRAY_BASE].elem_type;
+                    match(TOKEN_RBRACKET);
+                    return access;
+                }
                 if (is_proc_type(node->expression_type) && token.type == TOKEN_LPAREN) {
                     return build_procvar_call(node, node->expression_type - TYPE_PROC_BASE, line, 0);
                 }
@@ -6162,6 +6342,21 @@ static ASTNode *factor(void) {
                 node->op = (TokenType)levels_up;
                 node->left = expression(); // index
                 node->expression_type = TYPE_CHAR;
+                match(TOKEN_RBRACKET);
+                return node;
+            }
+            if (is_dynarray_type(ls->type) && token.type == TOKEN_LBRACKET) {
+                match(TOKEN_LBRACKET);
+                ASTNode *base = create_node(NODE_LOCAL_VAR);
+                base->line = line;
+                base->data.var_idx = local_idx;
+                base->op = (TokenType)levels_up;
+                base->expression_type = ls->type;
+                ASTNode *node = create_node(NODE_DYNARRAY_ACCESS);
+                node->line = line;
+                node->left = base;
+                node->right = expression(); // index
+                node->expression_type = dynarray_types[ls->type - TYPE_DYNARRAY_BASE].elem_type;
                 match(TOKEN_RBRACKET);
                 return node;
             }
@@ -7798,6 +7993,20 @@ static void parse_var_section(void) {
             }
         } else if (token.type == TOKEN_ARRAY) {
             match(TOKEN_ARRAY);
+            if (token.type != TOKEN_LBRACKET) {
+                // No '[lo..hi]' - a DYNAMIC array global (see
+                // parse_dynarray_of()). Needs no dedicated storage helper
+                // the way add_array_var() etc. are - it's just an
+                // ordinary add_var() (a plain scalar slot: one int, a
+                // heap pointer - see TYPE_DYNARRAY_BASE), exactly like a
+                // pointer-typed global already is.
+                DataType target_type = parse_dynarray_of();
+                for (int i = 0; i < count; i++) {
+                    add_var(temporary_names[i], target_type);
+                }
+                match(TOKEN_SEMI);
+                continue;
+            }
             match(TOKEN_LBRACKET);
             int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
             int dims = parse_array_bounds(lower, upper);
@@ -8229,6 +8438,7 @@ ASTNode *parse_ast(const char *source, const char *filename) {
     typed_file_var_count = 0;
     pointer_type_count = 0;
     proc_type_count = 0;
+    dynarray_type_count = 0;
     const_def_count = 0;
     typed_const_init_head = NULL;
     typed_const_init_tail = NULL;
@@ -10068,7 +10278,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
            t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING || t == TOKEN_RANDOMIZE ||
-           t == TOKEN_DELETE || t == TOKEN_INSERT || t == TOKEN_EXIT || t == TOKEN_HALT ||
+           t == TOKEN_DELETE || t == TOKEN_INSERT || t == TOKEN_SETLENGTH || t == TOKEN_EXIT || t == TOKEN_HALT ||
            t == TOKEN_NUMBER; // a bare integer literal never starts any OTHER
                               // statement - it can only be a 'N: statement'
                               // label prefix (see statement()) - so this is
@@ -10323,6 +10533,66 @@ static ASTNode *string_writeback_assign_node(ASTNode *read_node, ASTNode *value)
     if (write_type != NODE_ASSIGN) {
         node->op = read_node->op; // levels_up
         node->expression_type = TYPE_STRING;
+    }
+    node->left = value;
+    return node;
+}
+
+// SetLength(arr, n)'s own target resolution - mirrors
+// parse_string_writeback_target() exactly, for a dynamic array instead
+// of a string.
+static ASTNode *parse_dynarray_writeback_target(void) {
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'SetLength' expects a dynamic array variable");
+    }
+    char name[MAX_NAME];
+    strcpy(name, token.text);
+    int line = token.line;
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (ls->is_const_param) {
+            compile_error(line, "'SetLength' cannot be used on 'const' parameter '%s'", name);
+        }
+        if (!is_dynarray_type(ls->type)) {
+            compile_error(line, "'SetLength' expects a dynamic array variable, not '%s'", name);
+        }
+        match(TOKEN_IDENTIFIER);
+        ASTNode *node = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+        node->data.var_idx = local_idx;
+        node->op = (TokenType)levels_up;
+        node->expression_type = ls->type;
+        return node;
+    }
+    int sym_idx = find_var(name);
+    if (!is_dynarray_type(sym_table[sym_idx].type)) {
+        compile_error(line, "'SetLength' expects a dynamic array variable, not '%s'", name);
+    }
+    if (sym_table[sym_idx].is_const) {
+        compile_error(line, "'SetLength' cannot be used on constant '%s'", name);
+    }
+    match(TOKEN_IDENTIFIER);
+    ASTNode *node = create_node(NODE_VARIABLE);
+    node->data.var_idx = sym_idx;
+    node->expression_type = sym_table[sym_idx].type;
+    return node;
+}
+
+// Builds the matching write-back node for whatever
+// parse_dynarray_writeback_target() returned as a read - mirrors
+// string_writeback_assign_node() exactly, except expression_type comes
+// from read_node itself (already the dynamic array's own encoded type)
+// rather than a hardcoded TYPE_STRING.
+static ASTNode *dynarray_writeback_assign_node(ASTNode *read_node, ASTNode *value) {
+    NodeType write_type = read_node->type == NODE_VAR_PARAM_READ ? NODE_VAR_PARAM_ASSIGN
+                         : read_node->type == NODE_LOCAL_VAR ? NODE_LOCAL_ASSIGN
+                         : NODE_ASSIGN;
+    ASTNode *node = create_node(write_type);
+    node->data.var_idx = read_node->data.var_idx;
+    if (write_type != NODE_ASSIGN) {
+        node->op = read_node->op; // levels_up
+        node->expression_type = read_node->expression_type;
     }
     node->left = value;
     return node;
@@ -10988,6 +11258,24 @@ static ASTNode *parse_global_assignment(int idx) {
         match(TOKEN_RBRACKET);
         match(TOKEN_ASSIGN);
         stmt->right = expression(); // new character
+        return stmt;
+    }
+    if (token.type == TOKEN_LBRACKET && is_dynarray_type(sym_table[idx].type)) {
+        int line = token.line;
+        match(TOKEN_LBRACKET);
+        ASTNode *base = create_node(NODE_VARIABLE);
+        base->line = line;
+        base->data.var_idx = idx;
+        base->expression_type = sym_table[idx].type;
+        DynArrayTypeDef *d = &dynarray_types[sym_table[idx].type - TYPE_DYNARRAY_BASE];
+        ASTNode *stmt = create_node(NODE_DYNARRAY_ASSIGN);
+        stmt->line = line;
+        stmt->left = base;
+        stmt->right = expression(); // index
+        match(TOKEN_RBRACKET);
+        match(TOKEN_ASSIGN);
+        stmt->extra = wrap_range_check(expression(), d->elem_is_subrange, d->elem_subrange_lower, d->elem_subrange_upper); // value
+        stmt->expression_type = d->elem_type;
         return stmt;
     }
     if (is_pointer_type(sym_table[idx].type) && (token.type == TOKEN_CARET || class_dot_deref_pending(sym_table[idx].type))) {
@@ -11930,6 +12218,32 @@ static ASTNode *statement(void) {
                     if (step.is_property_setter) return build_property_setter_call(base, step, line);
                     return build_heap_deref_write_statement(base, step);
                 }
+                if (is_dynarray_type(ls->type) && token.type == TOKEN_LBRACKET) {
+                    // Writing THROUGH the parameter to one of its
+                    // elements - shallow, same as a pointer/class
+                    // parameter's own field write above, so this is
+                    // allowed even for a 'const' parameter (only
+                    // reassigning the parameter's OWN pointer value,
+                    // below, is blocked for one - see is_const_param's
+                    // own comment).
+                    int line = token.line;
+                    match(TOKEN_LBRACKET);
+                    ASTNode *base = create_node(NODE_VAR_PARAM_READ);
+                    base->line = line;
+                    base->data.var_idx = local_idx;
+                    base->op = (TokenType)levels_up;
+                    base->expression_type = ls->type;
+                    DynArrayTypeDef *d = &dynarray_types[ls->type - TYPE_DYNARRAY_BASE];
+                    ASTNode *stmt = create_node(NODE_DYNARRAY_ASSIGN);
+                    stmt->line = line;
+                    stmt->left = base;
+                    stmt->right = expression(); // index
+                    match(TOKEN_RBRACKET);
+                    match(TOKEN_ASSIGN);
+                    stmt->extra = wrap_range_check(expression(), d->elem_is_subrange, d->elem_subrange_lower, d->elem_subrange_upper); // value
+                    stmt->expression_type = d->elem_type;
+                    return stmt;
+                }
                 if (ls->is_const_param) {
                     compile_error(token.line, "cannot assign to 'const' parameter '%s'", ls->name);
                 }
@@ -12045,6 +12359,25 @@ static ASTNode *statement(void) {
                 stmt->right = expression(); // new character
                 return stmt;
             }
+            if (is_dynarray_type(ls->type) && token.type == TOKEN_LBRACKET) {
+                int line = token.line;
+                match(TOKEN_LBRACKET);
+                ASTNode *base = create_node(NODE_LOCAL_VAR);
+                base->line = line;
+                base->data.var_idx = local_idx;
+                base->op = (TokenType)levels_up;
+                base->expression_type = ls->type;
+                DynArrayTypeDef *d = &dynarray_types[ls->type - TYPE_DYNARRAY_BASE];
+                ASTNode *stmt = create_node(NODE_DYNARRAY_ASSIGN);
+                stmt->line = line;
+                stmt->left = base;
+                stmt->right = expression(); // index
+                match(TOKEN_RBRACKET);
+                match(TOKEN_ASSIGN);
+                stmt->extra = wrap_range_check(expression(), d->elem_is_subrange, d->elem_subrange_lower, d->elem_subrange_upper); // value
+                stmt->expression_type = d->elem_type;
+                return stmt;
+            }
             if (is_proc_type(ls->type)) {
                 // A NAMED procedural-type local - see the matching
                 // global case in parse_global_assignment() for why this
@@ -12145,6 +12478,21 @@ static ASTNode *statement(void) {
         value_node->extra = index_expr;
         value_node->expression_type = TYPE_STRING;
         return string_writeback_assign_node(read_node, value_node);
+    }
+
+    if (token.type == TOKEN_SETLENGTH) {
+        match(TOKEN_SETLENGTH);
+        match(TOKEN_LPAREN);
+        ASTNode *read_node = parse_dynarray_writeback_target();
+        match(TOKEN_COMMA);
+        ASTNode *n_expr = expression();
+        match(TOKEN_RPAREN);
+        ASTNode *value_node = create_node(NODE_BUILTIN_CALL);
+        value_node->op = TOKEN_SETLENGTH;
+        value_node->left = read_node;
+        value_node->right = n_expr;
+        value_node->expression_type = read_node->expression_type;
+        return dynarray_writeback_assign_node(read_node, value_node);
     }
 
     if (token.type == TOKEN_FILE_ASSIGN) {

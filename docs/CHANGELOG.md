@@ -2739,6 +2739,114 @@ anyway, so this is where they land instead.
       constant, and an out-of-range subrange element caught at runtime)
       and [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
 
+- [x] Dynamic arrays (1D, primitive element types) - `var arr: array of
+      integer;` / `SetLength(arr, n)` / `Length`/`High`/`Low(arr)` /
+      `arr[i]`. Closes the ROADMAP's "Dynamic arrays" bullet for this
+      scope; multi-dimensional/record-element/named-type-element support,
+      the `nil` literal, `Copy`/slicing, array literals, and `for..in`
+      are logged as their own follow-up bullet.
+
+      **Key design insight**: reuses the EXACT SAME heap `new`/`dispose`
+      already allocate from (`vm_heap_mem[]`/`vm_heap_freelist[]` in
+      `vm.c`) instead of building a second allocator - a dynamic array is
+      just a single int (a heap offset, exactly like a pointer) pointing
+      at a self-describing block (`heap_mem[base]` = current length,
+      `heap_mem[base+1..]` = elements). `OP_NEW`/`OP_DISPOSE`'s
+      alloc/free logic was factored into two shared helpers
+      (`vm_heap_alloc()`/`vm_heap_free()`) so the new `OP_SETLENGTH` could
+      reuse it with a RUNTIME size, unlike `NEW`'s compile-time-constant
+      `arg`. `vm_heap_freelist[]` grew from `MAX_RECORD_FIELDS + 1` (17)
+      to `MAX_HEAP_MEM + 1` (4097), since a dynamic array's block size,
+      unlike a record/pointer's, isn't capped at a small field count.
+
+      **"Parameters are free"**: a static array parameter needs dedicated
+      by-reference machinery (`param_is_array_ref`, `LOAD_IDX_DYN`/
+      `STORE_IDX_DYN`) since which array and its bounds vary per call. A
+      dynamic array parameter needs none of this - it's a single int, so
+      it's just an ordinary (or `var`) SCALAR parameter, the exact
+      machinery pointer-typed parameters already use. One insertion
+      point (`parse_scalar_type()` gaining an `array of T` branch, shared
+      via a small `parse_dynarray_of()` helper with the two call sites
+      that special-case `array[...]` before ever reaching
+      `parse_scalar_type()` - `parse_var_section()` and the param/local
+      shared group-parser) made params, locals, and globals all fall out
+      together.
+
+      **Reference semantics, deliberately, not a shortcut**: `arr2 :=
+      arr1;` copies the pointer (shared storage afterward) and a value
+      parameter shares storage too (only `SetLength` inside the callee
+      diverges - it rebinds the callee's own local copy, leaving the
+      caller's variable pointing at the original block) - this is real
+      Delphi dynamic-array behavior, and the natural fit given this VM
+      has no refcounting/GC anywhere (see `docs/BYTECODE.md`'s heap
+      section). Whole-array assignment needed **zero** new type-checking
+      code: since a dynamic array symbol is a plain scalar (never
+      `is_array`), it already flows through the exact `NODE_ASSIGN`
+      scalar path pointer variables use. Getting two independently-
+      declared `array of integer` variables to type-match required
+      deduping the new parser-local `dynarray_types[]` table
+      STRUCTURALLY (by element type, not by declaration site) rather
+      than nominally the way `pointer_types[]` is - dynamic arrays have
+      no name of their own to hang nominal equivalence off, unlike a
+      named `type PFoo = ^Target;`.
+
+      **A real bug this surfaced, not a hypothetical one**: the first
+      implementation had `OP_SETLENGTH` free the OLD block on every
+      resize (mirroring `OP_DISPOSE`). `test_dynarray_valueparam.pas`
+      broke immediately: passing an array to a value parameter and
+      calling `SetLength` inside froze the CALLER's own array's length
+      field, because freeing writes an intrusive freelist link into the
+      block's first slot - and the caller's variable still pointed at
+      that same (now-corrupted) block, since a value parameter is only a
+      copy of the POINTER, not the storage. Fix: `OP_SETLENGTH` never
+      frees the old block, full stop - the same accepted "forgetting
+      `dispose` leaks" tradeoff pointers already have, not a new class of
+      problem. Verified directly with dedicated value-parameter/`var`-
+      parameter/aliasing tests, not just inferred from re-reading the
+      opcode.
+
+      **Uninitialized-value safety, found the same way**: a fresh
+      dynamic array's zero-init default (`0`) needing to mean "not yet
+      allocated" collided with heap offset `0` being a legitimate
+      allocation (the very first thing any program allocates lands
+      there) - `SetLength` on a never-initialized array read someone
+      else's block as its own. Fixed by permanently reserving heap offset
+      `0` (`vm_heap_count` starts at `1`, not `0`) so `0` is NEVER handed
+      out to a real allocation - this is what lets a dynamic array's
+      ordinary zero-init default double as its own "empty" sentinel with
+      no explicit default-value codegen anywhere, unlike a pointer's
+      separate, pre-existing `-1 means nil` convention (which still
+      requires an explicit `p := nil;` before it's reliable, confirmed by
+      testing directly - not fixed here, out of scope, but what set the
+      "match this exact existing discipline" bar for dynamic arrays too).
+
+      5 new opcodes (`OP_SETLENGTH`, `OP_LOAD_DYNARR_LEN`,
+      `OP_LOAD_DYNARR_IDX`, `OP_STORE_DYNARR_IDX`/`_CHAR`) and 2 new AST
+      node types (`NODE_DYNARRAY_ACCESS`/`NODE_DYNARRAY_ASSIGN`, shaped
+      like `NODE_HEAP_FIELD_ACCESS`/`_ASSIGN` - a base-pointer expression
+      plus an index, rather than carrying a `sym_table[]` index directly
+      the way static-array nodes do, since a dynamic array's identity can
+      come from a global, a local, or a parameter uniformly).
+      `SetLength` itself reuses `Insert`/`Delete`'s existing "read-modify-
+      write via a generic global-or-local target resolver" pattern.
+      `optimizer.c` needed no changes at all: `mark_used_variables()`
+      needs no dynamic-array-specific entry (the base-pointer sub-
+      expression is an ordinary `NODE_VARIABLE`/`NODE_LOCAL_VAR`/etc.
+      that already self-identifies via generic recursion), and
+      `sweep_dead_assignments()` simply doesn't pattern-match the new
+      node types, passing them through its generic fallback unchanged.
+
+      See `examples/test/dynarray/test_dynarray_*.pas` (10 positive cases
+      - basic fill/read, growing/shrinking preserving data, `SetLength(
+      arr, 0)`/never-initialized `Length`, every in-scope element type,
+      value-parameter/`var`-parameter/`const`-parameter semantics,
+      whole-array aliasing, and a procedure-local dynamic array; 6 error
+      cases - out-of-range index, an element-type mismatch, a disallowed
+      element type (record and nested `array of`), an out-of-range `byte`
+      element caught at runtime, `SetLength` on a non-array, and
+      `SetLength` on a `const` parameter) and
+      [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays).
+
 ### Shipped from the OOP features survey
 
 Pulled out of docs/ROADMAP.md's own "Object-oriented language features

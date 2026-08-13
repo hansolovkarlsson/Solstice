@@ -54,6 +54,15 @@ static int is_string_type(DataType t) {
     return t == TYPE_STRING || t == TYPE_CHAR;
 }
 
+// Same bounded-range idea as parser.c's own copy of this helper, for a
+// specific dynamic-array shape ('array of ElementType', encoded as
+// TYPE_DYNARRAY_BASE + its parser.c-local dynarray_types[] index) -
+// needed here to pick OP_LOAD_DYNARR_LEN over the string-only OP_LENGTH
+// (see TOKEN_LENGTH below).
+static int is_dynarray_type(DataType t) {
+    return t >= TYPE_DYNARRAY_BASE && t < TYPE_DYNARRAY_BASE + MAX_DYNARRAY_TYPES;
+}
+
 // Emits an ordering comparison (<, >, <=, >=). For integer operands this
 // is just int_op directly. For strings, OP_SCMP first reduces the pair to
 // a -1/0/1 result, which int_op then compares against a literal 0 -
@@ -945,7 +954,19 @@ void generate_code(ASTNode *node) {
             }
             generate_code(node->left);
             if (node->op == TOKEN_LENGTH) {
-                emit(OP_LENGTH, 0);
+                // length(arr) for a DYNAMIC array (a plain array name
+                // resolves to a compile-time constant for a STATIC array -
+                // see try_get_array_bounds_here() in parser.c, which never
+                // reaches this NODE_BUILTIN_CALL path at all) needs the
+                // runtime opcode instead of the string-only OP_LENGTH -
+                // chosen here, at compile time, from the already-resolved
+                // operand type (also how high(arr) on a dynamic array gets
+                // this same opcode, via its own 'length(arr) - 1' desugar
+                // in parser.c).
+                emit(is_dynarray_type(node->left->expression_type) ? OP_LOAD_DYNARR_LEN : OP_LENGTH, 0);
+            } else if (node->op == TOKEN_SETLENGTH) {
+                generate_code(node->right); // n
+                emit(OP_SETLENGTH, 0);
             } else if (node->op == TOKEN_UPCASE) {
                 emit(OP_UPCASE_CHAR, 0);
             } else if (node->op == TOKEN_UPPERCASE) {
@@ -1090,6 +1111,24 @@ void generate_code(ASTNode *node) {
                 emit(OP_STORE_HEAP_FIELD_CHAR, node->extra->data.num_value);
             } else {
                 emit(OP_STORE_HEAP_FIELD, node->extra->data.num_value);
+            }
+            generate_code(node->next);
+            break;
+
+        case NODE_DYNARRAY_ACCESS:
+            generate_code(node->left);                  // the array's own pointer value
+            generate_code(node->right);                 // index
+            emit(OP_LOAD_DYNARR_IDX, 0);
+            break;
+
+        case NODE_DYNARRAY_ASSIGN:
+            generate_code(node->left);                  // the array's own pointer value
+            generate_code(node->right);                 // index
+            generate_code(node->extra);                 // value
+            if (node->expression_type == TYPE_CHAR) {
+                emit(OP_STORE_DYNARR_IDX_CHAR, 0);
+            } else {
+                emit(OP_STORE_DYNARR_IDX, 0);
             }
             generate_code(node->next);
             break;

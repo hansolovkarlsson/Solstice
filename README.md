@@ -335,7 +335,12 @@ for any ordinal selector type (see
 (`const arr: array[1..3] of integer = (1, 2, 3);`), a genuinely
 initialized global array rather than a plain `const`'s storage-less
 substitution (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-constants-array-initializers)).
+[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-constants-array-initializers));
+and dynamic arrays (`var arr: array of integer; SetLength(arr, n);`), a
+resizable array with reference semantics (assignment/value-parameter
+passing shares storage, matching real Delphi) built on the same heap
+`new`/`dispose` already allocate from, rather than a second allocator
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#dynamic-arrays)).
 Also working: records as
 array elements (`array[1..10] of TPoint`), for both a global and a
 procedure-local array — field read/write via a runtime index, plus
@@ -502,5 +507,6 @@ default; a call omitting trailing arguments gets the default spliced in
 (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#default-parameter-values)).
 
-Not yet implemented: dynamic arrays (so no array `copy`/slicing), variant
-records, and a whole record or an array element as a `var` argument.
+Not yet implemented: array `copy`/slicing (for either a fixed-size or
+dynamic array), variant records, and a whole record or an array element
+as a `var` argument.

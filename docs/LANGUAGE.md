@@ -138,6 +138,7 @@ is a compiler directive, not an ordinary comment:
 | String | `string` | `'hello'`, `'it''s here'` | Doubled `''` is an escaped literal quote |
 | Char | `char` | `'a'`, `'!'`, `'x'` | See [Char](#char) below - a single-quoted literal of length exactly 1 |
 | Array | `array[lower..upper] of T` | — | `T` is `integer`, `real`, `boolean`, `string`, or `char`; see [Arrays](#arrays) |
+| Dynamic array | `array of T` | — | Resizable via `SetLength`; `T` is a built-in primitive type only; see [Dynamic arrays](#dynamic-arrays) |
 | Record | `type TName = record ... end;` | — | User-defined; see [Records](#records) |
 | Enumerated | `type TName = (Val1, Val2, ...);` | — | User-defined; see [Enumerated types](#enumerated-types) |
 | Subrange | `type TName = lower..upper;` | — | Bounds-checked `integer`; see [Subrange types](#subrange-types) |
@@ -365,7 +366,8 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `ord(c)` | function | A `char`'s byte value, or an enumerated value's ordinal, as an integer — see [Char](#char) and [Enumerated types](#enumerated-types) |
 | `chr(n)` | function | The `char` with byte value `n` — see [Char](#char) |
 | `length(s)`, `s[i]` | function / indexing | String length and character access — see [String](#string) |
-| `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time — see [Arrays](#arrays) |
+| `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time for a fixed-size array, at runtime for a dynamic one — see [Arrays](#arrays)/[Dynamic arrays](#dynamic-arrays) |
+| `SetLength(arr, n)` | statement | Resizes a dynamic array to `n` elements — see [Dynamic arrays](#dynamic-arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `Delete(var S, Index, Count)`, `Insert(Source, var S, Index)` | statements | In-place string mutation — see [`Delete` and `Insert`](#delete-and-insert) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
@@ -1688,6 +1690,149 @@ end.
   the product of all three dimensions' sizes.
 - `low`/`high`/`length` don't support a multi-dimensional array (2D or
   more) — same pre-existing limitation 2D arrays already have.
+
+## Dynamic arrays
+
+```pascal
+var
+    scores: array of integer;
+    i: integer;
+begin
+    SetLength(scores, 5);
+    for i := 0 to High(scores) do
+        scores[i] := i * i;
+    for i := 0 to High(scores) do
+        write(scores[i], ' ');
+    writeln;                        { 0 1 4 9 16 }
+    writeln(Length(scores));        { 5 }
+end.
+```
+
+`array of ElementType` (no `[lower..upper]`) declares a **resizable**
+array — a genuinely different kind of value from this language's
+fixed-size `array[lower..upper] of T` (see [Arrays](#arrays) above), not
+just a variant spelling of it:
+
+- **Always 0-based.** `Low(arr)` is always `0`; `High(arr)` is
+  `Length(arr) - 1`. This differs from a fixed-size array, whose bounds
+  are whatever you declared them as.
+- **`SetLength(arr, n)`** allocates or resizes `arr` to hold exactly `n`
+  elements. This is the *only* way to give a dynamic array any storage —
+  indexing into one before ever calling `SetLength` on it is undefined
+  (see "Uninitialized value" below). Growing preserves every existing
+  element and zero-fills the new ones; shrinking preserves the retained
+  prefix and discards the rest. `SetLength(arr, 0)` empties it back to
+  the same state as a never-initialized variable.
+- **`Length(arr)`** — the current element count, read at *runtime*
+  (unlike a fixed-size array's `length`, which is always a compile-time
+  constant — see [`low`, `high`, `length`](#low-high-length) above).
+  `High(arr)` is `Length(arr) - 1`; both work on a dynamic array the
+  exact same `low`/`high`/`length` builtins already used for fixed-size
+  arrays resolve to automatically, based on the argument's own type.
+- **Indexing (`arr[i]`)** requires an `integer` index and is
+  bounds-checked at runtime against `[0, Length(arr) - 1]`, exactly like
+  a fixed-size array's own indexing.
+- **Element type**: one of the built-in primitive types only —
+  `integer`, `real`, `char`, `boolean`, `string`, `byte`, `shortint`, or
+  `word`. A named type (a type alias, subrange, or enumerated type), a
+  `record`, a pointer, a procedural type, or another `array of ...`
+  (nested dynamic arrays) aren't supported as an element type yet. A
+  `byte`/`shortint`/`word` element is still bounds-checked on every
+  write, exactly like a fixed-size array's own subrange-typed elements —
+  it just fails at **runtime**, not compile time, since the value being
+  stored isn't generally known until then.
+- Declared directly wherever a type is expected — as a `var` (global or
+  procedure-local) or as a **parameter** (see below). There's no `type
+  TIntArray = array of integer;` named-alias form yet, matching this
+  language's existing fixed-size arrays (which also can't be named this
+  way).
+
+### Reference semantics
+
+A dynamic array variable's actual runtime value is a single pointer into
+a shared heap block (see "Under the hood" below) — so, unlike every
+other value in this language, **assignment and parameter-passing don't
+copy the array's contents**:
+
+```pascal
+var
+    a, b: array of integer;
+begin
+    SetLength(a, 3);
+    a[0] := 1; a[1] := 2; a[2] := 3;
+    b := a;              { b now aliases the SAME storage as a }
+    b[0] := 99;
+    writeln(a[0]);        { 99 - visible through a too }
+end.
+```
+
+This is deliberate, not a shortcut — it's the same behavior real
+Delphi's own dynamic arrays have, and it falls out naturally here from a
+dynamic array being "just a pointer" under the hood:
+
+- **`arr2 := arr1;`** copies the pointer, not the contents — `arr2` and
+  `arr1` share the same storage afterward.
+- **Passed as an ordinary (non-`var`) parameter**, the callee gets a copy
+  of the *pointer* — element writes through it (`a[i] := x;`) are visible
+  to the caller, but calling `SetLength` inside the callee only rebinds
+  the callee's own local copy, leaving the caller's variable pointing at
+  the original, unresized storage.
+- **Passed as a `var` parameter**, `SetLength` inside the callee DOES
+  rebind the caller's own variable, exactly like any other `var`
+  parameter.
+- **Passed as a `const` parameter**, the callee can read it and can still
+  write through it element-wise (shallow, same as a `const` pointer
+  parameter's own field writes) — but calling `SetLength` on it is a
+  compile-time error, since that would reassign the parameter's own
+  value.
+
+### Uninitialized value
+
+A dynamic array variable that's never had `SetLength` called on it holds
+its ordinary zero-init default, exactly like every other variable in
+this language — reading `Length`/`High` on one is well-defined and
+reads `0` (this is actually guaranteed here, not merely a convention —
+see "Under the hood" below), but indexing into one (`arr[0]`) is a
+runtime "not allocated" error, since there's nothing to index into yet.
+Always call `SetLength` before writing/reading an element. This mirrors
+[pointers](#pointers)' own existing convention of requiring an explicit
+`nil`/`new()` before a pointer is meaningfully usable.
+
+### Under the hood
+
+A dynamic array's runtime value is a plain int: an offset into the same
+heap `new`/`dispose` already allocate from (see
+[Pointers](#pointers)) — `0` means "not yet allocated" (both a fresh
+variable's own zero-init default and what `SetLength(arr, 0)` itself
+produces; heap offset `0` is permanently reserved, never handed out to a
+real allocation, specifically so this is always safe). A real allocation
+is a self-describing block: its own first slot holds the array's current
+length, and the following `length` slots hold the elements.
+`SetLength` always allocates a fresh block sized to the new length and
+copies over what fits — it deliberately **never frees the old block**,
+since (per "Reference semantics" above) another variable might still be
+aliasing it. This means repeated `SetLength` calls on the same variable
+(e.g. growing it one element at a time in a loop) leak the intermediate
+blocks — the same accepted, documented cost as forgetting `dispose`
+after `new` already is (see [Pointers](#pointers)'s own "There is no
+garbage collector" note) — not a new kind of problem this feature
+introduces.
+
+### What's not supported yet
+
+- **Multi-dimensional dynamic arrays** — `array of array of integer` (or
+  any other nesting) is a compile-time error; only a single dimension of
+  a primitive element type is supported.
+- **Record, pointer, procedural, or named (type-alias/subrange/
+  enumerated) element types** — same restriction as above; only the
+  built-in primitive type keywords are accepted.
+- **The `nil` literal** — a dynamic array can't be compared or assigned
+  `nil`; use `SetLength(arr, 0)` to explicitly empty one instead.
+- **`Copy`/slicing, array-literal syntax (`arr := [1, 2, 3];`), and `for
+  x in arr do`** — none of these exist yet for either array kind in this
+  language.
+- **A dynamic-array-typed `record`/class field, or function return
+  type** — only a plain `var`/parameter is supported so far.
 
 ## Type aliases
 

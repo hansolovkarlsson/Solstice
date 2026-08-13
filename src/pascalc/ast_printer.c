@@ -773,6 +773,32 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_DYNARRAY_ACCESS:
+            printf("[Dynamic Array Access]\n");
+            print_indent(indent + 1);
+            printf("Array:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->right, indent + 2);
+            break;
+
+        case NODE_DYNARRAY_ASSIGN:
+            printf("[Dynamic Array Assignment]\n");
+            print_indent(indent + 1);
+            printf("Array:\n");
+            print_ast(node->left, indent + 2);
+            print_indent(indent + 1);
+            printf("Index:\n");
+            print_ast(node->right, indent + 2);
+            print_indent(indent + 1);
+            printf("Value:\n");
+            print_ast(node->extra, indent + 2);
+            if (node->next) {
+                print_ast(node->next, indent);
+            }
+            break;
+
         case NODE_HEAP_ARRAY_FIELD_ACCESS:
             printf("[Heap Array Field Access] -> Combined offset: %d\n", node->data.num_value);
             print_indent(indent + 1);

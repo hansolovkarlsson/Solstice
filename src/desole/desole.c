@@ -221,6 +221,11 @@ static const char *opcode_name(Opcode op) {
         case OP_RAISE:      return "raise";
         case OP_EXCEPT_MSG: return "except_msg";
         case OP_WARNING:    return "warning";
+        case OP_SETLENGTH:            return "setlength";
+        case OP_LOAD_DYNARR_LEN:      return "load_dynarr_len";
+        case OP_LOAD_DYNARR_IDX:      return "load_dynarr_idx";
+        case OP_STORE_DYNARR_IDX:     return "store_dynarr_idx";
+        case OP_STORE_DYNARR_IDX_CHAR: return "store_dynarr_idx_char";
         default:       return NULL;
     }
 }

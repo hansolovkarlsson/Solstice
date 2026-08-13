@@ -53,6 +53,11 @@
 #define MAX_PROC_TYPES 20  // how many DISTINCT NAMED procedural type
                            // ('type TProc = procedure(...);') declarations
                            // a program can have - see TYPE_PROC_BASE below.
+#define MAX_DYNARRAY_TYPES 20 // how many DISTINCT 'array of ElementType'
+                           // dynamic-array shapes a program can declare
+                           // (parser.c-local dynarray_types[], deduped by
+                           // element type - see TYPE_DYNARRAY_BASE below) -
+                           // mirrors MAX_POINTER_TYPES exactly.
 #define MAX_RECORD_FIELDS 16 // moved here from parser.c (where
                            // RecordTypeDef/RecordField still live) because
                            // vm.c's heap allocator (see vm_heap_freelist[]
@@ -139,6 +144,11 @@ typedef enum {
     TOKEN_INSERT, // 'Insert(Source: string; var S: string; Index: integer);'
                   // - see OP_STR_INSERT. Same write-back shape as
                   // TOKEN_DELETE.
+    TOKEN_SETLENGTH, // 'SetLength(arr, n)' - a dynamic array only (see
+                  // TYPE_DYNARRAY_BASE). See OP_SETLENGTH. Same write-back
+                  // shape as TOKEN_DELETE/TOKEN_INSERT: read arr's current
+                  // pointer value, compute the resized result via a
+                  // NODE_BUILTIN_CALL, assign back.
     TOKEN_MID, TOKEN_LEFT, TOKEN_RIGHT, TOKEN_INPOS,
     TOKEN_REAL,       // a real literal, e.g. 3.14 - distinct from
                       // TOKEN_NUMBER (integer literals)
@@ -451,6 +461,32 @@ typedef enum {
                 // it must sit strictly past TYPE_PROC_BASE's own range,
                 // mirroring TYPE_PROC_BASE's own explicit assignment just
                 // above for the identical reason.
+    TYPE_DYNARRAY_BASE = TYPE_TYPED_FILE + 1, // 'array of ElementType' - a
+                // resizable array, distinct from this compiler's existing
+                // fixed-size 'array[lo..hi] of T' (which isn't a DataType
+                // of its own at all - see Symbol.is_array below; a static
+                // array's ELEMENT type is what occupies Symbol.type). A
+                // specific dynamic-array shape ('array of integer', 'array
+                // of char', ...) is encoded as TYPE_DYNARRAY_BASE + its
+                // dynarray_types[] index (parser.c-local - see
+                // DynArrayTypeDef there), mirroring TYPE_POINTER_BASE's own
+                // encoding exactly. A dynamic array's runtime
+                // representation is a plain int, identical in spirit to a
+                // pointer: an offset into vm.c's vm_heap_mem[] (the SAME
+                // heap 'new'/'dispose' already use - see vm_heap_alloc()/
+                // vm_heap_free() in vm.c), pointing at a self-describing
+                // block whose own first slot holds the array's CURRENT
+                // length and whose remaining 'length' slots hold the
+                // elements - 'SetLength' is what (re)allocates this block.
+                // '0' means "not yet allocated" (both an ordinary
+                // uninitialized variable's own zero-init default AND what
+                // 'SetLength(arr, 0)' itself produces) - unlike a
+                // pointer's own separate '-1 means nil' convention,
+                // vm_heap_alloc() in vm.c permanently reserves heap offset
+                // 0 so it's never handed out to a real allocation, letting
+                // this ordinary zero-init default double as the sentinel
+                // with no explicit default-value codegen needed anywhere -
+                // see vm_heap_count's own comment in vm.c.
 } DataType;
 
 // One declared enumerated type ('type TColor = (Red, Green, Blue);') -
@@ -1426,12 +1462,88 @@ typedef enum {
                   // end-of-file byte position, divided by
                   // record_byte_size) - doesn't disturb the file's
                   // current read/write position.
-    OP_TYPED_FILE_EOF // 'eof(f)' on a typed file - a GENUINELY separate
+    OP_TYPED_FILE_EOF, // 'eof(f)' on a typed file - a GENUINELY separate
                   // opcode from OP_EOF_FILE (text mode's byte-level
                   // fgetc+ungetc peek isn't meaningful for binary
                   // records). arg = file sym idx. Pushes whether the
                   // current position has reached the end of file (a
                   // position/size comparison, not a peek-and-rewind).
+    OP_SETLENGTH, // 'SetLength(arr, n)'. No arg. Pops n, then the array's
+                  // current pointer value (0 if never allocated - see
+                  // vm_heap_count's own comment in vm.c). If n == 0: pushes
+                  // 0, with no allocation. Otherwise: allocates a fresh
+                  // (n+1)-sized block via vm_heap_alloc() (slot 0 = n, the
+                  // new length), copies min(old_length, n) elements over
+                  // from the old block (0 if the old pointer was 0), zero-
+                  // fills any remaining new elements, and pushes the new
+                  // pointer. Deliberately NEVER frees the old block, unlike
+                  // NEW's own DISPOSE counterpart - a dynamic array has no
+                  // refcount, and the old block may still be legitimately
+                  // reachable through another alias of the same pointer
+                  // value (a value parameter is a plain copy of it, and so
+                  // is a plain whole-array assignment - see
+                  // TYPE_DYNARRAY_BASE); freeing it here would silently
+                  // corrupt whatever that other alias still points at.
+                  // Repeated SetLength calls on the same variable leak the
+                  // intermediate blocks - an accepted, documented cost,
+                  // the same one forgetting 'dispose' after 'new' already
+                  // has. Codegen surrounds this with an ordinary LOAD/
+                  // STORE (or LOAD_LOCAL/STORE_LOCAL, or the var-param/
+                  // enclosing-local equivalents) around the array
+                  // variable/parameter itself, exactly like
+                  // STR_CHAR_REPLACE already does for strings - this opcode
+                  // doesn't know or care where its operand lives.
+    OP_LOAD_DYNARR_LEN, // 'Length(arr)'/'High(arr)' on a dynamic array (a
+                  // GENUINELY separate opcode from OP_LENGTH, which is
+                  // string-only, and from plain length(arr)/high(arr) on a
+                  // STATIC array, which stay compile-time constants - see
+                  // NODE_DYNARRAY_ACCESS's own comment). No arg. Pops the
+                  // array's pointer value; pushes 0 if it's <= 0 (0 is
+                  // both 'SetLength(arr, 0)''s own result and a merely
+                  // never-initialized array's ordinary zero-init default -
+                  // see TYPE_DYNARRAY_BASE in this file - and a negative
+                  // value can't be a real pointer either), otherwise
+                  // bounds-checks it against vm_heap_count (same "Invalid
+                  // pointer value" check OP_DISPOSE already does) and
+                  // pushes vm_heap_mem[value] (the block's own self-stored
+                  // length - see TYPE_DYNARRAY_BASE's layout comment).
+                  // 'High(arr)' is this opcode followed by 'PUSH 1' /
+                  // 'SUB'; 'Low(arr)' on a dynamic array needs no opcode at
+                  // all - dynamic arrays are always 0-based, so it's always
+                  // just a compile-time constant 0.
+    OP_LOAD_DYNARR_IDX, // 'arr[i]' read. No arg (unlike OP_LOAD_IDX's
+                  // compile-time-constant symbol-index arg, a dynamic
+                  // array's identity is only known at runtime - see
+                  // TYPE_DYNARRAY_BASE). Pops a runtime index, then the
+                  // array's pointer value (pushed first/deepest by
+                  // codegen, same order OP_LOAD_IDX_DYN already uses for
+                  // its own runtime "which array" operand). A pointer <= 0
+                  // is a Runtime Error ("dynamic array not allocated -
+                  // call SetLength first"), distinct wording from "Nil
+                  // pointer dereference" since the fix is different; the
+                  // pointer is then bounds-checked against vm_heap_count;
+                  // the index is bounds-checked against
+                  // [0, vm_heap_mem[pointer] - 1] (that block's own
+                  // self-stored length); pushes
+                  // vm_heap_mem[pointer + 1 + index].
+    OP_STORE_DYNARR_IDX, // 'arr[i] := value' write - same addressing as
+                  // OP_LOAD_DYNARR_IDX. No arg. Pops a value, then a
+                  // runtime index, then the array's pointer value (value
+                  // pushed last/on top by codegen, same order
+                  // OP_STORE_IDX_DYN already uses); same nil/bounds checks
+                  // as OP_LOAD_DYNARR_IDX; stores into
+                  // vm_heap_mem[pointer + 1 + index].
+    OP_STORE_DYNARR_IDX_CHAR // Same as OP_STORE_DYNARR_IDX, but additionally
+                  // validates the value is a single character first -
+                  // chosen by codegen instead of the plain variant whenever
+                  // the array's declared element type is 'char'. Needed for
+                  // the same reason OP_STORE_HEAP_FIELD_CHAR/
+                  // OP_STORE_ARRAY_RECORD_FIELD_CHAR are separate opcodes
+                  // rather than a runtime sym_table[] lookup: the pointer
+                  // popped off the stack here isn't a sym_table[] index at
+                  // all, so there's no per-call "declared type" to consult
+                  // at runtime the way plain OP_STORE_IDX does for a
+                  // STATIC array (whose arg IS a sym_table[] index).
 } Opcode;
 
 typedef struct {
@@ -2146,7 +2258,7 @@ typedef enum {
                        // disk_width/TypedFileVarDef.disk_width), else 0 -
                        // picks which of OP_READ_TYPED_FILE_INT/_BYTE/
                        // _SHORTINT/_WORD codegen.c emits.
-    NODE_TYPED_FILE_WRITE_LEAF // Writes exactly ONE value to a typed
+    NODE_TYPED_FILE_WRITE_LEAF, // Writes exactly ONE value to a typed
                        // file's current position - the leaf-level
                        // building block a typed-file write(f, rec) is
                        // compiled into N of. left = the source value
@@ -2162,6 +2274,39 @@ typedef enum {
                        // as NODE_TYPED_FILE_READ_LEAF above, same
                        // OP_WRITE_TYPED_FILE_INT/_BYTE/_SHORTINT/_WORD
                        // dispatch in codegen.c.
+    NODE_DYNARRAY_ACCESS, // 'arr[i]' as an expression, arr a dynamic
+                       // array - the OP_LOAD_DYNARR_IDX-emitting twin of
+                       // NODE_ARRAY_ACCESS (which is for a STATIC array,
+                       // whose compile-time-known bounds live directly in
+                       // its own Symbol - see data.var_idx there). A
+                       // dynamic array's bounds are only known at
+                       // runtime, from the heap block itself (see
+                       // TYPE_DYNARRAY_BASE), so unlike NODE_ARRAY_ACCESS
+                       // this node doesn't carry a symbol index at all:
+                       // left = an ordinary already-built expression
+                       // reading the array's OWN pointer value (a plain
+                       // NODE_VARIABLE/NODE_LOCAL_VAR/NODE_VAR_PARAM_READ/
+                       // etc. - whatever already reads a plain scalar -
+                       // exactly the same "just evaluate an expression for
+                       // the base" principle NODE_HEAP_FIELD_ACCESS's own
+                       // left already uses for a pointer). right = the
+                       // index expression. expression_type = the array's
+                       // declared ELEMENT type (decoded from left's own
+                       // TYPE_DYNARRAY_BASE+idx type at parse time).
+    NODE_DYNARRAY_ASSIGN // 'arr[i] := val', arr a dynamic array - the
+                       // write counterpart, mirroring NODE_HEAP_FIELD_
+                       // ASSIGN's left/right/extra split (that node's
+                       // right/extra are value/offset; here right is the
+                       // INDEX since there's no fixed offset, so the value
+                       // lives in extra instead). left = the array
+                       // pointer expression (as above). right = the index
+                       // expression. extra = the value expression.
+                       // expression_type = the element type - used by
+                       // type_checker.c AND by codegen.c, to choose
+                       // OP_STORE_DYNARR_IDX_CHAR over the plain variant
+                       // when the element type is 'char' (same reasoning
+                       // as NODE_HEAP_FIELD_ASSIGN's own expression_type
+                       // use).
 } NodeType;
 
 typedef struct ASTNode {

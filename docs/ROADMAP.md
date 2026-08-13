@@ -51,8 +51,17 @@ though a few are already implemented — Phase 1 stays scoped to standard
 Pascal only, and picks up general OOP/VM growth once Phase 2 starts
 anyway, so this is where they land instead.
 
-- [ ] Dynamic arrays (array `copy`/slicing) — standard Pascal arrays are
-      always fixed-size
+- [ ] Dynamic array follow-ups — 1D dynamic arrays with primitive
+      element types (`array of integer`, `SetLength`/`Length`/`High`/
+      `Low`, reference semantics) have shipped (see
+      [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays)). Still open:
+      multi-dimensional dynamic arrays; record/named-type/nested-array
+      element types; the `nil` literal for dynamic arrays; `Copy`/
+      slicing; array-literal syntax (`arr := [1, 2, 3];`); `for x in arr
+      do`; a dynamic-array-typed record/class field or function return
+      type; and a named type-alias form (`type TIntArray = array of
+      integer;`) — none of this compiler's arrays, static or dynamic,
+      support a named alias yet.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
@@ -161,15 +170,6 @@ a design/plan yet.
 
 **Moderate — real architectural decisions:**
 
-- [ ] Dynamic arrays — already flagged as missing (no array
-      `copy`/slicing — see the root README's feature-status line). Runs
-      into the same wall generics does (see the OOP survey's own
-      Generics entry above): every array today has a compile-time-fixed
-      size baked into the single fixed `vm_array_mem[]` region, and this
-      VM has zero dynamic allocation anywhere. Doing this properly means
-      either a real allocator for arrays or at least a heap-style
-      freelist like classes already use for fixed-size blocks - a
-      genuine design decision, not a quick add.
 - [ ] `double`/extended-precision `real` — `real` is deliberately kept
       to 32 bits specifically because it has to fit the same 4-byte-
       `int`-sized slot every other scalar uses in `vm_vars[]`/
@@ -204,9 +204,9 @@ a design/plan yet.
 own equivalent entries:** a `Variant` dynamically-typed type (cuts
 against this compiler's whole "resolve every type at compile time"
 design — same conclusion as the OOP survey's own `Variant` entry above,
-since it's the same type either way); generics/parameterized types (tied
-to the identical fixed-size-region tension as dynamic arrays above, but
-bigger — see the OOP survey's own Generics entry).
+since it's the same type either way); generics/parameterized types (see
+the OOP survey's own Generics entry — no templates/monomorphization
+machinery exists anywhere in this pipeline).
 
 ## Phase 3 — Additional front ends
 

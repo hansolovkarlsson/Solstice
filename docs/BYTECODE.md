@@ -20,25 +20,45 @@ regions:
 | `string_pool[]` | Interned string contents (`char[256]` each) — populated at compile/assemble time, and can also grow at runtime (concatenation, `readln` into a string) | `MAX_STRINGS` = 256 |
 | `vm_call_stack[]` | One record per active call: `{return_addr, saved_fp, saved_frame_sp}` — see [Procedures](#procedures-call-ret-and-stack-frames) | `MAX_CALL_DEPTH` = 256 |
 | `vm_frame_stack[]` | Local variable slots for every active call, stacked | `MAX_FRAME_STACK` = 4096 |
-| `vm_heap_mem[]` | Pointer targets — `NEW` allocates from here, `DISPOSE` returns a block to a size-bucketed freelist (see below) | `MAX_HEAP_MEM` = 4096 ints total |
+| `vm_heap_mem[]` | Pointer targets, AND (since dynamic arrays) resizable array storage — `NEW`/`SETLENGTH` allocate from here, `DISPOSE` returns a block to a size-bucketed freelist (see below) | `MAX_HEAP_MEM` = 4096 ints total |
 
 **The heap is the one region with genuine runtime-managed allocation,
 and the one exception to "no garbage collector."** Every other region's
 contents are either fixed at compile time or grow/shrink by simple,
 fully-determined rules (a call's frame appears at `CALL` and vanishes at
 `RET`, in its entirety, as one step). The heap instead behaves like C's
-`malloc`/`free`: `NEW` either pops a same-size block off
-`vm_heap_freelist[]` or bump-allocates fresh space via `vm_heap_count`;
-`DISPOSE` is the *only* thing that ever returns a block to the
-freelist. Nothing scans for pointers going out of scope, being
-overwritten, or being set to `nil` — losing every reference to a live
-block without calling `DISPOSE` on it first leaks that block for the
-rest of the run (not corrupted, just permanently unreachable and
-unreusable). A program that does this repeatedly, e.g. in a loop, will
-eventually exhaust `MAX_HEAP_MEM` and abort with a `VM Runtime Error`,
-the same clean-failure guarantee every other bounds check in this VM
-gives — see [Pointers](LANGUAGE.md#pointers) in docs/LANGUAGE.md for the
-Pascal-level version of this same note.
+`malloc`/`free`: `NEW`/`SETLENGTH` either pop a same-size block off
+`vm_heap_freelist[]` or bump-allocate fresh space via `vm_heap_count`
+(factored into two shared helpers, `vm_heap_alloc()`/`vm_heap_free()`,
+in `vm.c`); `DISPOSE` is the *only* thing that ever returns a block to
+the freelist — **`SETLENGTH` deliberately never does**, even though it
+reallocates on every call, since the array being resized might still be
+aliased elsewhere (see [Dynamic arrays](LANGUAGE.md#dynamic-arrays)'s
+own "Under the hood" section). `vm_heap_freelist[]` is sized
+`MAX_HEAP_MEM + 1` (not just enough for a record/class instance's field
+count, as it was before dynamic arrays existed) since a dynamic array's
+block size can be far larger than any fixed record. Nothing scans for
+pointers going out of scope, being overwritten, or being set to `nil` —
+losing every reference to a live block without calling `DISPOSE` on it
+first (or, for a dynamic array, without another live alias — see above)
+leaks that block for the rest of the run (not corrupted, just
+permanently unreachable and unreusable). A program that does this
+repeatedly, e.g. in a loop, will eventually exhaust `MAX_HEAP_MEM` and
+abort with a `VM Runtime Error`, the same clean-failure guarantee every
+other bounds check in this VM gives — see
+[Pointers](LANGUAGE.md#pointers) in docs/LANGUAGE.md for the Pascal-level
+version of this same note.
+
+**Heap offset `0` is permanently reserved, never handed out by
+`vm_heap_alloc()`.** This is specifically what lets a dynamic array
+variable's ordinary zero-init default (shared with every other
+`vm_vars[]`/`vm_frame_stack[]` slot) double as "not yet allocated" with
+no separate sentinel value or explicit default-value codegen needed —
+see [Dynamic arrays](LANGUAGE.md#dynamic-arrays). Pointers keep their
+own, unrelated `-1 means nil` convention (see `TYPE_POINTER_BASE` in
+`common.h`) — the two are separate mechanisms that happen to solve the
+same kind of problem differently, since a pointer's nil check already
+existed before dynamic arrays did.
 
 **Strings and booleans are represented as integers.** A string *value*
 anywhere in the VM — on the stack, in a variable slot, in an array
@@ -109,6 +129,11 @@ corruption.
 | `STORE_ARRAY_RECORD_FIELD_CHAR` | Same as `STORE_ARRAY_RECORD_FIELD`, but additionally validates the value is a single character first - chosen by codegen instead of the plain variant whenever the specific field being written is `char`-typed, since one array-of-records symbol covers many differently-typed fields (unlike `STORE_IDX`, which reads the array's own single declared element type at runtime). |
 | `NEW` | `arg` = element size (1 for a scalar pointer target, or a record target's field count). First tries `vm_heap_freelist[arg]` (a size-bucketed freelist); if non-empty, pops and reuses that block. Otherwise bump-allocates `arg` fresh ints from `vm_heap_mem` (a Runtime Error, not UB, if that would exceed `MAX_HEAP_MEM`). Pushes the resulting block's offset either way - `-1` (`nil`) is never a value `NEW` itself produces, only ever a literal. |
 | `DISPOSE` | `arg` = element size (same meaning as `NEW`'s). Pops a pointer value (a Runtime Error if it's nil or not a currently-valid heap offset); links it onto the front of `vm_heap_freelist[arg]` for a later same-size `NEW` to reuse - the block's own first int slot stores the previous freelist head, needing no separate bookkeeping array. Does not push anything, and does not touch whatever variable held this pointer value (standard Pascal leaves a disposed pointer's value undefined, not implicitly nil). |
+| `SETLENGTH` | `SetLength(arr, n)` on a dynamic array (see [Dynamic arrays](LANGUAGE.md#dynamic-arrays)). No arg. Pops n, then the array's current pointer value (`0` if never allocated - heap offset `0` is permanently reserved for exactly this, see above). If `n == 0`: pushes `0`, with no allocation. Otherwise: allocates a fresh `(n+1)`-sized block via `vm_heap_alloc()` (slot `0` = `n`, the new length), copies `min(old_length, n)` elements over from the old block, zero-fills any remaining new elements, and pushes the new pointer. Deliberately **never** frees the old block, unlike `DISPOSE` - the array being resized might still be aliased through another variable (a value parameter, or a plain whole-array assignment, both just copy the pointer) - so repeated `SETLENGTH` calls on the same variable leak the intermediate blocks, the same accepted cost as forgetting `DISPOSE` after `NEW`. |
+| `LOAD_DYNARR_LEN` | `Length(arr)`/`High(arr)` on a dynamic array - a genuinely separate opcode from the string-only `LENGTH`, and from a fixed-size array's `length`/`high`, which stay compile-time constants. No arg. Pops the array's pointer value; pushes `0` if it's `<= 0` (both `SETLENGTH`'s own "empty" result and a never-initialized array's ordinary zero-init default), otherwise bounds-checks it against `vm_heap_count` (same check `DISPOSE` uses) and pushes `vm_heap_mem[value]` (the block's own self-stored length). `High(arr)` compiles to this opcode followed by `PUSH 1` / `SUB`; `Low(arr)` on a dynamic array needs no opcode at all - always a compile-time constant `0`, since dynamic arrays are always 0-based. |
+| `LOAD_DYNARR_IDX` | `arr[i]` read on a dynamic array. No arg (unlike `LOAD_IDX`'s compile-time symbol-index arg - a dynamic array's identity is only known at runtime). Pops a runtime index, then the array's pointer value (pushed first/deepest by codegen, same order `LOAD_IDX_DYN` uses for its own runtime "which array" operand). A pointer `<= 0` is a Runtime Error ("Dynamic array not allocated - call SetLength first"), distinct wording from "Nil pointer dereference" since the fix is different; the pointer is then bounds-checked against `vm_heap_count`; the index is bounds-checked against `[0, vm_heap_mem[pointer] - 1]` (the block's own self-stored length); pushes `vm_heap_mem[pointer + 1 + index]`. |
+| `STORE_DYNARR_IDX` | `arr[i] := value` write - same addressing as `LOAD_DYNARR_IDX`. No arg. Pops a value, then a runtime index, then the array's pointer value (value pushed last/on top by codegen, same order `STORE_IDX_DYN` uses); same checks as `LOAD_DYNARR_IDX`; stores into `vm_heap_mem[pointer + 1 + index]`. |
+| `STORE_DYNARR_IDX_CHAR` | Same as `STORE_DYNARR_IDX`, but additionally validates the value is a single character first - chosen by codegen instead of the plain variant whenever the array's declared element type is `char`, same reasoning as `STORE_HEAP_FIELD_CHAR`: the pointer popped here isn't a `sym_table[]` index, so there's no per-call declared type to consult at runtime the way plain `STORE_IDX` can for a static array. |
 | `LOAD_HEAP_FIELD` | `arg` = field offset (`0` for a scalar pointer target's whole `^`). Pops a pointer value (a Runtime Error - "Nil pointer dereference" - if it's nil); pushes `vm_heap_mem[value + arg]`. Unlike `LOAD_ARRAY_RECORD_FIELD`, there's no "which array" to bake into `arg` - every pointer, regardless of declared type, shares the one heap, so the runtime base always comes off the stack, freeing `arg` to carry the field offset directly. |
 | `STORE_HEAP_FIELD` | Same addressing as `LOAD_HEAP_FIELD`. Pops a value, then a pointer value (nil-checked the same way); stores into `vm_heap_mem[pointer value + arg]`. |
 | `STORE_HEAP_FIELD_CHAR` | Same as `STORE_HEAP_FIELD`, but additionally validates the value is a single character first - chosen by codegen instead of the plain variant whenever the specific field being written is `char`-typed, same reasoning as `STORE_ARRAY_RECORD_FIELD_CHAR`. |

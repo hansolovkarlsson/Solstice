@@ -87,20 +87,25 @@ static int vm_frame_stack[MAX_FRAME_STACK]; // local variable slots for
 // procedure always have two different fp values.
 static int vm_static_link[MAX_FRAME_STACK];
 
-// The heap ('new'/'dispose'/'p^') - this VM's only source of genuinely
-// dynamic allocation (see MAX_HEAP_MEM's comment in common.h). Unlike
+// The heap ('new'/'dispose'/'p^', and now 'SetLength' on a dynamic array
+// too - see OP_SETLENGTH) - this VM's only source of genuinely dynamic
+// allocation (see MAX_HEAP_MEM's comment in common.h). Unlike
 // vm_array_mem (whose layout is 100% fixed at compile time), how much of
 // vm_heap_mem is actually in use is a RUNTIME quantity: vm_heap_count is
-// a bump-allocation cursor mutated by OP_NEW, and vm_heap_freelist[]
-// tracks blocks OP_DISPOSE has freed, bucketed by element size (1..
-// MAX_RECORD_FIELDS - the only sizes OP_NEW/OP_DISPOSE ever request),
-// so a later OP_NEW of the SAME size reuses one instead of growing
-// vm_heap_count further. Each freelist is a classic intrusive linked
-// list: a free block's own first int slot stores the NEXT free block's
-// offset (or -1), needing no separate bookkeeping array.
+// a bump-allocation cursor mutated by vm_heap_alloc(), and
+// vm_heap_freelist[] tracks blocks vm_heap_free() has freed, bucketed by
+// element size, so a later allocation of the SAME size reuses one instead
+// of growing vm_heap_count further. Each freelist is a classic intrusive
+// linked list: a free block's own first int slot stores the NEXT free
+// block's offset (or -1), needing no separate bookkeeping array. Sized
+// MAX_HEAP_MEM + 1 (not MAX_RECORD_FIELDS + 1, as it was before dynamic
+// arrays existed) because a dynamic array's block size - unlike a
+// pointer's or class instance's, always <= MAX_RECORD_FIELDS - can be as
+// large as the whole heap; the extra buckets a record/pointer allocation
+// never uses just stay permanently empty (-1), trivial memory cost.
 static int vm_heap_mem[MAX_HEAP_MEM];
 static int vm_heap_count;
-static int vm_heap_freelist[MAX_RECORD_FIELDS + 1]; // index 0 unused (no
+static int vm_heap_freelist[MAX_HEAP_MEM + 1]; // index 0 unused (no
                                              // allocation is ever 0 ints)
 
 // Virtual/dynamic method dispatch (OP_LOAD_VTABLE_SLOT/OP_STORE_VTABLE_SLOT
@@ -362,6 +367,37 @@ static int vm_record_array_offset(int var_idx, int runtime_index, int field_offs
         fatal_abort();
     }
     return sym->array_base + (runtime_index - sym->array_lower) * sym->record_elem_field_count + field_offset;
+}
+
+// Allocates a `size`-int block from the heap: reuses a same-size block off
+// vm_heap_freelist[] if one's available, otherwise bump-allocates fresh
+// space from vm_heap_count. Factored out of OP_NEW so OP_SETLENGTH can
+// share the identical logic with a RUNTIME size (a dynamic array's new
+// length isn't a compile-time instr.arg the way a pointer/class
+// allocation's size always is).
+static int vm_heap_alloc(int size) {
+    if (vm_heap_freelist[size] != -1) {
+        int offset = vm_heap_freelist[size];
+        vm_heap_freelist[size] = vm_heap_mem[offset]; // the freed block's own first slot stored the next-free link
+        return offset;
+    }
+    if (vm_heap_count + size > MAX_HEAP_MEM) {
+        fprintf(stderr, "VM Runtime Error: Heap storage exhausted (limit is %d total elements)\n", MAX_HEAP_MEM);
+        fatal_abort();
+    }
+    int offset = vm_heap_count;
+    vm_heap_count += size;
+    return offset;
+}
+
+// Returns a `size`-int block (previously handed out by vm_heap_alloc())
+// to the freelist for a later same-size allocation to reuse. Factored out
+// of OP_DISPOSE for the same reason as vm_heap_alloc() above - OP_SETLENGTH
+// needs to free its old block with a runtime, not compile-time-constant,
+// size.
+static void vm_heap_free(int offset, int size) {
+    vm_heap_mem[offset] = vm_heap_freelist[size]; // link this block onto the front of the freelist
+    vm_heap_freelist[size] = offset;
 }
 
 // Resolves a frame-relative local slot (k) to an absolute vm_frame_stack[]
@@ -802,8 +838,15 @@ int run_vm(void) {
     memset(vm_frame_stack, 0, sizeof(vm_frame_stack));
     memset(vm_open_files, 0, sizeof(vm_open_files)); // handle=NULL, filename="", assigned=0 for every slot
     memset(vm_heap_mem, 0, sizeof(vm_heap_mem));
-    vm_heap_count = 0;
-    for (int i = 0; i < MAX_RECORD_FIELDS + 1; i++) vm_heap_freelist[i] = -1;
+    // Offset 0 is permanently reserved, never handed out by
+    // vm_heap_alloc() - this is what lets a dynamic array variable's
+    // ordinary zero-init default (every other vm_vars[]/vm_frame_stack[]
+    // slot's own default) double as "not yet allocated" with no separate
+    // sentinel or explicit default-value codegen needed (see
+    // TYPE_DYNARRAY_BASE in common.h). Costs exactly one permanently-
+    // unused int of heap.
+    vm_heap_count = 1;
+    for (int i = 0; i < MAX_HEAP_MEM + 1; i++) vm_heap_freelist[i] = -1;
     for (int i = 0; i < MAX_POINTER_TYPES * MAX_CLASS_METHODS; i++) vm_vtables[i] = -1;
     for (int i = 0; i < MAX_POINTER_TYPES; i++) vm_class_parent[i] = -1;
     for (int i = 0; i < MAX_FRAME_STACK; i++) vm_static_link[i] = -1; // -1, not 0 -
@@ -1010,19 +1053,7 @@ int run_vm(void) {
             }
 
             case OP_NEW: {
-                int elem_size = instr.arg;
-                int offset;
-                if (vm_heap_freelist[elem_size] != -1) {
-                    offset = vm_heap_freelist[elem_size];
-                    vm_heap_freelist[elem_size] = vm_heap_mem[offset]; // the freed block's own first slot stored the next-free link
-                } else {
-                    if (vm_heap_count + elem_size > MAX_HEAP_MEM) {
-                        fprintf(stderr, "VM Runtime Error: Heap storage exhausted (limit is %d total elements)\n", MAX_HEAP_MEM);
-                        fatal_abort();
-                    }
-                    offset = vm_heap_count;
-                    vm_heap_count += elem_size;
-                }
+                int offset = vm_heap_alloc(instr.arg);
                 vm_push(&sp, offset);
                 break;
             }
@@ -1038,8 +1069,113 @@ int run_vm(void) {
                     fprintf(stderr, "VM Runtime Error: Invalid pointer value %d in dispose\n", ptr_val);
                     fatal_abort();
                 }
-                vm_heap_mem[ptr_val] = vm_heap_freelist[elem_size]; // link this block onto the front of the freelist
-                vm_heap_freelist[elem_size] = ptr_val;
+                vm_heap_free(ptr_val, elem_size);
+                break;
+            }
+
+            case OP_SETLENGTH: {
+                // Deliberately NEVER frees the old block (unlike NEW's own
+                // DISPOSE counterpart) - a dynamic array has no refcount,
+                // and the old block may still be legitimately reachable
+                // through another alias of the SAME pointer value (a value
+                // parameter is a plain copy of it - see TYPE_DYNARRAY_BASE
+                // - and so is a plain 'arr2 := arr1' whole-array
+                // assignment). Freeing it here would silently corrupt
+                // whatever that other alias still points at the moment
+                // THIS SetLength call reallocates - caught directly by
+                // testing test_dynarray_valueparam.pas, which is exactly
+                // why this comment exists. The tradeoff: repeated
+                // SetLength calls on the same variable (e.g. growing it
+                // one element at a time in a loop) leak the intermediate
+                // blocks, same as forgetting 'dispose' after 'new' already
+                // does - an accepted, documented cost, not a new one.
+                int n = vm_pop(&sp);
+                int old_ptr = vm_pop(&sp);
+                if (n < 0) {
+                    fprintf(stderr, "VM Runtime Error: SetLength requires a non-negative length, got %d\n", n);
+                    fatal_abort();
+                }
+                int old_len = 0;
+                if (old_ptr > 0) {
+                    if (old_ptr >= vm_heap_count) {
+                        fprintf(stderr, "VM Runtime Error: Invalid dynamic array pointer value %d in SetLength\n", old_ptr);
+                        fatal_abort();
+                    }
+                    old_len = vm_heap_mem[old_ptr];
+                }
+                if (n == 0) {
+                    vm_push(&sp, 0); // the SAME "not allocated" value every dynamic array starts at (see vm_heap_count's own comment above)
+                    break;
+                }
+                int new_ptr = vm_heap_alloc(n + 1);
+                vm_heap_mem[new_ptr] = n;
+                int copy_count = old_len < n ? old_len : n;
+                for (int i = 0; i < copy_count; i++) {
+                    vm_heap_mem[new_ptr + 1 + i] = vm_heap_mem[old_ptr + 1 + i];
+                }
+                for (int i = copy_count; i < n; i++) {
+                    vm_heap_mem[new_ptr + 1 + i] = 0;
+                }
+                vm_push(&sp, new_ptr);
+                break;
+            }
+
+            case OP_LOAD_DYNARR_LEN: {
+                int base = vm_pop(&sp);
+                if (base <= 0) {
+                    vm_push(&sp, 0);
+                    break;
+                }
+                if (base >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid dynamic array pointer value %d\n", base);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_heap_mem[base]);
+                break;
+            }
+
+            case OP_LOAD_DYNARR_IDX: {
+                int runtime_index = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base <= 0) {
+                    fprintf(stderr, "VM Runtime Error: Dynamic array not allocated - call SetLength first\n");
+                    fatal_abort();
+                }
+                if (base >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid dynamic array pointer value %d\n", base);
+                    fatal_abort();
+                }
+                int len = vm_heap_mem[base];
+                if (runtime_index < 0 || runtime_index >= len) {
+                    fprintf(stderr, "VM Runtime Error: Array index %d out of range (0..%d)\n", runtime_index, len - 1);
+                    fatal_abort();
+                }
+                vm_push(&sp, vm_heap_mem[base + 1 + runtime_index]);
+                break;
+            }
+
+            case OP_STORE_DYNARR_IDX:
+            case OP_STORE_DYNARR_IDX_CHAR: {
+                int val = vm_pop(&sp);
+                int runtime_index = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                if (base <= 0) {
+                    fprintf(stderr, "VM Runtime Error: Dynamic array not allocated - call SetLength first\n");
+                    fatal_abort();
+                }
+                if (base >= vm_heap_count) {
+                    fprintf(stderr, "VM Runtime Error: Invalid dynamic array pointer value %d\n", base);
+                    fatal_abort();
+                }
+                int len = vm_heap_mem[base];
+                if (runtime_index < 0 || runtime_index >= len) {
+                    fprintf(stderr, "VM Runtime Error: Array index %d out of range (0..%d)\n", runtime_index, len - 1);
+                    fatal_abort();
+                }
+                if (instr.op == OP_STORE_DYNARR_IDX_CHAR) {
+                    vm_check_char(val, "Dynamic array element");
+                }
+                vm_heap_mem[base + 1 + runtime_index] = val;
                 break;
             }
 
