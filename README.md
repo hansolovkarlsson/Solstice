@@ -538,8 +538,15 @@ integer;`), interchangeable with a directly-declared `array of integer`
 of the same element type (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#type-aliases)) — a **fixed-size**
 array still can't be named this way, now with a clear compile-time
-rejection rather than a confusing parser error. Not yet implemented:
-`copy`/slicing, array literals, or a named alias for a fixed-size array,
-an array literal as a general expression (e.g. a procedure argument) for
-either array kind, variant records, and a whole record or an array
+rejection rather than a confusing parser error; and a dynamic-array-typed
+**function return type** (`function MakeArr: array of integer;`),
+including reading/indexing the function's own name mid-body (needed by
+`SetLength`/`Length`/`Copy`, which all read-before-write) - a deliberate,
+narrow exception to this compiler's usual rule that a function's own
+name is assign-only, scoped to a dynamic-array return type specifically
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#functions)). Not yet
+implemented: `copy`/slicing, array literals, or a named alias for a
+fixed-size array, an array literal as a general expression (e.g. a
+procedure argument) for either array kind, a dynamic-array-typed
+record/class field, variant records, and a whole record or an array
 element as a `var` argument.

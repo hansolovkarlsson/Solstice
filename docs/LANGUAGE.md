@@ -2089,8 +2089,11 @@ variable first.
 - **Array-literal syntax for a fixed-size array**, and as a general
   expression (e.g. a procedure argument) for either array kind — see
   "Array literals" above for what IS supported.
-- **A dynamic-array-typed `record`/class field, or function return
-  type** — only a plain `var`/parameter is supported so far.
+- **A dynamic-array-typed `record`/class field** — only a plain
+  `var`/parameter/function return type is supported so far. (A function
+  return type IS supported — see [Functions](#functions)'s own
+  "Reading the function's own name as an expression" for the read/index
+  support that took, specific to this one case.)
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
   comparison against `nil` is supported; standard Pascal doesn't define
   whole-array comparison either.
@@ -5029,9 +5032,39 @@ end.
   `char`-as-a-number, or an out-of-range value for `string`/`char` that
   will cleanly error if actually used — not silently wrong data).
 - Reading the function's own name as an expression (to check the return
-  value computed so far) isn't supported — only assigning to it is.
-  Inside its own body, using the bare name as an expression is treated as
-  a call (usually a recursive one), not a read of the stored result.
+  value computed so far) isn't supported for a **scalar** return type —
+  only assigning to it is. Inside its own body, using the bare name as
+  an expression is treated as a call (usually a recursive one), not a
+  read of the stored result.
+- **A dynamic-array return type is the one exception** — reading (and
+  indexing) the function's own name mid-body works, because it has to:
+  `SetLength`/indexing/`Length`/`Copy` all need to read the array before
+  (re)writing it, unlike a scalar, which never needs a read-back for the
+  ordinary "compute and assign" pattern above. An explicit recursive
+  call (`Build(n - 1)`, with parentheses) still means a call, exactly as
+  for a scalar return type — only the bare, unparenthesized name reads
+  the return value:
+  ```pascal
+  function Build(n: integer): array of integer;
+  var sub: array of integer;
+      i: integer;
+  begin
+      if n <= 0 then
+          SetLength(Build, 0)
+      else begin
+          sub := Build(n - 1);               { explicit call - parens }
+          SetLength(Build, Length(sub) + 1);   { read, via SetLength }
+          for i := 0 to High(sub) do
+              Build[i] := sub[i];               { read+write, indexed }
+          Build[High(Build)] := n;
+      end;
+  end;
+  ```
+  See [Dynamic arrays](#dynamic-arrays) for everything else about the
+  type itself. A dynamic-array-typed **record/class field** is a
+  separate, still-unsupported case (see that section's own "What's not
+  supported yet") — this exception is specific to a function's own
+  return value.
 - **A function can be called as a statement**, discarding its return
   value, exactly like a procedure call:
   ```pascal
@@ -5039,7 +5072,8 @@ end.
   x := bump;         { call bump, use what it returns }
   ```
 - The return type is scalar only (`integer`, `boolean`, `string`,
-  `char`) — same restriction as parameters and local variables.
+  `char`) — same restriction as parameters and local variables — plus,
+  as of the exception just above, a **dynamic array**.
 - A function's return type is checked at every call site used as an
   expression, the same way argument types are checked.
 

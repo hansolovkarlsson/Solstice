@@ -3524,6 +3524,83 @@ anyway, so this is where they land instead.
       new error case - the fixed-size-array rejection) and
       [docs/LANGUAGE.md](LANGUAGE.md#type-aliases). Confirmed no
       regression in the pre-existing `examples/test/alias/` suite.
+- [x] Dynamic-array-typed function return types - `function MakeArr:
+      array of integer;`. Closes half of the roadmap's "a dynamic-array-
+      typed record/class field, or function return type" gap (a record/
+      class field stays unsupported - see below).
+
+      **The blocker wasn't the return mechanism - it was a deliberate,
+      documented restriction that dynamic arrays structurally can't
+      live with.** A function's return value already sat in an ordinary
+      local-frame slot (`return_slot`) every other dynamic-array local
+      already worked through fine, and the return type itself was never
+      restricted at parse time - `proc_table[].return_type =
+      parse_scalar_type()` already accepted a dynarray `DataType`.
+      The actual failure (`SetLength(MakeArr, 2)` inside `MakeArr`'s own
+      body: `Unknown identifier 'MakeArr'`) traced to
+      `docs/LANGUAGE.md`'s own documented, deliberate design: "Reading
+      the function's own name as an expression ... isn't supported —
+      only assigning to it is." That rule is fine for a scalar (the
+      ordinary `FuncName := ...;` pattern never needs a read-back), but
+      a dynamic array structurally can't work within it -
+      `SetLength`/indexed read-write/`Length`/`Copy` all read the
+      current value before producing a new one, even for the simplest
+      possible body.
+
+      **Scoped narrowly, not lifted wholesale**: rather than removing
+      the "assign-only" restriction for every return type, the new read
+      support is gated behind `is_own_dynarray_return()` at every site
+      that needed it - `factor()`'s bare-identifier resolution (for
+      `Length`/`High`/`Copy`/plain indexed reads, all of which bottom
+      out in `expression()`), `SetLength`'s own target resolver
+      (`parse_dynarray_writeback_target()`), and a new indexed-
+      assignment branch in `statement()`'s existing "own name" check
+      (for `MakeArr[i] := value;`). A **scalar** return type's read
+      still resolves to a recursive call exactly as before, confirmed by
+      a dedicated regression test, not just left alone and assumed.
+
+      **A real, pre-existing, unrelated bug found and fixed along the
+      way**: `build_return_assign_node()`'s procedural-return-type check
+      was a raw `return_type >= TYPE_PROC_BASE` comparison - which
+      happened to be safe only because no OTHER `>= TYPE_PROC_BASE` type
+      could reach it yet. `TYPE_DYNARRAY_BASE` sits numerically above
+      `TYPE_PROC_BASE` in the `DataType` enum (see common.h), so once a
+      dynamic array became a valid return type, `MakeArr := [1, 2, 3];`
+      would have been silently misrouted into `parse_proc_value()`.
+      Fixed by switching to the bounds-checked `is_proc_type()` every
+      other call site already uses - caught by testing the array-literal
+      return path directly, not by code inspection alone.
+
+      **A regression caught and fixed during testing, not shipped**: the
+      first version of the `factor()` read support fired on ANY mention
+      of the function's own name, including an explicit recursive call
+      with parentheses (`Build(n - 1)`) - breaking exactly the pattern a
+      recursive dynamic-array-building function needs. Fixed by checking
+      for a following `(` first and rebuilding the identical call node
+      the ordinary `find_proc_visible()` path would have; a recursive
+      test (`Build(n)` accumulating `[1..n]` by calling `Build(n-1)` and
+      reading/indexing/`SetLength`-ing its own return value in the same
+      body) is what caught it, and now guards against it permanently.
+
+      A class method returning a dynamic array (`function TFoo.MakeArr:
+      array of integer;`) needed no additional work - `current_function_
+      idx`/`proc_table[]` are already shared uniformly between plain
+      functions and methods.
+
+      See `examples/test/dynarray/test_dynarray_return_*.pas` (6
+      positive cases - basic `SetLength`+indexed read/write, array-
+      literal assignment to the own name, `Length`/`High`/`Copy` reading
+      mid-body, `exit([...])` with a literal, the recursive self-call-
+      plus-self-read case that caught the parenthesized-call regression,
+      and a class method; 1 regression guard confirming a scalar return
+      type's own-name read is still, deliberately, a recursive call) and
+      [docs/LANGUAGE.md](LANGUAGE.md#functions). Round-tripped through
+      `solas`/`desole` (zero new opcodes - this is pure parser-level
+      dispatch, the return slot is just an ordinary local). Confirmed no
+      regression via a full sweep of `examples/test/`, including a
+      before/after comparison (via `git stash`) of every file the sweep
+      initially flagged, to separate genuine regressions from pre-
+      existing, unrelated expected-error tests.
 
 ### Shipped from the OOP features survey
 

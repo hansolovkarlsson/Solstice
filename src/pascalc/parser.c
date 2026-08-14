@@ -5926,6 +5926,54 @@ static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, con
     return result;
 }
 
+// True when 'name' is the CURRENT function's own name - the same
+// identity check statement()'s own "assign to set the return value"
+// handling already does inline (see build_return_assign_node's own
+// comment for why the unmangled_name/name split exists: a class
+// method's own name, for this check, is the short name the user wrote
+// in the method body's own header line, never proc_table[]'s mangled
+// .name). Factored out here since the dynamic-array read/write paths
+// below need the identical check in more than one place - a dynamic
+// array's return value structurally NEEDS to be read back mid-body
+// (SetLength/indexing/Length/Copy all read-before-write, unlike a
+// scalar return type, which docs/LANGUAGE.md deliberately documents as
+// assign-only - see is_own_dynarray_return() just below for where that
+// line is actually drawn).
+static int is_own_function_name(const char *name) {
+    if (current_function_idx == -1) return 0;
+    const char *own = proc_table[current_function_idx].unmangled_name[0]
+        ? proc_table[current_function_idx].unmangled_name
+        : proc_table[current_function_idx].name;
+    return strcmp(name, own) == 0;
+}
+
+// True when the CURRENT function's own return type is a dynamic array -
+// the gate every new "read/index the function's own name mid-body" path
+// below uses, so a scalar return type keeps the existing, deliberate
+// "reading the function's own name is a recursive call, not a read"
+// behavior (see docs/LANGUAGE.md#functions) completely unchanged; only a
+// dynamic array gets the new read support, because only a dynamic array
+// actually needs it structurally.
+static int is_own_dynarray_return(void) {
+    return current_function_idx != -1 && is_dynarray_type(proc_table[current_function_idx].return_type);
+}
+
+// Builds the READ node for the current function's own return slot - the
+// counterpart to build_return_assign_node()'s WRITE node further below,
+// needed wherever a dynamic-array return value's own name has to be
+// read (not just assigned) mid-body: SetLength's target resolver,
+// indexed read/write, and plain use as an expression (Length/High/Copy/
+// array-literal element, etc. all bottom out in factor()). Always
+// levels_up = 0 - the return slot is always in the CURRENT function's
+// own frame, never an enclosing one.
+static ASTNode *build_return_read_node(int line) {
+    ASTNode *node = create_node(NODE_LOCAL_VAR);
+    node->line = line;
+    node->data.var_idx = proc_table[current_function_idx].return_slot;
+    node->expression_type = proc_table[current_function_idx].return_type;
+    return node;
+}
+
 static ASTNode *factor(void);
 
 // Parses the operand of '@'/'Addr(...)' - must be exactly a pointer
@@ -6765,6 +6813,43 @@ static ASTNode *factor(void) {
 
         if (current_class_ptr_idx != -1 && class_has_member(current_class_ptr_idx, token.text)) {
             return parse_self_shorthand_read(line);
+        }
+
+        // The current function's OWN name, read as an expression - only
+        // when its return type is a dynamic array (see
+        // is_own_dynarray_return()'s own comment for why a scalar return
+        // type deliberately does NOT reach here, and keeps resolving to
+        // a recursive call via find_proc_visible() below instead, same
+        // as always). 'MakeArr[i]' (a read, not the statement()-level
+        // assignment build_return_assign_node() already handles) is
+        // handled inline here too, mirroring every other dynamic-array
+        // read site's own is_dynarray_type(...) && TOKEN_LBRACKET check.
+        if (is_own_dynarray_return() && is_own_function_name(token.text)) {
+            match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_LPAREN) {
+                // An explicit recursive self-call ('Build(n - 1)'), NOT
+                // a read - name already matched, so the find_proc_
+                // visible() branch below is never reached; rebuilds the
+                // identical NODE_CALL it would have.
+                ASTNode *node = create_node(NODE_CALL);
+                node->line = line;
+                node->data.var_idx = current_function_idx;
+                node->expression_type = proc_table[current_function_idx].return_type;
+                node->left = parse_call_arguments(current_function_idx);
+                return node;
+            }
+            ASTNode *node = build_return_read_node(line);
+            if (token.type == TOKEN_LBRACKET) {
+                match(TOKEN_LBRACKET);
+                ASTNode *access = create_node(NODE_DYNARRAY_ACCESS);
+                access->line = line;
+                access->left = node;
+                access->right = expression(); // index
+                access->expression_type = dynarray_types[node->expression_type - TYPE_DYNARRAY_BASE].elem_type;
+                match(TOKEN_RBRACKET);
+                return access;
+            }
+            return node;
         }
 
         int call_proc_idx = find_proc_visible(token.text);
@@ -11246,6 +11331,17 @@ static ASTNode *parse_dynarray_writeback_target(void) {
     if (token.type != TOKEN_IDENTIFIER) {
         compile_error(token.line, "'SetLength' expects a dynamic array variable");
     }
+    // 'SetLength(MakeArr, n)' inside MakeArr's own body - MakeArr's
+    // return slot isn't found via find_local_outward() below (its
+    // current_locals[] entry is deliberately stale/unpopulated - see
+    // build_return_assign_node's own comment), so it needs the same
+    // explicit check every other "read/write the function's own name"
+    // site now has.
+    if (is_own_dynarray_return() && is_own_function_name(token.text)) {
+        int line = token.line;
+        match(TOKEN_IDENTIFIER);
+        return build_return_read_node(line);
+    }
     char name[MAX_NAME];
     strcpy(name, token.text);
     int line = token.line;
@@ -13026,13 +13122,25 @@ static ASTNode *build_return_assign_node(int function_idx) {
     ASTNode *stmt = create_node(NODE_LOCAL_ASSIGN);
     stmt->data.var_idx = proc_table[function_idx].return_slot;
     stmt->expression_type = proc_table[function_idx].return_type;
-    if (proc_table[function_idx].return_type >= TYPE_PROC_BASE) {
+    if (is_proc_type(proc_table[function_idx].return_type)) {
         // A procedural return type needs the same specialized parser
         // every other procedural-type assignment target already uses -
         // the generic expression() below would misparse a bare proc
         // name as a zero-argument CALL to it, not a reference (see
-        // docs/LANGUAGE.md#procedural-types).
+        // docs/LANGUAGE.md#procedural-types). Was a raw '>= TYPE_PROC_
+        // BASE' comparison, which happened to still work only because
+        // no OTHER >= TYPE_PROC_BASE type could reach here yet - once
+        // TYPE_DYNARRAY_BASE (also >= TYPE_PROC_BASE - see common.h's
+        // DataType ordering) became a valid return type, that comparison
+        // would have wrongly routed a dynamic-array return into
+        // parse_proc_value() too. is_proc_type() bounds-checks both ends.
         stmt->left = parse_proc_value(proc_table[function_idx].return_type - TYPE_PROC_BASE, token.line);
+    } else if (is_dynarray_type(proc_table[function_idx].return_type) && token.type == TOKEN_LBRACKET) {
+        // 'MakeArr := [1, 2, 3];' - the array-literal form, same
+        // is_dynarray_type(...) && TOKEN_LBRACKET dispatch every other
+        // dynamic-array assignment target already uses (see
+        // parse_dynarray_literal's own comment).
+        stmt->left = parse_dynarray_literal(proc_table[function_idx].return_type);
     } else {
         // return_is_subrange is never set for a procedural return type
         // (mirrors ProcParamHeader's own "method return types are never
@@ -13147,12 +13255,30 @@ static ASTNode *statement(void) {
         // proc_table[]'s own .name is the MANGLED 'TFoo__Bar' (needed
         // for call-site lookups elsewhere), never what a method body's
         // source text itself uses - see ProcSymbol.unmangled_name's
-        // comment.
-        const char *own_function_name = current_function_idx != -1 && proc_table[current_function_idx].unmangled_name[0]
-            ? proc_table[current_function_idx].unmangled_name
-            : (current_function_idx != -1 ? proc_table[current_function_idx].name : "");
-        if (current_function_idx != -1 && strcmp(token.text, own_function_name) == 0) {
+        // comment (also is_own_function_name()'s own, which factors this
+        // exact check out for the dynamic-array read/write sites).
+        if (is_own_function_name(token.text)) {
             match(TOKEN_IDENTIFIER);
+            if (is_own_dynarray_return() && token.type == TOKEN_LBRACKET) {
+                // 'MakeArr[i] := value;' - indexed element assignment
+                // into the function's own dynamic-array return value,
+                // same shape every other dynamic-array indexed-assign
+                // site already builds (see parse_global_assignment's own
+                // TYPE_DYNARRAY_BASE branch).
+                int idx_line = token.line;
+                match(TOKEN_LBRACKET);
+                ASTNode *base = build_return_read_node(idx_line);
+                DynArrayTypeDef *d = &dynarray_types[proc_table[current_function_idx].return_type - TYPE_DYNARRAY_BASE];
+                ASTNode *stmt = create_node(NODE_DYNARRAY_ASSIGN);
+                stmt->line = idx_line;
+                stmt->left = base;
+                stmt->right = expression(); // index
+                match(TOKEN_RBRACKET);
+                match(TOKEN_ASSIGN);
+                stmt->extra = wrap_range_check(expression(), d->elem_is_subrange, d->elem_subrange_lower, d->elem_subrange_upper);
+                stmt->expression_type = d->elem_type;
+                return stmt;
+            }
             if (token.type == TOKEN_ASSIGN) {
                 // Assigning to the function's own name sets its return value.
                 match(TOKEN_ASSIGN);
