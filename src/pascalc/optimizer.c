@@ -302,24 +302,39 @@ static int has_set_side_effect(ASTNode *node) {
 }
 
 // A NODE_HEAP_ALLOC ('new(p)''s desugared value - see common.h), a
-// NODE_HEAP_FIELD_ACCESS ('p^'/'p^.field' read), or a NODE_HEAP_ARRAY_
-// FIELD_ACCESS ('c.data[i]' read) each have an observable runtime effect
+// NODE_HEAP_FIELD_ACCESS ('p^'/'p^.field' read), a NODE_HEAP_ARRAY_
+// FIELD_ACCESS ('c.data[i]' read), or a NODE_DYNARRAY_LITERAL
+// ('[1, 2, 3]', a dynamic array's own OP_NEW-based construction - see
+// its own comment in common.h) each have an observable runtime effect
 // of their own: OP_NEW can abort if the heap is exhausted (MAX_HEAP_MEM),
-// and OP_LOAD_HEAP_FIELD/OP_LOAD_HEAP_ARRAY_FIELD can abort on a
-// nil/invalid pointer (the array variant can also abort on an
-// out-of-bounds index) - so an assignment carrying any of these must
-// never be swept away as "dead" just because its target variable happens
-// to be otherwise unread, same reasoning as has_range_check()/
+// OP_LOAD_HEAP_FIELD/OP_LOAD_HEAP_ARRAY_FIELD can abort on a nil/invalid
+// pointer (the array variant can also abort on an out-of-bounds index),
+// and a NODE_DYNARRAY_LITERAL additionally range-checks each of its own
+// ELEMENTS (see wrap_range_check() in parser.c) for a byte/shortint/
+// word/subrange element type - so an assignment carrying any of these
+// must never be swept away as "dead" just because its target variable
+// happens to be otherwise unread, same reasoning as has_range_check()/
 // has_set_side_effect() above. Caught a real instance of exactly this
 // while testing: 'x := p^;' with x otherwise unread and p nil silently
-// skipped its own nil-dereference abort once eliminated. A recursive
-// search (not just a shallow check on the immediate child), matching
-// has_set_side_effect()'s own reasoning: 'x := p^.next^.data;' nests a
-// NODE_HEAP_FIELD_ACCESS (the 'p^.next' part) inside another one (the
-// '.data' access).
+// skipped its own nil-dereference abort once eliminated - and, in the
+// same spirit, an unused 'x: array of byte; x := [300];' silently
+// skipped ITS own out-of-range abort too (found while adding a bare
+// dynamic-array typed constant - has_range_check()'s own shallow check
+// on the immediate child never looks inside a NODE_DYNARRAY_LITERAL's
+// own element list, one level further down at ITS ->left, to find the
+// NODE_RANGE_CHECK nodes wrap_range_check() puts there per-element - so
+// this needs its own case here rather than a has_range_check() fix,
+// since checking for the LITERAL node's mere presence at all already
+// covers both its own OP_NEW side effect and every element's own
+// potential range check uniformly, with no need to also walk its
+// element list separately). A recursive search (not just a shallow
+// check on the immediate child), matching has_set_side_effect()'s own
+// reasoning: 'x := p^.next^.data;' nests a NODE_HEAP_FIELD_ACCESS (the
+// 'p^.next' part) inside another one (the '.data' access).
 static int has_heap_alloc_side_effect(ASTNode *node) {
     if (!node) return 0;
-    if (node->type == NODE_HEAP_ALLOC || node->type == NODE_HEAP_FIELD_ACCESS || node->type == NODE_HEAP_ARRAY_FIELD_ACCESS) return 1;
+    if (node->type == NODE_HEAP_ALLOC || node->type == NODE_HEAP_FIELD_ACCESS || node->type == NODE_HEAP_ARRAY_FIELD_ACCESS
+        || node->type == NODE_DYNARRAY_LITERAL) return 1;
     return has_heap_alloc_side_effect(node->left) || has_heap_alloc_side_effect(node->right) || has_heap_alloc_side_effect(node->extra);
 }
 

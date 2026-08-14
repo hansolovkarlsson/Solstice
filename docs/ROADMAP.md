@@ -116,14 +116,9 @@ anyway, so this is where they land instead.
       being aliased, which now works - an alias still can't stand in for
       a record/pointer/procedural/named-type ELEMENT type); array
       literals for a fixed-size array, as a `var`/`const` call argument,
-      or in any other general-expression position; a *bare* dynamic-
-      array typed constant (`const X: array of integer = [1, 2, 3];` - a
-      record/class field's own dynamic-array value inside a typed
-      constant has shipped, see below, but `array of` still isn't
-      recognized as a typed-constant's own type at the top level); a
-      named alias for a FIXED-size array; and comparing two dynamic
-      arrays directly (`arr1 = arr2`, as opposed to comparison against
-      `nil`, which now works).
+      or in any other general-expression position; a named alias for a
+      FIXED-size array; and comparing two dynamic arrays directly (`arr1
+      = arr2`, as opposed to comparison against `nil`, which now works).
 
       A dynamic-array field's own value inside a **typed constant** has
       shipped too (`Bob: TScores = (name: 'Bob'; values: [10, 20, 30]);`)
@@ -141,6 +136,40 @@ anyway, so this is where they land instead.
       fallback did) - dormant until now, since no dynarray record field
       could previously ever BE `is_const`; fixed by adding the same
       check to that branch of `parse_dynarray_writeback_target()`.
+
+      A **bare** dynamic-array typed constant (`const X: array of
+      integer = [1, 2, 3];`, no record involved) has shipped too - one
+      more branch in `parse_typed_const_declaration()`'s own dispatch
+      (`array` followed by `of` rather than `[`, previously an
+      "Unexpected token 'of'" error), reusing every piece already proven
+      by the record-field version above (`parse_dynarray_of()` for the
+      element type, `parse_dynarray_literal()` for the value,
+      `typed_const_init_head`/`tail` for the runtime init) - genuinely
+      small, since nothing new had to be built for it.
+
+      **A second, more consequential newly-reachable gap found this
+      time, in the OPTIMIZER rather than the parser**: an unused dynamic-
+      array-typed global assigned an out-of-range subrange-element
+      literal (`var wasted: array of byte; wasted := [300];`, `wasted`
+      never read afterward) silently compiled and ran to completion
+      instead of aborting with the documented runtime range-check error -
+      dead-code elimination's existing `has_range_check()` guard (added
+      specifically to stop exactly this class of bug for an ordinary
+      scalar assignment) only does a SHALLOW check on the assignment's
+      immediate child, and a dynamic-array literal's own per-element
+      range checks sit one level deeper, inside `NODE_DYNARRAY_LITERAL`'s
+      own element list - invisible to that shallow check. Not new to this
+      session (a plain `var`, unrelated to typed constants at all,
+      reproduces it identically), just never noticed before, since
+      nothing had previously exercised an unused dynamic-array-literal
+      assignment with an out-of-range element. Fixed in
+      `has_heap_alloc_side_effect()` instead of `has_range_check()`:
+      recognizing a bare `NODE_DYNARRAY_LITERAL` node covers BOTH its own
+      `OP_NEW` heap-allocation side effect (the same reasoning that
+      function already applies to `NODE_HEAP_ALLOC`) AND every nested
+      element range check uniformly, with no need to separately walk the
+      element list - the literal's mere presence is already sufficient
+      reason to never eliminate the assignment carrying it.
 
 **Considered, explicitly out of scope: inline assembly** (`asm ... end;`
 embedding raw `.sasm` directly inside a Pascal source file, letting a

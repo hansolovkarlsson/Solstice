@@ -292,6 +292,28 @@ initialized global variable.
   parameter. Direct assignment to the constant itself is fully blocked;
   this indirect path isn't yet.
 
+A **dynamic array** (`array of ElementType`, no bounds) can be a bare
+typed constant's own type too, given an array literal as its value:
+
+```pascal
+const
+    X: array of integer = [10, 20, 30];
+```
+
+Unlike the fixed-size case above, this doesn't compile to a chain of
+per-element assignments — it's a single `NODE_DYNARRAY_LITERAL`
+construction (the same one `arr := [1, 2, 3];` uses) run once at program
+start, storing a heap-allocated array's pointer into an ordinary global
+scalar slot. `X` is fully usable afterward exactly like any other
+dynamic array — indexed, `Length`'d, `for x in ... do`'d, `Copy()`'d —
+just immutable: both reassignment (`X := [...]`) and `SetLength(X, ...)`
+are compile-time errors, mirroring the fixed-size case's own
+reassignment restriction. See
+[Dynamic arrays](#dynamic-arrays) for everything else about the type
+itself, including the identical capability for a **record/class field's**
+own value inside a typed constant (a separate, harder case — see that
+section's own "Record and class fields").
+
 ### Typed constants (record initializers)
 
 ```pascal
@@ -2178,14 +2200,13 @@ typed-constant field).
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
 - **Array-literal syntax for a fixed-size array**; a dynamic-array
-  literal as a `var`/`const` call argument; a *bare* dynamic-array typed
-  constant (`const X: array of integer = [1, 2, 3];` — `array of` isn't
-  recognized as a typed-constant's own type at all); and a dynamic-array
+  literal as a `var`/`const` call argument; and a dynamic-array
   literal in any other general-expression position (a `write`/`writeln`
   argument, etc.) — see "Array literals" above for what IS supported (an
   assignment RHS, a by-value call argument, and — see [Typed
-  constants](#typed-constants-record-initializers) — a record/class
-  field's own value *inside* a typed constant, specifically).
+  constants](#typed-constants-array-initializers) — a bare dynamic-array
+  typed constant's own value, or a record/class field's own value
+  *inside* one).
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
   comparison against `nil` is supported; standard Pascal doesn't define
   whole-array comparison either.

@@ -556,10 +556,13 @@ array-typed **record/class field** (`data: array of integer;` inside a
 global/local/nested/value-parameter record or a class, sharing storage
 on whole-record copy the same way a pointer-typed field already does,
 including `for x in rec.field do`/`for x in c.field do` iteration and a
-typed constant's own field value via array-literal syntax (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)). Not yet
-implemented: `copy`/slicing or a named alias for a
+typed constant's own field value via array-literal syntax — a *bare*
+dynamic-array typed constant (`const X: array of integer = [1, 2, 3];`,
+no record involved) works the same way (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#typed-constants-array-initializers)
+and [docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)). Not
+yet implemented: `copy`/slicing or a named alias for a
 fixed-size array; an array literal for a fixed-size array, as a
-`var`/`const` call argument, as a *bare* typed constant's own type, or
-in any other general-expression position; variant records; and a whole
+`var`/`const` call argument, or in any other general-expression
+position; variant records; and a whole
 record or an array element as a `var` argument.

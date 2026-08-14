@@ -3858,6 +3858,67 @@ anyway, so this is where they land instead.
       dynamic arrays are rejected outright) and
       [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-record-initializers).
       Confirmed no regression via a full `examples/test/` sweep.
+- [x] A **bare** dynamic-array typed constant - `const X: array of
+      integer = [1, 2, 3];`, no record involved. Closes the "Dynamic
+      array follow-ups" roadmap entry's last remaining piece of the
+      typed-constant gap (the record/class-field case, entry just above,
+      shipped first).
+
+      **Genuinely small, unlike the record-field version**: every piece
+      it needed already existed and was already proven working -
+      `parse_dynarray_of()` (element-type parsing, an existing standalone
+      helper), `parse_dynarray_literal()` (the array-literal value, the
+      exact same one the record-field entry above just started reusing),
+      and `typed_const_init_head`/`tail` (the runtime-init chain). One
+      new branch in `parse_typed_const_declaration()`'s own dispatch,
+      right after `match(TOKEN_ARRAY)`: `array` followed by `of` (not
+      `[`) now routes to this new path instead of falling into the
+      fixed-size-array parse and failing on an "Unexpected token 'of'".
+      Storage is an ordinary global scalar slot (`add_var()` - a dynamic
+      array's runtime representation is one int, never `add_array_var()`
+      or its per-element region).
+
+      **A second newly-reachable gap found, this time in the OPTIMIZER,
+      not the parser - and NOT specific to typed constants at all**: an
+      unused dynamic-array-typed global assigned an out-of-range
+      subrange-element literal silently compiled and ran to completion
+      instead of aborting with the documented runtime range-check error.
+      Reproduces identically with a plain `var`, nothing to do with typed
+      constants specifically (`var wasted: array of byte; wasted :=
+      [300];`, `wasted` never read afterward, exits 0 instead of
+      aborting) - just never noticed before, since nothing had
+      previously exercised an unused dynamic-array-literal assignment
+      with an out-of-range element. The root cause: dead-code
+      elimination's `has_range_check()` guard (added specifically to
+      stop exactly this class of bug for an ordinary scalar assignment -
+      see its own comment in `optimizer.c`) only does a SHALLOW check on
+      the assignment's immediate child; a dynamic-array literal's own
+      per-element range checks sit one level deeper, inside its
+      `NODE_DYNARRAY_LITERAL`'s own element list, invisible to that
+      shallow check. Fixed in `has_heap_alloc_side_effect()` instead of
+      `has_range_check()` itself: recognizing a bare `NODE_DYNARRAY_
+      LITERAL` node covers BOTH its own `OP_NEW` heap-allocation side
+      effect (the exact same reasoning that function already applies to
+      `NODE_HEAP_ALLOC`) AND every nested element range check uniformly -
+      the literal's mere presence already being sufficient reason to
+      never eliminate the assignment carrying it, with no need to
+      separately walk its element list looking for range checks one by
+      one. Verified the fix doesn't regress ordinary dead-code
+      elimination for ANY other case (an ordinary unused scalar
+      assignment is still correctly swept away, confirmed via `-v`'s own
+      `[DCE Optimization] Removing dead assignment` trace).
+
+      Immutability enforced at both mutation points, exactly like the
+      record-field case (reassignment and `SetLength`, both compile-time
+      errors). Zero new opcodes/`NodeType`s. See `examples/test/dynarray/
+      test_dynarray_typedconst_*.pas` (2 positive cases - a normal and an
+      empty array literal; 3 error cases - `SetLength`, reassignment, and
+      a non-array-literal value) and `test_dynarray_dce.pas` (the
+      optimizer regression, modeled directly on the pre-existing
+      `test_ptr_dce.pas`'s own `has_heap_alloc_side_effect()` precedent)
+      and
+      [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
+      Confirmed no regression via a full `examples/test/` sweep.
 
 ### Shipped from the OOP features survey
 

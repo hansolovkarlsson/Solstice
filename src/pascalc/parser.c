@@ -7347,6 +7347,36 @@ static void parse_typed_const_declaration(const char *name, int decl_line) {
         compile_error(token.line, "Typed constant '%s': expected 'array' or a record type name after ':'", name);
     }
     match(TOKEN_ARRAY);
+    if (token.type == TOKEN_OF) {
+        // 'Name : array of ScalarType = [v1, v2, ...];' - a BARE dynamic-
+        // array typed constant (as opposed to one living inside a record
+        // field - see parse_typed_const_record_declaration(), which
+        // reuses the exact same parse_dynarray_literal()/typed_const_
+        // init_head chain this does). Storage is an ordinary global
+        // scalar slot (add_var() - a dynamic array's runtime
+        // representation is just one int, a heap offset, never
+        // add_array_var()'s per-element region), and the value is
+        // ordinary generated code run once at program start, exactly
+        // like every other typed-constant initializer here - a dynamic
+        // array has no compile-time literal form to embed into the .bin
+        // file at all, so this never goes through parse_typed_const_
+        // value()'s literal-folding path the way a scalar/fixed-array
+        // constant does.
+        DataType dynarr_type = parse_dynarray_of();
+        match(TOKEN_EQ);
+        if (token.type != TOKEN_LBRACKET) {
+            compile_error(token.line, "Typed constant '%s' is a dynamic array - expects an array literal, e.g. '[1, 2, 3]' or '[]'", name);
+        }
+        int idx = sym_count;
+        add_var(name, dynarr_type);
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = idx;
+        stmt->left = parse_dynarray_literal(dynarr_type);
+        append_typed_const_init(stmt);
+        sym_table[idx].is_const = 1;
+        match(TOKEN_SEMI);
+        return;
+    }
     match(TOKEN_LBRACKET);
     int lower[MAX_ARRAY_DIMS], upper[MAX_ARRAY_DIMS];
     int dims = parse_array_bounds(lower, upper);
