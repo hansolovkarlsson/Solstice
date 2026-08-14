@@ -3236,6 +3236,7 @@ static ASTNode *statement(void);
 static ASTNode *statement_list(void);
 static ASTNode *compound_statement(void);
 static ASTNode *parse_call_arguments(int proc_idx);
+static ASTNode *parse_dynarray_literal(DataType dynarr_type);
 static void subroutine_declaration(int is_function_decl, int header_only, int is_destructor_decl);
 static ASTNode *parse_case_label_value(void);
 static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int is_private, int is_protected, int declaring_class_ptr_idx);
@@ -4205,6 +4206,20 @@ static ASTNode *parse_call_arguments(int proc_idx) {
                     this_tail = arg;
                 } else if (arg_count < proc_table[proc_idx].param_count && proc_table[proc_idx].param_is_proc[arg_count]) {
                     arg = parse_proc_argument(proc_idx, arg_count);
+                    this_tail = arg;
+                } else if (arg_count < proc_table[proc_idx].param_count
+                           && is_dynarray_type(proc_table[proc_idx].param_types[arg_count]) && token.type == TOKEN_LBRACKET) {
+                    // 'Foo([1, 2, 3])' - an array literal passed directly
+                    // as a by-value dynamic-array argument. Same
+                    // is_dynarray_type(...) && TOKEN_LBRACKET dispatch
+                    // every other dynamic-array literal site already
+                    // uses, just gated on the CALLEE's declared parameter
+                    // type instead of an assignment target's - the
+                    // expected type is already known here (param_types[]),
+                    // exactly like every other typed-argument branch
+                    // above this one already relies on knowing its
+                    // parameter's shape before parsing the argument.
+                    arg = parse_dynarray_literal(proc_table[proc_idx].param_types[arg_count]);
                     this_tail = arg;
                 } else if (arg_count < proc_table[proc_idx].param_count) {
                     arg = wrap_range_check(expression(), proc_table[proc_idx].param_is_subrange[arg_count],

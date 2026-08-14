@@ -3601,6 +3601,55 @@ anyway, so this is where they land instead.
       before/after comparison (via `git stash`) of every file the sweep
       initially flagged, to separate genuine regressions from pre-
       existing, unrelated expected-error tests.
+- [x] Array literals as a direct by-value call argument - `Foo([1, 2,
+      3])`, no variable needed first. Closes half of the roadmap's
+      "array literals ... as a general expression (e.g. a procedure
+      argument)" gap (a `var`/`const` argument, and every other general-
+      expression position, stay open - see below).
+
+      **The same dispatch idea already used three times this session
+      (assignment target, function return type), applied to one more
+      call site**: `parse_call_arguments()`'s plain by-value-parameter
+      branch already knows the callee's expected type
+      (`proc_table[proc_idx].param_types[arg_count]`) before parsing the
+      argument, exactly like an assignment target's type is already
+      known before parsing its RHS - so the identical `is_dynarray_
+      type(...) && token.type == TOKEN_LBRACKET` check, calling the same
+      `parse_dynarray_literal()` from the array-literal-assignment work,
+      slots in as one more branch in that function's existing parameter-
+      kind dispatch chain. `parse_dynarray_literal()` needed a forward
+      declaration to reach this far up the file, since it's normally
+      defined much later - the only structural change needed.
+
+      **`var`/`const` arguments deliberately NOT extended** - both share
+      this compiler's ordinary variable-reference passing mechanism
+      (`parse_var_argument()`), which requires an actual variable to
+      point at; a literal has no address to hand over without first
+      synthesizing a hidden temporary, a real (if small) piece of
+      machinery this change doesn't need for the common by-value case,
+      so it's left as an explicit, documented gap rather than bolted on
+      here. Confirmed this is a general, pre-existing restriction (not
+      something this change tightened) - passing a literal to a `const`
+      parameter was already rejected before this change, with the same
+      "expects a variable, not an expression" message any other non-
+      variable expression already got there.
+
+      **Confirmed unaffected**: a `set of ...` parameter's own `[...]`
+      argument still builds an ordinary set constructor - the dispatch
+      is gated on the callee's declared parameter type, so nothing about
+      set-typed call arguments changed.
+
+      See `examples/test/dynarray/test_dynarray_literal_arg_*.pas` (5
+      positive cases - a plain `array of integer` argument, `array of
+      real` with widening, an empty literal argument, a literal
+      alongside ordinary arguments in other positions, and a `set of
+      ...` parameter's own argument confirmed unaffected; 1 error case -
+      a wrong element type) and
+      [docs/LANGUAGE.md](LANGUAGE.md#array-literals). Round-tripped
+      through `solas`/`desole` (zero new opcodes, as expected - this
+      reuses the exact same literal-building codegen array-literal
+      assignment already shipped). Confirmed no regression in the
+      existing `dynarray`/`set` regression suites.
 
 ### Shipped from the OOP features survey
 

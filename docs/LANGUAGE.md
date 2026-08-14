@@ -2067,16 +2067,39 @@ element type already gets.
 
 This reuses the `[...]` bracket syntax a **set** constructor already
 uses (`s := [1, 2, 3];` for `s: set of ...`) — which one a given `[...]`
-means is decided by the assignment target's own declared type, not by
-looking at the brackets' contents, so there's no ambiguity in practice.
-Unlike a set constructor, there's no range syntax (`[1..3]`) — real
-Delphi array literals don't have one either, and it wouldn't mean
-anything for a `real`/`string` element type.
+means is decided by the target's own declared type, not by looking at
+the brackets' contents, so there's no ambiguity in practice. Unlike a
+set constructor, there's no range syntax (`[1..3]`) — real Delphi array
+literals don't have one either, and it wouldn't mean anything for a
+`real`/`string` element type.
 
-Only valid directly as an assignment's right-hand side (`arr := [...];`)
-for now, not as a general expression — passing one directly as a
-procedure argument (`Foo([1, 2, 3])`) isn't supported yet; assign it to a
-variable first.
+Valid as an assignment's right-hand side (`arr := [...];`) and directly
+as a by-value procedure/function argument:
+
+```pascal
+function Sum(a: array of integer): integer;
+var i, s: integer;
+begin
+    s := 0;
+    for i := 0 to High(a) do s := s + a[i];
+    Sum := s;
+end;
+
+begin
+    writeln(Sum([1, 2, 3, 4]));    { 10 - no variable needed first }
+end.
+```
+
+— the callee's declared parameter type is what tells `[...]` apart from
+a set constructor here, the same way an assignment target's type does.
+Not yet valid as a **`var`** or **`const`** argument, though — both
+share this compiler's ordinary variable-reference passing mechanism,
+which needs a real variable to point at; pass a literal to a plain
+by-value parameter, or assign it to a variable first if the callee needs
+`var`/`const`. Also not yet valid in any other general-expression
+position (a typed-constant initializer, a `write`/`writeln` argument,
+etc.) — only a bare assignment RHS and a by-value call argument are
+supported so far.
 
 ### What's not supported yet
 
@@ -2086,9 +2109,12 @@ variable first.
 - **Record, pointer, procedural, or named (type-alias/subrange/
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
-- **Array-literal syntax for a fixed-size array**, and as a general
-  expression (e.g. a procedure argument) for either array kind — see
-  "Array literals" above for what IS supported.
+- **Array-literal syntax for a fixed-size array**; a dynamic-array
+  literal as a `var`/`const` call argument; and a dynamic-array literal
+  in any other general-expression position (a typed-constant
+  initializer, a `write`/`writeln` argument, etc.) — see "Array
+  literals" above for what IS supported (an assignment RHS, and a
+  by-value call argument).
 - **A dynamic-array-typed `record`/class field** — only a plain
   `var`/parameter/function return type is supported so far. (A function
   return type IS supported — see [Functions](#functions)'s own

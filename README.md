@@ -544,9 +544,14 @@ including reading/indexing the function's own name mid-body (needed by
 `SetLength`/`Length`/`Copy`, which all read-before-write) - a deliberate,
 narrow exception to this compiler's usual rule that a function's own
 name is assign-only, scoped to a dynamic-array return type specifically
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#functions)). Not yet
-implemented: `copy`/slicing, array literals, or a named alias for a
-fixed-size array, an array literal as a general expression (e.g. a
-procedure argument) for either array kind, a dynamic-array-typed
-record/class field, variant records, and a whole record or an array
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#functions)); and a dynamic-array
+literal as a direct by-value call argument (`Sum([1, 2, 3, 4])`, no
+variable needed first), the callee's own declared parameter type telling
+`[...]` apart from a set constructor the same way an assignment target's
+type already does (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-literals)). Not yet
+implemented: `copy`/slicing or a named alias for a fixed-size array; an
+array literal for a fixed-size array, as a `var`/`const` call argument,
+or in any other general-expression position; a dynamic-array-typed
+record/class field; variant records; and a whole record or an array
 element as a `var` argument.

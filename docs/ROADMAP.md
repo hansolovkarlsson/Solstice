@@ -70,15 +70,20 @@ anyway, so this is where they land instead.
       assignable - see [docs/LANGUAGE.md](LANGUAGE.md#functions))
       is deliberately scoped to a dynamic-array return type only; a
       scalar return type keeps its existing, documented "reading the
-      function's own name is a recursive call" behavior unchanged.
-      Still open: multi-dimensional dynamic arrays; record/named-type/
-      nested-array element types (this is different from the array's
-      own type being aliased, which now works - an alias still can't
-      stand in for a record/pointer/procedural/named-type ELEMENT type);
-      array literals for a fixed-size array, or as a general expression
-      (e.g. a procedure argument) for either array kind; a dynamic-
-      array-typed record/class field (unlike the return-type case, this
-      one's still unsupported); a named alias for a FIXED-size array;
+      function's own name is a recursive call" behavior unchanged. A
+      dynamic-array literal as a by-value call argument (`Foo([1, 2,
+      3])`) has shipped too, same dispatch-on-known-type idea applied to
+      `parse_call_arguments()` - a `var`/`const` argument still can't
+      take a literal (both share this compiler's variable-reference
+      passing mechanism, which needs a real variable). Still open:
+      multi-dimensional dynamic arrays; record/named-type/nested-array
+      element types (this is different from the array's own type being
+      aliased, which now works - an alias still can't stand in for a
+      record/pointer/procedural/named-type ELEMENT type); array literals
+      for a fixed-size array, as a `var`/`const` call argument, or in any
+      other general-expression position; a dynamic-array-typed
+      record/class field (unlike the return-type case, this one's still
+      unsupported); a named alias for a FIXED-size array;
       and comparing two dynamic arrays directly (`arr1 = arr2`, as
       opposed to comparison against `nil`, which now works).
 - [ ] Closures (a nested function capturing its enclosing scope) —
