@@ -12298,6 +12298,138 @@ static ASTNode *build_forin_array_element_read(ForInArrayTarget *t, ASTNode *ind
     return node;
 }
 
+// Identity of a resolved 'for x in arr do' DYNAMIC array target - a
+// genuinely separate resolution path from ForInArrayTarget above, not a
+// branch inside it: a dynamic array's representation is fundamentally
+// different (a single scalar int naming a heap block - see
+// TYPE_DYNARRAY_BASE - not per-index storage), so it needs none of
+// is_ref/sym_idx/local_idx's "which of 3 storage shapes" split. Resolved
+// exactly like any other dynamic-array-typed variable's own value is
+// read elsewhere in this file (e.g. 'arr[i]'s own base - see
+// NODE_DYNARRAY_ASSIGN's construction above) - is_local + idx +
+// levels_up is enough to rebuild that same read as many times as
+// needed (see build_forin_dynarray_read() below).
+typedef struct {
+    int is_local;      // 0 = global (idx is a sym_table[] index), 1 =
+                        // local/'var'-parameter (idx is a local slot,
+                        // levels_up meaningful - see find_local_outward())
+    int idx;
+    int levels_up;
+    DataType dynarray_type; // the variable's OWN type (TYPE_DYNARRAY_BASE
+                        // + its dynarray_types[] index) - needed on the
+                        // read node itself, for Length()'s own dispatch
+                        // and NODE_DYNARRAY_ACCESS's base.
+    DataType elem_type;
+    int elem_is_subrange, elem_subrange_lower, elem_subrange_upper;
+} ForInDynArrayTarget;
+
+// Same lookahead contract as try_resolve_forin_array_here() just above
+// (peek, consume only on an actual match, return 0 without consuming
+// anything otherwise) - but for a DYNAMIC array. Scope matches the
+// static case exactly: a bare variable only (global, local, or 'var'-
+// parameter - a dynamic array parameter is already "just an ordinary
+// (or 'var') scalar parameter", no special-casing needed - see
+// docs/CHANGELOG.md's own dynamic-arrays entry), not a general
+// expression - 'for x in SomeFuncReturningDynArray() do' falls through
+// to arithmetic_expression() below exactly like the static case already
+// does for its own not-a-bare-variable inputs.
+static int try_resolve_forin_dynarray_here(ForInDynArrayTarget *out) {
+    if (token.type != TOKEN_IDENTIFIER) return 0;
+    char name[MAX_NAME];
+    strcpy(name, token.text);
+
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (!is_dynarray_type(ls->type)) return 0;
+        match(TOKEN_IDENTIFIER);
+        out->is_local = 1;
+        out->idx = local_idx;
+        out->levels_up = levels_up;
+        out->dynarray_type = ls->type;
+        DynArrayTypeDef *d = &dynarray_types[ls->type - TYPE_DYNARRAY_BASE];
+        out->elem_type = d->elem_type;
+        out->elem_is_subrange = d->elem_is_subrange;
+        out->elem_subrange_lower = d->elem_subrange_lower;
+        out->elem_subrange_upper = d->elem_subrange_upper;
+        return 1;
+    }
+    int global_idx = find_var_soft_visible(name);
+    if (global_idx != -1 && is_dynarray_type(sym_table[global_idx].type)) {
+        match(TOKEN_IDENTIFIER);
+        out->is_local = 0;
+        out->idx = global_idx;
+        out->dynarray_type = sym_table[global_idx].type;
+        DynArrayTypeDef *d = &dynarray_types[sym_table[global_idx].type - TYPE_DYNARRAY_BASE];
+        out->elem_type = d->elem_type;
+        out->elem_is_subrange = d->elem_is_subrange;
+        out->elem_subrange_lower = d->elem_subrange_lower;
+        out->elem_subrange_upper = d->elem_subrange_upper;
+        return 1;
+    }
+    return 0;
+}
+
+// Builds ONE fresh read of a resolved for-in DYNAMIC array target's own
+// value (its heap offset - the same node shape 'arr[i] := x;'s own base
+// already uses, e.g. in the NODE_DYNARRAY_ASSIGN construction above).
+// Called TWICE per match (once for Length()'s argument, once for
+// NODE_DYNARRAY_ACCESS's base) - never the same node reused in two
+// places, matching this file's own documented AST-double-free hazard
+// (see build_forin_array_element_read()'s own comment above).
+static ASTNode *build_forin_dynarray_read(ForInDynArrayTarget *t) {
+    ASTNode *node;
+    if (t->is_local) {
+        LocalSymbol *ls = local_at(t->idx, t->levels_up);
+        node = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+        node->op = (TokenType)t->levels_up;
+    } else {
+        node = create_node(NODE_VARIABLE);
+    }
+    node->data.var_idx = t->idx;
+    node->expression_type = t->dynarray_type;
+    return node;
+}
+
+// Builds 'Length(<a fresh read of t>) - 1' - the exact same shape
+// high(arr) already desugars to for a dynamic array (see factor()'s own
+// TOKEN_HIGH branch) - reused here as 'for x in arr do's own runtime
+// upper bound. Ordinary integer arithmetic (both operands are genuinely
+// TYPE_INTEGER), NOT the kind of pointer-in-a-binary-op trap '@'/'Addr'
+// hit - type_checker.c's NODE_BINARY_OP case handles this exactly
+// right, no dedicated node needed. NODE_FOR/NODE_LOCAL_FOR's own
+// codegen already evaluates 'right' exactly once and caches it in a
+// temp var (see codegen.c) regardless of whether it's a compile-time
+// literal (the static-array case) or, as here, a computed expression -
+// no codegen change needed for this to work.
+static ASTNode *build_forin_dynarray_upper_bound(ForInDynArrayTarget *t) {
+    ASTNode *len_call = create_node(NODE_BUILTIN_CALL);
+    len_call->op = TOKEN_LENGTH;
+    len_call->left = build_forin_dynarray_read(t);
+    len_call->expression_type = TYPE_INTEGER;
+    ASTNode *one = create_node(NODE_NUMBER);
+    one->data.num_value = 1;
+    one->expression_type = TYPE_INTEGER;
+    ASTNode *node = create_node(NODE_BINARY_OP);
+    node->op = TOKEN_MINUS;
+    node->left = len_call;
+    node->right = one;
+    node->expression_type = TYPE_INTEGER;
+    return node;
+}
+
+// Builds ONE element read of a resolved for-in DYNAMIC array target,
+// indexed by index_ref (a fresh read of the hidden sweep variable, same
+// convention as build_forin_array_element_read() above).
+static ASTNode *build_forin_dynarray_element_read(ForInDynArrayTarget *t, ASTNode *index_ref) {
+    ASTNode *node = create_node(NODE_DYNARRAY_ACCESS);
+    node->left = build_forin_dynarray_read(t);
+    node->right = index_ref;
+    node->expression_type = t->elem_type;
+    return node;
+}
+
 // Parses the 'in <set expr> do <body>' tail of 'for x in s do stmt',
 // given the loop variable already resolved to a GLOBAL scalar
 // (sym_idx - a plain global, a with-field, a global record field, or a
@@ -12371,6 +12503,67 @@ static ASTNode *parse_for_in_tail_global(int sym_idx) {
         for_node->extra = body_compound;
 
         return for_node;
+    }
+
+    ForInDynArrayTarget dyn_target;
+    if (try_resolve_forin_dynarray_here(&dyn_target)) {
+        if (sym_table[sym_idx].type != dyn_target.elem_type) {
+            compile_error(line, "'for' loop variable's type doesn't match the array's element type");
+        }
+        match(TOKEN_DO);
+
+        char idx_name[MAX_NAME];
+        snprintf(idx_name, MAX_NAME, "__for_in_arr_idx%d", sym_count);
+        int idx_sym_idx = sym_count;
+        add_var(idx_name, TYPE_INTEGER);
+
+        // Cached ONCE, before the loop starts - NODE_FOR's own codegen
+        // would cache a runtime 'right' bound automatically (see
+        // build_forin_dynarray_upper_bound()'s own comment), but this
+        // function's LOCAL twin (parse_for_in_tail_local(), using
+        // NODE_LOCAL_FOR) does NOT: its 'right' is re-evaluated every
+        // single loop condition check unless the caller pre-caches it
+        // (see NODE_LOCAL_FOR's own comment in codegen.c) - which would
+        // both waste work and, worse, silently re-read a SHRUNK/GROWN
+        // length if the loop body itself calls SetLength on the array.
+        // Caching explicitly here, uniformly for both this function and
+        // its local twin, sidesteps that difference entirely rather than
+        // relying on it.
+        int len_slot, len_is_local;
+        ASTNode *len_cache_assign = cache_expr_once(build_forin_dynarray_upper_bound(&dyn_target),
+                                                      "for_in_dynarr_len", &len_slot, &len_is_local);
+
+        ASTNode *for_node = create_node(NODE_FOR);
+        for_node->data.var_idx = idx_sym_idx;
+        for_node->op = TOKEN_TO;
+        ASTNode *lo = create_node(NODE_NUMBER);
+        lo->data.num_value = 0;
+        lo->expression_type = TYPE_INTEGER;
+        for_node->left = lo;
+        for_node->right = make_cached_ref(len_slot, len_is_local);
+
+        ASTNode *idx_read = create_node(NODE_VARIABLE);
+        idx_read->data.var_idx = idx_sym_idx;
+        idx_read->expression_type = TYPE_INTEGER;
+        ASTNode *element_read = build_forin_dynarray_element_read(&dyn_target, idx_read);
+
+        ASTNode *assign_x = create_node(NODE_ASSIGN);
+        assign_x->data.var_idx = sym_idx;
+        assign_x->expression_type = sym_table[sym_idx].type;
+        assign_x->left = wrap_range_check(element_read, sym_table[sym_idx].is_subrange,
+            sym_table[sym_idx].subrange_lower, sym_table[sym_idx].subrange_upper);
+
+        loop_depth++;
+        assign_x->next = statement();   // body
+        loop_depth--;
+        ASTNode *body_compound2 = create_node(NODE_COMPOUND);
+        body_compound2->left = assign_x;
+        for_node->extra = body_compound2;
+
+        len_cache_assign->next = for_node;
+        ASTNode *compound = create_node(NODE_COMPOUND);
+        compound->left = len_cache_assign;
+        return compound;
     }
 
     ASTNode *collection_expr = arithmetic_expression();
@@ -12549,6 +12742,58 @@ static ASTNode *parse_for_in_tail_local(int local_idx) {
         for_node->extra = body_compound;
 
         return for_node;
+    }
+
+    ForInDynArrayTarget dyn_target;
+    if (try_resolve_forin_dynarray_here(&dyn_target)) {
+        if (current_locals[local_idx].type != dyn_target.elem_type) {
+            compile_error(line, "'for' loop variable's type doesn't match the array's element type");
+        }
+        match(TOKEN_DO);
+
+        char idx_name[MAX_NAME];
+        snprintf(idx_name, MAX_NAME, "__for_in_arr_idx_local%d", current_local_count);
+        int idx_slot = add_local(idx_name, TYPE_INTEGER);
+
+        // Cached ONCE, before the loop starts - see the identical
+        // comment in parse_for_in_tail_global()'s own dynamic-array
+        // branch for why this is required (NODE_LOCAL_FOR, unlike
+        // NODE_FOR, never caches a runtime 'right' bound itself).
+        int len_slot, len_is_local;
+        ASTNode *len_cache_assign = cache_expr_once(build_forin_dynarray_upper_bound(&dyn_target),
+                                                      "for_in_dynarr_len", &len_slot, &len_is_local);
+
+        ASTNode *for_node = create_node(NODE_LOCAL_FOR);
+        for_node->data.var_idx = idx_slot;
+        for_node->op = TOKEN_TO;
+        ASTNode *lo = create_node(NODE_NUMBER);
+        lo->data.num_value = 0;
+        lo->expression_type = TYPE_INTEGER;
+        for_node->left = lo;
+        for_node->right = make_cached_ref(len_slot, len_is_local);
+
+        ASTNode *idx_read = create_node(NODE_LOCAL_VAR);
+        idx_read->data.var_idx = idx_slot;
+        idx_read->expression_type = TYPE_INTEGER;
+        ASTNode *element_read = build_forin_dynarray_element_read(&dyn_target, idx_read);
+
+        ASTNode *assign_x = create_node(NODE_LOCAL_ASSIGN);
+        assign_x->data.var_idx = local_idx;
+        assign_x->expression_type = current_locals[local_idx].type;
+        assign_x->left = wrap_range_check(element_read, current_locals[local_idx].is_subrange,
+            current_locals[local_idx].subrange_lower, current_locals[local_idx].subrange_upper);
+
+        loop_depth++;
+        assign_x->next = statement();   // body
+        loop_depth--;
+        ASTNode *body_compound2 = create_node(NODE_COMPOUND);
+        body_compound2->left = assign_x;
+        for_node->extra = body_compound2;
+
+        len_cache_assign->next = for_node;
+        ASTNode *compound = create_node(NODE_COMPOUND);
+        compound->left = len_cache_assign;
+        return compound;
     }
 
     ASTNode *collection_expr = arithmetic_expression();

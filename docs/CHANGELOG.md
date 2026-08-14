@@ -3215,6 +3215,55 @@ anyway, so this is where they land instead.
       [docs/LANGUAGE.md](LANGUAGE.md#pointer-and-addraddr). A full
       regression sweep (866 test files) found only the 10 new test files
       differing - everything else byte-for-byte identical before/after.
+- [x] `for x in arr do` for dynamic arrays - closes the one item the
+      dynamic-arrays roadmap entry named specifically. Small because
+      both halves it needed already existed independently: `NODE_FOR`'s
+      own codegen already evaluates its end bound exactly once and
+      caches it in a temp var, regardless of whether that bound is a
+      compile-time literal (the existing static-array case) or a
+      general runtime expression, so no codegen change was needed; and
+      `Length(arr) - 1` was already fully built as `high(arr)`'s own
+      dynamic-array desugaring, reused here verbatim for the loop's own
+      upper bound. The actual gap was narrow: the existing `for x in arr
+      do` array-resolver only ever checked a STATIC array's `is_array`
+      flag, and a dynamic array variable never sets that (it's a plain
+      scalar int naming a heap block, exactly like a pointer), so it
+      silently fell through, unrecognized, every time.
+
+      **One real correctness snag, caught by writing the obvious
+      adversarial test rather than assumed safe from the design**:
+      `NODE_LOCAL_FOR` (used when the loop VARIABLE itself, as opposed
+      to the array, is local) does NOT cache its own end bound the way
+      `NODE_FOR` does - its `right` is re-evaluated on every single loop
+      condition check unless the caller pre-caches it into a temp slot
+      itself (an existing, documented difference from `NODE_FOR`, easy
+      to miss since the two look almost identical). Without catching
+      this, a dynamic array's length would have been re-read every
+      iteration - not just wasteful, but a genuine behavioral bug if the
+      loop body itself calls `SetLength` on the array being iterated
+      (an infinite/much-longer loop on growth, skipped elements on
+      shrink). Fixed by explicitly caching the bound via
+      `cache_expr_once()`/`make_cached_ref()` - an existing helper pair
+      already built for exactly this "evaluate once, reference many
+      times, works whether the caching slot needs to be local or
+      global" problem (already used by this same feature's own
+      string-iteration case) - applied uniformly to BOTH the global and
+      local loop-variable paths rather than only the one that happened
+      to need it, so neither can silently regress if the other's
+      requirements change later. Verified directly with a test that
+      grows the array mid-loop and confirms the iteration count still
+      matches the length at loop start, not after.
+
+      See `examples/test/forin/test_forin_dynarray_*.pas` (7 positive
+      cases - summing a global array, a local array, a `var`-parameter
+      array, an empty/never-`SetLength`'d array, a `byte`-element array
+      confirming range-checking still applies, the loop variable itself
+      being local while the array is global, and the mid-loop-`SetLength`
+      safety case above; 1 error case - the loop variable's type not
+      matching the array's element type) and
+      [docs/LANGUAGE.md](LANGUAGE.md#for-x-in--do). A full regression
+      sweep (874 test files) found only the 8 new test files differing -
+      everything else byte-for-byte identical before/after.
 
 ### Shipped from the OOP features survey
 

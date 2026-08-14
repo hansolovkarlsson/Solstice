@@ -2459,6 +2459,30 @@ each iteration; no evaluate-once caching is needed here (unlike a set
 or string expression) since an array is never itself an expression
 value in this compiler, only ever accessed by name.
 
+**Iterating a dynamic array**:
+
+```pascal
+var
+    arr: array of integer;
+    x, sum: integer;
+SetLength(arr, 3);
+arr[0] := 10; arr[1] := 20; arr[2] := 30;
+sum := 0;
+for x in arr do
+    sum := sum + x;
+writeln(sum);   { 60 }
+```
+
+Works the same way as a static array — `x` must match the declared
+element type, `arr` can be a global, local, or `var` parameter — except
+the length isn't known at compile time, so `Length(arr)` is evaluated
+and cached exactly **once**, before the loop starts, same as a set or
+string expression. This matters if the loop body itself calls
+`SetLength` on the same array: the loop still runs exactly as many
+times as `arr`'s length was *when the loop started*, never fewer or
+more, regardless of how the array's own length changes underneath it
+during the loop.
+
 **Iterating a string**:
 
 ```pascal

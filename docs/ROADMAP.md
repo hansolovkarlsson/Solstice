@@ -53,15 +53,15 @@ anyway, so this is where they land instead.
 
 - [ ] Dynamic array follow-ups — 1D dynamic arrays with primitive
       element types (`array of integer`, `SetLength`/`Length`/`High`/
-      `Low`, reference semantics) have shipped (see
-      [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays)). Still open:
+      `Low`, reference semantics) and `for x in arr do` have shipped
+      (see [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays)). Still open:
       multi-dimensional dynamic arrays; record/named-type/nested-array
       element types; the `nil` literal for dynamic arrays; `Copy`/
-      slicing; array-literal syntax (`arr := [1, 2, 3];`); `for x in arr
-      do`; a dynamic-array-typed record/class field or function return
-      type; and a named type-alias form (`type TIntArray = array of
-      integer;`) — none of this compiler's arrays, static or dynamic,
-      support a named alias yet.
+      slicing; array-literal syntax (`arr := [1, 2, 3];`); a dynamic-
+      array-typed record/class field or function return type; and a
+      named type-alias form (`type TIntArray = array of integer;`) —
+      none of this compiler's arrays, static or dynamic, support a named
+      alias yet.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
