@@ -150,6 +150,30 @@ procedural value today is uniformly just a plain int (a code address).
 Logged here, rather than left an open checklist item, so none of this
 gets mistaken for an unexamined gap later.
 
+**Considered, explicitly out of scope: `TObject` implicit root class**
+(the virtual-destructor half of this originally-bundled idea has
+shipped — see the destructor entry above; this is what's left). Scoped
+in detail, not just floated: every consumer of `parent_class_ptr_idx`
+(`class_type_is_subtype_of()`, the `protected`-visibility ancestry
+check, `OP_IS_INSTANCE`'s runtime `vm_class_parent[]` walk) already
+terminates on `-1` rather than special-casing "no parent," so
+retrofitting a real ancestor above every class — pre-registering an
+empty `TObject` in `parse_ast()` and defaulting `parse_class_
+declaration()`'s parent index to it instead of `-1` — would be
+mechanical, not architectural; a field-free class already allocates
+correctly today (heap offset 0 is always the hidden runtime type tag),
+so even `new`/`dispose` on a bare `TObject` needs no new code path.
+With zero fields and zero methods, though, the entire payoff is
+narrow: a `TObject`-typed variable/parameter/array element could accept
+*any* class instance via the existing widening/`is`/`as` machinery — no
+`ClassName`/`Free`/RTTI, which need machinery that doesn't exist yet.
+No generic containers, `TObject`-typed collections, or RTTI exist in
+this compiler to actually consume that, and `MAX_POINTER_TYPES` is only
+20 — every compile would unconditionally spend one slot on it. Revisit
+if a concrete need for a heterogeneous "any class instance" container
+or parameter shows up; not worth carrying as pure infrastructure ahead
+of one.
+
 ### Object-oriented language features under consideration (Delphi-inspired)
 
 A survey of Delphi/Object Pascal features not yet tracked anywhere on
@@ -161,13 +185,6 @@ unscoped ideas, not committed work, and none has a design/plan yet.
 
 **Moderate — needs some new machinery:**
 
-- [ ] `TObject` implicit root class — the virtual-destructor half of
-      this originally-bundled idea has shipped (see the destructor entry
-      above); this is what's left. Retrofitting every class's
-      `parent_class_ptr_idx` to an implicit universal ancestor earns its
-      keep once something actually needs one common type to hang off of
-      - generic containers, a `TObject`-typed collection, RTTI - none of
-      which exist in this compiler yet. Revisit when one of those does.
 - [ ] Typed exception handlers (`on E: SomeExceptionType do`) — needs an
       actual exception-class hierarchy, which drags in most of classes'
       own machinery a second time; explicitly cut when try/except
