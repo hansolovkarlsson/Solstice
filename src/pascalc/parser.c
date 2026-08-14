@@ -2562,6 +2562,17 @@ static int try_get_array_bounds_here(int *lower, int *upper) {
     }
     int rv_idx = find_record_var(token.text);
     if (rv_idx == -1) return 0;
+    // A dynamic-array (or plain scalar) field has no compile-time bounds
+    // to give - unlike the plain-identifier case above, this branch
+    // can't tell until AFTER consuming 'rec.field', so a lexer save/
+    // restore (same primitive parse_record_field_group() uses for its
+    // own 'can't tell yet' case) is needed to still honor this
+    // function's own "return 0 without consuming anything" contract for
+    // that case, letting the caller's generic expression() fallback
+    // handle a dynamic-array field exactly like a bare dynamic-array
+    // variable already does.
+    Token saved_token = token;
+    LexerPos saved_pos = lexer_save_pos();
     char rec_name[MAX_NAME];
     strcpy(rec_name, token.text);
     match(TOKEN_IDENTIFIER);
@@ -2582,7 +2593,9 @@ static int try_get_array_bounds_here(int *lower, int *upper) {
     int field_sym = rv->field_sym_idx[field_idx];
     match(TOKEN_IDENTIFIER);
     if (!sym_table[field_sym].is_array) {
-        compile_error(token.line, "'%s.%s' is not an array", rec_name, field_name);
+        token = saved_token;
+        lexer_restore_pos(saved_pos);
+        return 0;
     }
     if (sym_table[field_sym].is_2d) {
         compile_error(token.line, "'%s.%s' is a 2D array - low/high/length don't support 2D arrays yet", rec_name, field_name);
@@ -5035,6 +5048,22 @@ static ASTNode *parse_heap_deref_read(ASTNode *base, int line) {
     if (is_proc_type(base->expression_type) && token.type == TOKEN_LPAREN) {
         return build_procvar_call(base, base->expression_type - TYPE_PROC_BASE, line, 0);
     }
+    if (is_dynarray_type(base->expression_type) && token.type == TOKEN_LBRACKET) {
+        // 'c.arr[i]' - a dynamic-array class/record-pointer field, read
+        // + indexed. 'base' already reads the field's own dynarray
+        // pointer value (an ordinary NODE_HEAP_FIELD_ACCESS built by the
+        // loop above) - wrapping it in NODE_DYNARRAY_ACCESS is the same
+        // "left = an arbitrary pointer-reading expression" shape every
+        // other dynamic-array read site already uses.
+        match(TOKEN_LBRACKET);
+        ASTNode *access = create_node(NODE_DYNARRAY_ACCESS);
+        access->line = line;
+        access->left = base;
+        access->right = expression(); // index
+        access->expression_type = dynarray_types[base->expression_type - TYPE_DYNARRAY_BASE].elem_type;
+        match(TOKEN_RBRACKET);
+        return access;
+    }
     return base;
 }
 
@@ -5103,6 +5132,32 @@ static ASTNode *parse_heap_deref_write(ASTNode *base, int line, HeapDerefStep *o
 // first - a method call is a complete statement on its own, never
 // reaching here.
 static ASTNode *build_heap_deref_write_statement(ASTNode *base, HeapDerefStep step) {
+    if (is_dynarray_type(step.result_type) && token.type == TOKEN_LBRACKET) {
+        // 'c.arr[i] := value;' - a dynamic-array class/record-pointer
+        // field, indexed element assignment. resolve_heap_deref_step()
+        // deliberately left this field access unmaterialized for the
+        // "ordinary field, not step.is_array_field" case (the FIXED-size
+        // array field case already consumed its own '[...]' internally -
+        // see that function's own f->is_array branch) - so this builds
+        // it explicitly via make_heap_field_access() (the exact same
+        // helper the read-side loop uses for a non-terminal step), then
+        // wraps it in NODE_DYNARRAY_ASSIGN exactly like every other
+        // "left = an arbitrary pointer-reading expression" dynamic-array
+        // write already does.
+        int line = token.line;
+        ASTNode *field_read = make_heap_field_access(base, step, line);
+        match(TOKEN_LBRACKET);
+        DynArrayTypeDef *d = &dynarray_types[step.result_type - TYPE_DYNARRAY_BASE];
+        ASTNode *stmt = create_node(NODE_DYNARRAY_ASSIGN);
+        stmt->line = line;
+        stmt->left = field_read;
+        stmt->right = expression(); // index
+        match(TOKEN_RBRACKET);
+        match(TOKEN_ASSIGN);
+        stmt->extra = wrap_range_check(expression(), d->elem_is_subrange, d->elem_subrange_lower, d->elem_subrange_upper);
+        stmt->expression_type = d->elem_type;
+        return stmt;
+    }
     match(TOKEN_ASSIGN);
     if (step.is_array_field) {
         ASTNode *stmt = create_node(NODE_HEAP_ARRAY_FIELD_ASSIGN);
@@ -5112,7 +5167,11 @@ static ASTNode *build_heap_deref_write_statement(ASTNode *base, HeapDerefStep st
         // every other procedural-type assignment target already uses -
         // the generic expression() below would misparse a bare proc name
         // as a zero-argument CALL to it, not a reference (see
-        // docs/LANGUAGE.md#procedural-types).
+        // docs/LANGUAGE.md#procedural-types). A FIXED array field's
+        // ELEMENT type can never itself be a dynamic array (nested
+        // dynamic arrays as an element type are rejected elsewhere), so
+        // '>= TYPE_PROC_BASE' is safe here, unlike the ordinary-field
+        // branch below.
         stmt->right = step.result_type >= TYPE_PROC_BASE
             ? parse_proc_value(step.result_type - TYPE_PROC_BASE, token.line)
             : wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
@@ -5122,9 +5181,23 @@ static ASTNode *build_heap_deref_write_statement(ASTNode *base, HeapDerefStep st
     }
     ASTNode *stmt = create_node(NODE_HEAP_FIELD_ASSIGN);
     stmt->left = base;
-    stmt->right = step.result_type >= TYPE_PROC_BASE
-        ? parse_proc_value(step.result_type - TYPE_PROC_BASE, token.line)
-        : wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+    if (is_dynarray_type(step.result_type) && token.type == TOKEN_LBRACKET) {
+        // 'c.arr := [1, 2, 3];' - the array-literal form.
+        stmt->right = parse_dynarray_literal(step.result_type);
+    } else if (is_proc_type(step.result_type)) {
+        // Was 'step.result_type >= TYPE_PROC_BASE' - unsafe once a
+        // dynamic-array field could reach here at all, since
+        // TYPE_DYNARRAY_BASE sits numerically above TYPE_PROC_BASE (see
+        // common.h's DataType ordering) - would have silently misrouted
+        // an ordinary dynamic-array field assignment into
+        // parse_proc_value() instead. is_proc_type() bounds-checks both
+        // ends. Caught directly: 'c.arr := [1, 2, 3];' failed with
+        // "Expected 'nil', a procedure/function name, ..." before this
+        // fix.
+        stmt->right = parse_proc_value(step.result_type - TYPE_PROC_BASE, token.line);
+    } else {
+        stmt->right = wrap_range_check(expression(), step.is_subrange, step.subrange_lower, step.subrange_upper);
+    }
     ASTNode *offset_lit = create_node(NODE_NUMBER);
     offset_lit->data.num_value = step.field_offset;
     offset_lit->expression_type = TYPE_INTEGER;
@@ -6664,6 +6737,21 @@ static ASTNode *factor(void) {
                 if (rv_is_local) {
                     ASTNode *node = record_field_read_node(1, leaf_idx, rv_levels_up);
                     node->line = line;
+                    if (is_dynarray_type(node->expression_type) && token.type == TOKEN_LBRACKET) {
+                        // 'rec.arr[i]' - a local/parameter record's
+                        // dynamic-array field, read+indexed. The global
+                        // path just above (parse_global_symbol_reference)
+                        // already has this built in; the local path
+                        // never needed it before a field could be one.
+                        match(TOKEN_LBRACKET);
+                        ASTNode *access = create_node(NODE_DYNARRAY_ACCESS);
+                        access->line = line;
+                        access->left = node;
+                        access->right = expression(); // index
+                        access->expression_type = dynarray_types[node->expression_type - TYPE_DYNARRAY_BASE].elem_type;
+                        match(TOKEN_RBRACKET);
+                        return access;
+                    }
                     return node;
                 }
                 return parse_global_symbol_reference(leaf_idx, line);
@@ -7188,6 +7276,20 @@ static void parse_typed_const_record_declaration(const char *name, int decl_line
                            "only all-scalar record types are supported as a typed constant's type yet",
                            name, rt->name, rt->fields[i].name);
         }
+        // A dynamic-array field (is_array/is_record both false, but not
+        // a plain scalar type either) has no literal-initializer syntax
+        // at all - a typed constant needs a genuine compile-time value,
+        // and a dynamic array only ever gets one via SetLength/an array
+        // literal, both runtime-only constructs. Checked separately from
+        // the is_array/is_record case above since it's neither of those
+        // - would otherwise silently fall through to whatever generic
+        // scalar-initializer parsing runs next instead of a clear
+        // rejection.
+        if (is_dynarray_type(rt->fields[i].type)) {
+            compile_error(decl_line, "Typed constant '%s': record type '%s' has a dynamic-array field '%s' - "
+                           "a typed constant can't initialize a dynamic array (see docs/LANGUAGE.md)",
+                           name, rt->name, rt->fields[i].name);
+        }
     }
     match(TOKEN_IDENTIFIER); // the record type name, already confirmed by the caller
     match(TOKEN_EQ);
@@ -7374,17 +7476,34 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int
     int is_array = 0;
     int lower = 0, upper = 0;
     if (token.type == TOKEN_ARRAY) {
-        match(TOKEN_ARRAY);
-        match(TOKEN_LBRACKET);
-        lower = parse_int_literal();
-        match(TOKEN_DOTDOT);
-        upper = parse_int_literal();
-        match(TOKEN_RBRACKET);
-        if (upper < lower) {
-            compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+        // 'array[lo..hi] of T' (fixed-size) vs 'array of T' (dynamic) -
+        // ambiguous until the token right after 'array' is seen, so a
+        // one-token lookahead (same save/restore primitive
+        // try_resolve_class_qualified_access() already uses for its own
+        // "can't tell yet" case) decides which. The dynamic case is
+        // NOT handled here at all - falls through to parse_scalar_type()
+        // below instead (restoring back to 'array' unconsumed), which
+        // already has its own 'array of ElementType' branch - reusing it
+        // rather than duplicating its element-type restriction/dedup
+        // logic here.
+        Token saved_token = token;
+        LexerPos saved_pos = lexer_save_pos();
+        next_token();
+        if (token.type == TOKEN_LBRACKET) {
+            match(TOKEN_LBRACKET);
+            lower = parse_int_literal();
+            match(TOKEN_DOTDOT);
+            upper = parse_int_literal();
+            match(TOKEN_RBRACKET);
+            if (upper < lower) {
+                compile_error(token.line, "Invalid array bounds: upper (%d) must be >= lower (%d)", upper, lower);
+            }
+            match(TOKEN_OF);
+            is_array = 1;
+        } else {
+            token = saved_token;
+            lexer_restore_pos(saved_pos);
         }
-        match(TOKEN_OF);
-        is_array = 1;
     }
     int is_nested_record = 0;
     int nested_record_type_idx = -1;
@@ -7416,6 +7535,18 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int
         if (find_record_field(record_type_idx, field_names[i]) != -1) {
             compile_error(token.line, "Duplicate field '%s' in record '%s'", field_names[i], rt->name);
         }
+        // A dynamic-array field's own type is never itself a subrange -
+        // scalar_type_is_subrange/etc, if set here, describe the
+        // DYNAMIC ARRAY'S ELEMENT type (a side effect of
+        // parse_dynarray_of()'s own internal parse_scalar_type() call),
+        // not the field's own value - that per-element bounds info
+        // already lives entirely in dynarray_types[], keyed off the
+        // field's own DataType (see TYPE_DYNARRAY_BASE), exactly like an
+        // ordinary 'var arr: array of byte;' global never copies it onto
+        // its own Symbol.is_subrange either (see parse_var_section()'s
+        // own dynarray branch). Applying it to the field itself here
+        // would wrongly range-check the field's own heap-pointer value.
+        int field_is_dynarray = is_dynarray_type(field_type);
         RecordField *f = &rt->fields[rt->field_count];
         strcpy(f->name, field_names[i]);
         f->is_record = is_nested_record;
@@ -7424,10 +7555,10 @@ static void parse_record_field_group(RecordTypeDef *rt, int record_type_idx, int
         f->is_array = is_array;
         f->array_lower = lower;
         f->array_upper = upper;
-        f->is_subrange = is_nested_record ? 0 : scalar_type_is_subrange;
-        f->subrange_lower = is_nested_record ? 0 : scalar_type_subrange_lower;
-        f->subrange_upper = is_nested_record ? 0 : scalar_type_subrange_upper;
-        f->disk_width = is_nested_record ? 0 : scalar_type_disk_width;
+        f->is_subrange = (is_nested_record || field_is_dynarray) ? 0 : scalar_type_is_subrange;
+        f->subrange_lower = (is_nested_record || field_is_dynarray) ? 0 : scalar_type_subrange_lower;
+        f->subrange_upper = (is_nested_record || field_is_dynarray) ? 0 : scalar_type_subrange_upper;
+        f->disk_width = (is_nested_record || field_is_dynarray) ? 0 : scalar_type_disk_width;
         f->is_private = is_private;
         f->is_protected = is_protected;
         f->declaring_class_ptr_idx = declaring_class_ptr_idx;
@@ -11357,6 +11488,79 @@ static ASTNode *parse_dynarray_writeback_target(void) {
         match(TOKEN_IDENTIFIER);
         return build_return_read_node(line);
     }
+    {
+        // 'SetLength(rec.arr, n)' - a record/class field, global or
+        // local, resolved the same way every other 'rec.field' read
+        // site already does (find_any_record_var_outward() +
+        // resolve_record_field_leaf()), then handed to
+        // record_field_read_node() for the actual read-node shape -
+        // identical to a bare dynamic-array variable from here on, since
+        // a field's storage is just another ordinary hidden global/local
+        // slot.
+        int rv_levels_up, rv_is_local, rv_record_type_idx;
+        const int *rv_field_idx;
+        if (find_any_record_var_outward(token.text, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            char rec_name[MAX_NAME];
+            strcpy(rec_name, token.text);
+            int line = token.line;
+            match(TOKEN_IDENTIFIER);
+            if (token.type != TOKEN_PERIOD) {
+                compile_error(line, "'SetLength' expects a dynamic array variable, not record variable '%s'", rec_name);
+            }
+            match(TOKEN_PERIOD);
+            int leaf_idx = resolve_record_field_leaf(rv_record_type_idx, rv_field_idx, rec_name);
+            DataType field_type = rv_is_local ? local_at(leaf_idx, rv_levels_up)->type : sym_table[leaf_idx].type;
+            if (!is_dynarray_type(field_type)) {
+                compile_error(line, "'SetLength' expects a dynamic array field, not a field of '%s' with a different type", rec_name);
+            }
+            return record_field_read_node(rv_is_local, leaf_idx, rv_levels_up);
+        }
+    }
+    {
+        // 'SetLength(c.arr, n)' - a CLASS instance's dynamic-array
+        // field. Heap-based storage (an offset within c's own heap
+        // block), not a hidden global/local slot the way a plain
+        // record's field is - see resolve_heap_deref_step() - so this
+        // needs the write-chain resolver (parse_heap_deref_write()),
+        // not find_any_record_var_outward() (which only ever finds a
+        // plain, non-pointer record variable; a class-typed variable
+        // never matches it, so there's no overlap with the record-field
+        // check just above).
+        int levels_up;
+        int local_idx = find_local_outward(token.text, &levels_up);
+        ASTNode *base = NULL;
+        if (local_idx != -1) {
+            LocalSymbol *ls = local_at(local_idx, levels_up);
+            if (is_pointer_type(ls->type)) {
+                base = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+                base->data.var_idx = local_idx;
+                base->op = (TokenType)levels_up;
+                base->expression_type = ls->type;
+            }
+        } else {
+            int sym_idx = find_var_soft(token.text);
+            if (sym_idx != -1 && is_pointer_type(sym_table[sym_idx].type)) {
+                base = create_node(NODE_VARIABLE);
+                base->data.var_idx = sym_idx;
+                base->expression_type = sym_table[sym_idx].type;
+            }
+        }
+        if (base) {
+            int line = token.line;
+            char ptr_name[MAX_NAME];
+            strcpy(ptr_name, token.text);
+            match(TOKEN_IDENTIFIER);
+            if (token.type != TOKEN_CARET && !class_dot_deref_pending(base->expression_type)) {
+                compile_error(line, "'SetLength' expects a dynamic array variable, not '%s'", ptr_name);
+            }
+            HeapDerefStep step;
+            base = parse_heap_deref_write(base, line, &step);
+            if (step.is_method_call || step.is_property_setter || step.is_array_field || !is_dynarray_type(step.result_type)) {
+                compile_error(line, "'SetLength' expects a dynamic array field, not a field of '%s' with a different type", ptr_name);
+            }
+            return make_heap_field_access(base, step, line);
+        }
+    }
     char name[MAX_NAME];
     strcpy(name, token.text);
     int line = token.line;
@@ -11397,6 +11601,41 @@ static ASTNode *parse_dynarray_writeback_target(void) {
 // from read_node itself (already the dynamic array's own encoded type)
 // rather than a hardcoded TYPE_STRING.
 static ASTNode *dynarray_writeback_assign_node(ASTNode *read_node, ASTNode *value) {
+    if (read_node->type == NODE_HEAP_FIELD_ACCESS) {
+        // A class/record-pointer field ('c.arr') - built by
+        // make_heap_field_access(), whose own left/right are the
+        // object-reading expression and the field's offset literal
+        // respectively. UNLIKE the plain-variable cases below (which
+        // only ever copy read_node's data.var_idx/op - plain ints, never
+        // a pointer), read_node itself is NOT safely discardable here:
+        // SetLength's own call site (see TOKEN_SETLENGTH in statement())
+        // ALSO splices this exact same read_node into its own
+        // NODE_BUILTIN_CALL as the "old array pointer" operand, so it's
+        // very much still reachable and will be freed through THAT path.
+        // Reusing read_node->left/right directly here, instead of
+        // cloning them, would alias the same subtrees into two parents -
+        // caught directly as a double-free crash in free_ast()
+        // (libmalloc's "BUG IN LIBMALLOC" abort) when this was first
+        // written to reuse the pointers as-is. base is always the
+        // simple, childless "plain variable read" shape
+        // parse_dynarray_writeback_target() itself just built (a class-
+        // typed local/global variable), never a further nested field
+        // chain, so a shallow field-by-field clone is sufficient - no
+        // general AST-clone helper needed for this one case.
+        ASTNode *node = create_node(NODE_HEAP_FIELD_ASSIGN);
+        ASTNode *base_clone = create_node(read_node->left->type);
+        base_clone->data.var_idx = read_node->left->data.var_idx;
+        base_clone->op = read_node->left->op;
+        base_clone->expression_type = read_node->left->expression_type;
+        node->left = base_clone;
+        node->right = value;
+        ASTNode *offset_clone = create_node(NODE_NUMBER);
+        offset_clone->data.num_value = read_node->right->data.num_value;
+        offset_clone->expression_type = TYPE_INTEGER;
+        node->extra = offset_clone;
+        node->expression_type = read_node->expression_type;
+        return node;
+    }
     NodeType write_type = read_node->type == NODE_VAR_PARAM_READ ? NODE_VAR_PARAM_ASSIGN
                          : read_node->type == NODE_LOCAL_VAR ? NODE_LOCAL_ASSIGN
                          : NODE_ASSIGN;
@@ -12180,14 +12419,42 @@ static ASTNode *parse_global_assignment(int idx) {
 }
 
 // Given an already-resolved LOCAL record field (a current_locals[] index),
-// parses ':=' and the value expression. A record field local is always a
-// plain scalar (add_local_record() rejects an array field), so unlike
-// parse_global_assignment() there's no indexing to handle - this is the
-// simple tail end of NODE_LOCAL_ASSIGN construction, reused wherever a
-// local record field is a write target.
+// parses ':=' (or, for a dynamic-array field, '[index] :=') and the
+// value expression. A record field local is otherwise always a plain
+// scalar (add_local_record() only rejects a FIXED-size array field -
+// is_array - a dynamic-array field stays an ordinary scalar-shaped local
+// slot, exactly like a pointer field already is), so unlike
+// parse_global_assignment() there's normally no indexing to handle -
+// this is the simple tail end of NODE_LOCAL_ASSIGN construction, reused
+// wherever a local record field is a write target.
 static ASTNode *parse_local_assignment(int local_idx, int levels_up) {
-    match(TOKEN_ASSIGN);
     LocalSymbol *ls = local_at(local_idx, levels_up);
+    if (is_dynarray_type(ls->type) && token.type == TOKEN_LBRACKET) {
+        // 'rec.arr[i] := value;' - same shape every other dynamic-array
+        // indexed-assignment site already builds.
+        int line = token.line;
+        match(TOKEN_LBRACKET);
+        ASTNode *base = create_node(NODE_LOCAL_VAR);
+        base->line = line;
+        base->data.var_idx = local_idx;
+        base->op = (TokenType)levels_up;
+        base->expression_type = ls->type;
+        DynArrayTypeDef *d = &dynarray_types[ls->type - TYPE_DYNARRAY_BASE];
+        ASTNode *stmt = create_node(NODE_DYNARRAY_ASSIGN);
+        stmt->line = line;
+        stmt->left = base;
+        stmt->right = expression(); // index
+        match(TOKEN_RBRACKET);
+        match(TOKEN_ASSIGN);
+        stmt->extra = wrap_range_check(expression(), d->elem_is_subrange, d->elem_subrange_lower, d->elem_subrange_upper);
+        stmt->expression_type = d->elem_type;
+        return stmt;
+    }
+    match(TOKEN_ASSIGN);
+    if (is_dynarray_type(ls->type) && token.type == TOKEN_LBRACKET) {
+        // 'rec.arr := [1, 2, 3];' - the array-literal form.
+        return record_field_assign_node(1, local_idx, levels_up, parse_dynarray_literal(ls->type));
+    }
     return record_field_assign_node(1, local_idx, levels_up,
         wrap_range_check(expression(), ls->is_subrange,
                           ls->subrange_lower, ls->subrange_upper));

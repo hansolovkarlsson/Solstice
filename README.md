@@ -549,9 +549,16 @@ literal as a direct by-value call argument (`Sum([1, 2, 3, 4])`, no
 variable needed first), the callee's own declared parameter type telling
 `[...]` apart from a set constructor the same way an assignment target's
 type already does (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#array-literals)). Not yet
-implemented: `copy`/slicing or a named alias for a fixed-size array; an
-array literal for a fixed-size array, as a `var`/`const` call argument,
-or in any other general-expression position; a dynamic-array-typed
-record/class field; variant records; and a whole record or an array
-element as a `var` argument.
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-literals)); and a dynamic-
+array-typed **record/class field** (`data: array of integer;` inside a
+`record`/`class`) — declared, `SetLength`'d, indexed, and assigned
+(including an array literal) exactly like a plain variable, for a
+global/local/nested/value-parameter record or a class, sharing storage
+on whole-record copy the same way a pointer-typed field already does
+(see [docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)) — one
+gap: `for x in rec.field do` doesn't recognize a field as an iterable
+yet. Not yet implemented: `copy`/slicing or a named alias for a
+fixed-size array; an array literal for a fixed-size array, as a
+`var`/`const` call argument, or in any other general-expression
+position; variant records; and a whole record or an array element as a
+`var` argument.

@@ -75,17 +75,32 @@ anyway, so this is where they land instead.
       3])`) has shipped too, same dispatch-on-known-type idea applied to
       `parse_call_arguments()` - a `var`/`const` argument still can't
       take a literal (both share this compiler's variable-reference
-      passing mechanism, which needs a real variable). Still open:
-      multi-dimensional dynamic arrays; record/named-type/nested-array
-      element types (this is different from the array's own type being
-      aliased, which now works - an alias still can't stand in for a
-      record/pointer/procedural/named-type ELEMENT type); array literals
-      for a fixed-size array, as a `var`/`const` call argument, or in any
-      other general-expression position; a dynamic-array-typed
-      record/class field (unlike the return-type case, this one's still
-      unsupported); a named alias for a FIXED-size array;
-      and comparing two dynamic arrays directly (`arr1 = arr2`, as
-      opposed to comparison against `nil`, which now works).
+      passing mechanism, which needs a real variable). A dynamic-array-
+      typed record/class field has shipped too (`data: array of integer;`
+      inside a `record`/`class`) - turned out to need real work despite
+      an initial "should be free" assessment: plain record fields (each
+      one an ordinary hidden global/local, same storage a pointer field
+      already gets) mostly *were* free once the field-type parser
+      restriction was lifted, but a CLASS field's heap-offset-based
+      storage (see `resolve_heap_deref_step()`) needed its own parallel
+      set of fixes - read/write/indexing support in the heap-deref chain,
+      plus a genuine bug caught along the way (`build_heap_deref_write_
+      statement()`'s procedural-type check, `>= TYPE_PROC_BASE`, would
+      have silently misrouted a dynamic-array field's own assignment,
+      since `TYPE_DYNARRAY_BASE` sits numerically above `TYPE_PROC_BASE`
+      - same class of bug as the return-type work's own `TYPE_PROC_BASE`
+      finding). One real, still-open gap: `for x in rec.field do` doesn't
+      recognize a record/class field as an iterable yet (assign to a
+      plain variable first as a workaround) - see
+      [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields). Still
+      open: multi-dimensional dynamic arrays; record/named-type/nested-
+      array element types (this is different from the array's own type
+      being aliased, which now works - an alias still can't stand in for
+      a record/pointer/procedural/named-type ELEMENT type); array
+      literals for a fixed-size array, as a `var`/`const` call argument,
+      or in any other general-expression position; a named alias for a
+      FIXED-size array; and comparing two dynamic arrays directly (`arr1
+      = arr2`, as opposed to comparison against `nil`, which now works).
 
 **Considered, explicitly out of scope: inline assembly** (`asm ... end;`
 embedding raw `.sasm` directly inside a Pascal source file, letting a

@@ -2101,6 +2101,53 @@ position (a typed-constant initializer, a `write`/`writeln` argument,
 etc.) — only a bare assignment RHS and a by-value call argument are
 supported so far.
 
+### Record and class fields
+
+```pascal
+type
+    TBox = record
+        data: array of integer;
+    end;
+    TFoo = class
+        data: array of integer;
+    end;
+var
+    b: TBox;
+    f: TFoo;
+begin
+    SetLength(b.data, 3);
+    b.data[0] := 1; b.data[1] := 2; b.data[2] := 3;
+    b.data := [10, 20, 30];        { array-literal assignment works too }
+
+    new(f);
+    SetLength(f.data, 2);
+    f.data[0] := 100;
+    writeln(Length(b.data), ' ', f.data[0]);
+end.
+```
+
+A `record` field or a `class` field can be a dynamic array — declared,
+`SetLength`'d, indexed, read, and written exactly like a plain variable
+of the same type, including array-literal assignment and `Copy`. Works
+for a global or local record/class variable, a record nested inside
+another record, and a `record`/`class` passed as an ordinary (non-`var`)
+parameter (the field's pointer is shared with the caller exactly like a
+plain dynamic-array value parameter's own reference semantics — an
+element write is visible to the caller, `SetLength` inside the callee
+isn't). Whole-record assignment (`b2 := b1;`) copies a dynamic-array
+field's pointer, not its contents — the same shallow-copy behavior a
+pointer-typed field already has.
+
+**The one gap**: `for x in someRecord.someField do` doesn't recognize a
+record/class field as a valid iterable yet, even though the identical
+expression works everywhere else (indexing, `Length`, `Copy`,
+`SetLength`) — assign it to a plain variable first (`arr :=
+someRecord.someField; for x in arr do ...`) as a workaround. A dynamic
+array field also can't be a typed constant's own field value — there's
+no literal syntax for one (a typed constant needs a genuine compile-time
+value; a dynamic array only ever gets one via `SetLength`/an array
+literal, both runtime-only).
+
 ### What's not supported yet
 
 - **Multi-dimensional dynamic arrays** — `array of array of integer` (or
@@ -2115,11 +2162,8 @@ supported so far.
   initializer, a `write`/`writeln` argument, etc.) — see "Array
   literals" above for what IS supported (an assignment RHS, and a
   by-value call argument).
-- **A dynamic-array-typed `record`/class field** — only a plain
-  `var`/parameter/function return type is supported so far. (A function
-  return type IS supported — see [Functions](#functions)'s own
-  "Reading the function's own name as an expression" for the read/index
-  support that took, specific to this one case.)
+- **`for x in ...` over a record/class field** — see "Record and class
+  fields" just above.
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
   comparison against `nil` is supported; standard Pascal doesn't define
   whole-array comparison either.
@@ -5087,10 +5131,9 @@ end.
   end;
   ```
   See [Dynamic arrays](#dynamic-arrays) for everything else about the
-  type itself. A dynamic-array-typed **record/class field** is a
-  separate, still-unsupported case (see that section's own "What's not
-  supported yet") — this exception is specific to a function's own
-  return value.
+  type itself, including a dynamic-array-typed **record/class field**
+  (also supported, but a genuinely separate case from this one - see
+  that section's own "Record and class fields").
 - **A function can be called as a statement**, discarding its return
   value, exactly like a procedure call:
   ```pascal

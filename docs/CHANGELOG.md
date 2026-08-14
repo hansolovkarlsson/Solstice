@@ -3650,6 +3650,99 @@ anyway, so this is where they land instead.
       reuses the exact same literal-building codegen array-literal
       assignment already shipped). Confirmed no regression in the
       existing `dynarray`/`set` regression suites.
+- [x] Dynamic-array-typed record/class fields - `data: array of integer;`
+      inside a `record` or `class`. Closes the roadmap's "a dynamic-
+      array-typed record/class field" gap.
+
+      **Turned out to be two genuinely different problems wearing the
+      same name.** An initial scoping pass (reading `record_field_read_
+      node()`/`record_field_assign_node()`/`add_record_var_fields()`/
+      `add_local_record()`) found that PLAIN record fields mostly
+      already worked: each field is an ordinary hidden global/local
+      Symbol keyed only on its own declared `DataType`, so a dynamic
+      array field - "just a pointer," like a pointer-typed field already
+      is - fell straight through every `is_array`-gated (this compiler's
+      own name for a *fixed-size* array field) special case into the
+      existing generic scalar-field path, with zero changes. What
+      genuinely needed work there: `parse_record_field_group()`'s
+      hard-coded `array[lo..hi]`-only parse (fixed via a one-token
+      lookahead, falling through to the existing `parse_scalar_type()`/
+      `parse_dynarray_of()` for `array of T`); a missing indexing check
+      on the LOCAL-record read/write sites (the GLOBAL path already had
+      it, via `parse_global_symbol_reference()`/`parse_global_
+      assignment()`); a missing `rec.field` case in `SetLength`'s own
+      target resolver; and an explicit typed-constant rejection (a
+      dynamic array has no compile-time literal value at all).
+
+      **CLASS fields were a separate, harder problem** - the "should be
+      free once record fields work" line from the original scoping
+      turned out wrong, caught directly by testing (`SetLength(f.data,
+      2);` on a class field failed with "Unknown identifier 'f'" even
+      after the record-field work above landed). A class field's storage
+      is a heap-block offset (`resolve_heap_deref_step()`), not an
+      independent Symbol the way a plain record's field is - genuinely
+      different machinery, needing its own parallel set of fixes:
+      `parse_heap_deref_read()`/`build_heap_deref_write_statement()` both
+      needed the same is-this-a-dynamic-array-followed-by-`[`-or-array-
+      literal checks added, and `SetLength`'s target resolver needed a
+      second new branch (alongside the plain-record one) walking
+      `parse_heap_deref_write()` for a class/pointer-typed base.
+
+      **A genuine pre-existing bug caught along the way, not introduced
+      by this work**: `build_heap_deref_write_statement()`'s procedural-
+      type check was `step.result_type >= TYPE_PROC_BASE` - the *exact*
+      same latent bug already found and fixed in `build_return_assign_
+      node()` during the return-type work, just at a second call site
+      nobody had exercised with a dynamic-array value yet
+      (`TYPE_DYNARRAY_BASE` sits numerically above `TYPE_PROC_BASE` in
+      the `DataType` enum - see common.h). `f.data := [1, 2, 3];` failed
+      with "Expected 'nil', a procedure/function name, ..." before the
+      fix (`is_proc_type()`, bounds-checked both ends, same as before).
+
+      **A real double-free crash, found and fixed, not shipped**: the
+      first version of `SetLength`'s class-field write-back reused
+      `read_node->left`/`read_node->right` (the field's own object-
+      reading expression and offset literal) directly as children of the
+      new write node - but `read_node` itself is NOT safely discardable
+      for `SetLength` specifically (unlike the plain-variable case this
+      mirrored): the `TOKEN_SETLENGTH` call site in `statement()` also
+      splices the exact same `read_node` into its own `NODE_BUILTIN_
+      CALL` as the "old array pointer" operand, so both the original and
+      the new node ended up with the same child subtrees - a double-free
+      caught directly as a `libmalloc` abort (`Trace/BPT trap: 5`) via
+      `lldb`, not by inspection. Fixed by shallow-cloning the base/offset
+      instead of reusing the pointers.
+
+      **Confirmed, not just assumed**: nesting (a dynamic-array field
+      inside a record nested in another record), whole-record copy
+      (shallow/shared, like a pointer field), value-parameter passing
+      (element writes shared, `SetLength` inside the callee stays local
+      - identical to a plain dynarray value parameter), and `Copy()` on
+      a field all work correctly, via the same underlying machinery, no
+      extra code needed for any of them.
+
+      **One real, still-open gap, found and left explicitly documented
+      rather than chased further**: `for x in rec.field do` doesn't
+      recognize a record/class field as an iterable - `for x in ...`'s
+      own collection-type resolution has a separate, elaborate
+      desugaring path per collection kind that would need its own
+      record-field-aware fix, a distinct piece of work from everything
+      above. `for x in ...` on a bare dynamic-array variable is
+      unaffected.
+
+      See `examples/test/dynarray/test_dynarray_field_*.pas` (8 positive
+      cases - global and local record fields, a class field, nesting,
+      cross-compatibility with a plain `array of integer`, whole-record
+      copy semantics, value-parameter semantics, and `Copy()`; 2 error
+      cases - the typed-constant rejection and the documented `for...in`
+      gap) and [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields).
+      Round-tripped through `solas`/`desole` (zero new opcodes - every
+      fix reuses existing node types: `NODE_HEAP_FIELD_ACCESS/ASSIGN`,
+      `NODE_DYNARRAY_ACCESS/ASSIGN`, `NODE_LOCAL_VAR`, `NODE_NUMBER`).
+      Confirmed no regression via a full `examples/test/` sweep,
+      including a crash-specific pass (exit code > 1) that surfaced two
+      false positives (`halt(N)`'s own deliberate process-exit-code
+      tests) and zero real ones.
 
 ### Shipped from the OOP features survey
 
