@@ -41,7 +41,40 @@ primitives instead of each reinventing them.
       between fields, which variant records deliberately did NOT
       provide (see docs/LANGUAGE.md#variant-records); would need a real
       addressing/memory model for records that doesn't exist yet
-- [ ] Possibly a linker for separately-compiled object-style units (`.obj`)
+
+**Considered, explicitly out of scope: a linker for separately-compiled
+object-style units** (`.obj`). Scoped in detail, not just floated:
+`uses` today is pure source-level inclusion — `load_unit()` (`parser.c`)
+re-parses a unit's `.pas` file on every compile and merges its
+declarations straight into the same global tables the main program
+uses, so a program using units is indistinguishable from one
+concatenated file by the time codegen runs (`docs/CHANGELOG.md` said as
+much when units shipped). Real separate compilation would need: an
+extended object-file format (the current `.bin` - `bytecode.c` - is a
+flat dump of `sym_table[]`/`code[]`/`string_pool[]` with no relocation
+table and no export/import concept at all); a new `solink` tool doing
+per-opcode-aware relocation across every one of `Opcode`'s ~150 values
+(`Instruction.arg` is a single untyped int whose MEANING - literal, code
+address, symbol index, string index, or a packed composite like the
+`value * MAX_SYMBOLS + idx` encoding already in use - varies per opcode,
+with no tag saying which); and restructuring `generate_program()`
+(`codegen.c`), which currently assumes ONE whole-program codegen pass
+over every unit's and the main program's procedures flattened into a
+single `proc_table[]`, with all `CALL` targets backpatched in one final
+pass at the very end. `vm.c` itself would need zero changes - it has no
+concept of how `code[]` was assembled, only how to run it - which is the
+one genuinely clean part of the design. Independent of the
+implementation cost: `MAX_SYMBOLS`/`MAX_CODE`/`MAX_STRINGS`/
+`MAX_PROCEDURES` are small, whole-program-shared ceilings today, and the
+usual payoff of separate compilation (skip recompiling large shared
+libraries, distribute precompiled binaries) has limited value while the
+final *linked* program still has to fit under those same tiny combined
+limits either way. Categorically bigger than anything shipped so far
+this phase - closer in kind to the dynamic-arrays memory-model problem
+or a `union`/wider-int storage fork than to ordinary wiring work.
+Revisit if/when the `MAX_*` ceilings themselves are raised, or a
+concrete multi-file-project need makes the source-level `uses`
+mechanism's repeated re-parsing a real cost worth solving.
 
 ### Language extensions beyond standard Pascal
 
