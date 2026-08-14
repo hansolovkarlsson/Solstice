@@ -1902,10 +1902,10 @@ just a variant spelling of it:
   it just fails at **runtime**, not compile time, since the value being
   stored isn't generally known until then.
 - Declared directly wherever a type is expected — as a `var` (global or
-  procedure-local) or as a **parameter** (see below). There's no `type
-  TIntArray = array of integer;` named-alias form yet, matching this
-  language's existing fixed-size arrays (which also can't be named this
-  way).
+  procedure-local) or as a **parameter** (see below) — or through a
+  named alias (`type TIntArray = array of integer;`, see [Type
+  aliases](#type-aliases)); this language's existing fixed-size arrays
+  still can't be named this way.
 
 ### Reference semantics
 
@@ -2118,30 +2118,54 @@ end.
 ```
 
 - `type Name = <existing scalar type>;` declares `Name` as another name
-  for `integer`, `real`, `boolean`, `string`, or `char` — usable
-  everywhere the aliased type is: variable declarations (plain or
-  array-element), record fields, parameters, procedure/function locals,
-  and function return types.
+  for `integer`, `real`, `boolean`, `string`, `char`, or a **dynamic
+  array** (`array of ElementType`) — usable everywhere the aliased type
+  is: variable declarations (plain or array-element), parameters,
+  procedure/function locals, and (for the five plain scalar types)
+  record fields and function return types.
 - An alias can itself alias an earlier alias (`TYears = TAge;` above) —
-  chains resolve all the way down to one of the five built-in types.
+  chains resolve all the way down to one of the accepted underlying
+  types, dynamic arrays included:
+  ```pascal
+  type
+      TIntArray = array of integer;
+      TScores = TIntArray;
+  var
+      scores: TScores;
+  begin
+      SetLength(scores, 3);
+      scores := [10, 20, 30];   { array-literal assignment works through the alias too }
+  end.
+  ```
 - A type alias has no runtime representation of its own — it's resolved
-  entirely at parse time to whichever built-in type it names, exactly
-  like how [records](#records) resolve to hidden globals. Two variables
-  declared through different aliases of the same underlying type (e.g.
-  `age: TAge` and `x: integer`) are completely interchangeable — the
-  alias is a compile-time name only, not a distinct type the type
-  checker tracks separately.
+  entirely at parse time to whichever type it names, exactly like how
+  [records](#records) resolve to hidden globals. Two variables declared
+  through different aliases of the same underlying type (e.g. `age: TAge`
+  and `x: integer`), or through an alias and the equivalent type spelled
+  out directly (`scores: TIntArray` and `direct: array of integer`), are
+  completely interchangeable — the alias is a compile-time name only, not
+  a distinct type the type checker tracks separately (a dynamic-array
+  alias reuses the exact same structural dedup every other `array of
+  integer` shape already gets — see [Dynamic
+  arrays](#dynamic-arrays)).
 - Alias names, record type names, enumerated type names, and subrange
   type names all share one namespace (declared in the same `type`
   section, in any order or mix) — redeclaring any of them as another is
   a compile-time error, same as redeclaring one as itself.
 - A type alias can't itself name a record type (`type TWrapper =
-  TPoint;` where `TPoint` is a record type is a compile-time error) —
-  only the five scalar types, an enumerated type, a subrange type, and
-  other aliases of those, are accepted (see [Enumerated
+  TPoint;` where `TPoint` is a record type is a compile-time error) or a
+  **fixed-size** array (`type TFixedArr = array[1..5] of integer;` is
+  also a compile-time error, with a message saying so directly — only a
+  *dynamic* array, `array of ElementType`, can be named this way) — only
+  the five scalar types, a dynamic array, an enumerated type, a subrange
+  type, and other aliases of those, are accepted (see [Enumerated
   types](#enumerated-types) and [Subrange types](#subrange-types)
   below). Aliasing a subrange type produces another, equivalent
   subrange type under the new name (its bounds are still enforced).
+- A dynamic-array alias inherits the same restrictions plain `array of
+  ElementType` already has — it can't be a record field or a function
+  return type yet either (see [Dynamic arrays](#dynamic-arrays)'s own
+  "What's not supported yet"); aliasing doesn't lift that.
 
 ## Subrange types
 

@@ -55,14 +55,23 @@ anyway, so this is where they land instead.
       element types (`array of integer`, `SetLength`/`Length`/`High`/
       `Low`, reference semantics), `for x in arr do`, the `nil` literal,
       `Copy`/slicing, and array-literal syntax (`arr := [1, 2, 3];`) have
-      shipped (see [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays)). Still
-      open: multi-dimensional dynamic arrays; record/named-type/nested-
-      array element types; array literals for a fixed-size array, or as
-      a general expression (e.g. a procedure argument) for either array
-      kind; a dynamic-array-typed record/class field or function return
-      type; a named type-alias form (`type TIntArray = array of
-      integer;`) — none of this compiler's arrays, static or dynamic,
-      support a named alias yet; and comparing two dynamic arrays
+      shipped (see [docs/LANGUAGE.md](LANGUAGE.md#dynamic-arrays)). A
+      named type-alias form (`type TIntArray = array of integer;`) turned
+      out to already work as a side effect of how dynamic array types are
+      represented internally - confirmed by testing, not newly built - so
+      it's shipped too (see [docs/LANGUAGE.md](LANGUAGE.md#type-aliases));
+      the one real gap that surfaced, a fixed-size array attempting the
+      same syntax getting a confusing parser error, now gets a clear
+      rejection instead of real support. Still open: multi-dimensional
+      dynamic arrays; record/named-type/nested-array element types (this
+      is different from the array's own type being aliased, which now
+      works - an alias still can't stand in for a record/pointer/
+      procedural/named-type ELEMENT type); array literals for a fixed-
+      size array, or as a general expression (e.g. a procedure argument)
+      for either array kind; a dynamic-array-typed record/class field or
+      function return type (true for a directly-declared dynamic array
+      too, not just an aliased one - aliasing doesn't lift this); a named
+      alias for a FIXED-size array; and comparing two dynamic arrays
       directly (`arr1 = arr2`, as opposed to comparison against `nil`,
       which now works).
 - [ ] Closures (a nested function capturing its enclosing scope) —

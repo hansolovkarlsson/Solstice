@@ -532,8 +532,14 @@ literal syntax for a dynamic array (`arr := [1, 2, 3];`) as an assignment
 right-hand side, sharing `[...]` with set constructors — which one a
 given `[...]` means is resolved from the assignment target's own type,
 not from the brackets' contents (see
-[docs/LANGUAGE.md](docs/LANGUAGE.md#array-literals)). Not yet
-implemented: `copy`/slicing or array literals for a fixed-size array, an
-array literal as a general expression (e.g. a procedure argument) for
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-literals)); and a named
+type-alias form for a dynamic array (`type TIntArray = array of
+integer;`), interchangeable with a directly-declared `array of integer`
+of the same element type (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#type-aliases)) — a **fixed-size**
+array still can't be named this way, now with a clear compile-time
+rejection rather than a confusing parser error. Not yet implemented:
+`copy`/slicing, array literals, or a named alias for a fixed-size array,
+an array literal as a general expression (e.g. a procedure argument) for
 either array kind, variant records, and a whole record or an array
 element as a `var` argument.

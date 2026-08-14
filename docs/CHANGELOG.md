@@ -3472,6 +3472,58 @@ anyway, so this is where they land instead.
       `dynarray`/`forin` regression suites (`[...]`'s existing set-
       constructor meaning, and every previously-shipped dynamic-array
       feature, both untouched).
+- [x] Named type-alias form for dynamic arrays - `type TIntArray = array
+      of integer;`. Closes half of the roadmap's "a named type-alias
+      form" gap for arrays (a FIXED-size array still can't be named this
+      way - see below).
+
+      **This wasn't really a new feature - it was a discovery.** Before
+      writing any code, testing `type TIntArray = array of integer;`
+      against `main` as it stood showed it already compiled and ran
+      correctly: `SetLength`/indexing/`Length`/`High`, cross-assignment
+      with a directly-declared `array of integer` of the same shape,
+      `var`/value parameters, alias-of-alias chaining, and even array-
+      literal assignment (shipped just above) all worked, completely
+      unmodified. The reason: `parse_scalar_type()` (`parser.c`) - the
+      one centralized function every scalar-type call site already goes
+      through, including a plain type alias's own RHS - has had an
+      `array of ElementType` branch since dynamic arrays themselves
+      shipped. Nobody wired type aliases and dynamic arrays together on
+      purpose; they were already the same code path, and nobody had
+      tried the combination. `docs/ROADMAP.md`'s "none of this
+      compiler's arrays, static or dynamic, support a named alias yet"
+      had been quietly false since dynamic arrays landed.
+
+      **The one genuine gap this surfaced**: `type TFixedArr =
+      array[1..5] of integer;` (a FIXED-size array) hit a real bug, not
+      a missing feature with a clean rejection - `parse_scalar_type()`'s
+      `array of ...` branch unconditionally called `parse_dynarray_of()`,
+      which expects `of` right after `array` and instead hit `[`,
+      producing a generic, confusing `Unexpected token '['` rather than
+      a clear message. Fixed with a small, deliberate rejection (peek for
+      `[` right after matching `ARRAY`, error immediately with "Fixed-
+      size arrays can't be named with a type alias yet") - NOT full
+      support: a fixed-size array's bounds live in `Symbol`, not in a
+      single reusable `DataType` value the way every other
+      `TypeAliasDef` target (including a dynamic array) already does, so
+      real support would be a materially bigger, separate change - the
+      same reasoning that already deferred fixed-size-array `Copy` and
+      fixed-size-array literals earlier in this file.
+
+      **Also confirmed, not just assumed**: a dynamic-array alias
+      inherits the exact same still-open restrictions plain `array of
+      ElementType` already has (record field, function return type) -
+      verified by testing the identical failure occurs with or without
+      the alias, so aliasing isn't quietly making something newly
+      reachable-but-broken.
+
+      See `examples/test/alias/test_alias_dynarray_*.pas` (4 positive
+      cases - basic `SetLength`/indexing/array-literal-assignment through
+      an alias, cross-compatibility with a directly-declared array of the
+      same shape, `var`/value parameters, and alias-of-alias chaining; 1
+      new error case - the fixed-size-array rejection) and
+      [docs/LANGUAGE.md](LANGUAGE.md#type-aliases). Confirmed no
+      regression in the pre-existing `examples/test/alias/` suite.
 
 ### Shipped from the OOP features survey
 

@@ -2810,8 +2810,20 @@ static DataType parse_scalar_type(void) {
         // param/local shared group-parser) each peek for '[' BEFORE
         // reaching this function at all, so this branch only ever fires
         // once 'of' is confirmed to follow 'array' with no bracket in
-        // between.
+        // between - EXCEPT for a type alias's own RHS ('type TFoo =
+        // array...;'): parse_type_section()'s plain-alias fallback calls
+        // this function directly, with no such peek anywhere upstream,
+        // so 'array[1..5] of integer' reaches this branch too. Rejected
+        // explicitly below, with a clear message, rather than falling
+        // through to parse_dynarray_of()'s own match(TOKEN_OF) and
+        // failing on the unexpected '[' with a confusing generic error -
+        // fixed-size arrays genuinely can't be named this way yet (only
+        // a dynamic array can - see docs/LANGUAGE.md#type-aliases).
         match(TOKEN_ARRAY);
+        if (token.type == TOKEN_LBRACKET) {
+            compile_error(token.line, "Fixed-size arrays can't be named with a type alias yet (see docs/LANGUAGE.md) - only 'array of ElementType' (a dynamic array) can");
+            return TYPE_UNKNOWN; // unreachable
+        }
         return parse_dynarray_of();
     }
     if (token.type == TOKEN_TEXT_TYPE) {
