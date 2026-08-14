@@ -114,11 +114,11 @@ anyway, so this is where they land instead.
       open: multi-dimensional dynamic arrays; record/named-type/nested-
       array element types (this is different from the array's own type
       being aliased, which now works - an alias still can't stand in for
-      a record/pointer/procedural/named-type ELEMENT type); array
-      literals for a fixed-size array, as a `var`/`const` call argument,
-      or in any other general-expression position; a named alias for a
-      FIXED-size array; and comparing two dynamic arrays directly (`arr1
-      = arr2`, as opposed to comparison against `nil`, which now works).
+      a record/pointer/procedural/named-type ELEMENT type); a dynamic-
+      array literal as a `var`/`const` call argument or in any other
+      general-expression position; a named alias for a FIXED-size array;
+      and comparing two dynamic arrays directly (`arr1 = arr2`, as
+      opposed to comparison against `nil`, which now works).
 
       A dynamic-array field's own value inside a **typed constant** has
       shipped too (`Bob: TScores = (name: 'Bob'; values: [10, 20, 30]);`)
@@ -170,6 +170,38 @@ anyway, so this is where they land instead.
       element range check uniformly, with no need to separately walk the
       element list - the literal's mere presence is already sufficient
       reason to never eliminate the assignment carrying it.
+
+      **Array-literal syntax for a FIXED-size array** has shipped too -
+      `arr := [1, 2, 3];` for `array[lower..upper] of ElementType`, the
+      one exception to this compiler's "an array reference always needs
+      an index" rule. Lowers into a chain of ordinary per-element
+      `NODE_ASSIGN`s (index = a compile-time-constant literal), wrapped
+      in one `NODE_COMPOUND` so the caller gets back a single statement
+      node - mirrors the FIXED-array typed-constant initializer's own
+      existing per-element lowering almost exactly, just triggered by
+      `:=` + `[` at an ordinary assignment site instead of only inside
+      `const`, and with each element a genuine runtime `expression()`
+      rather than `parse_typed_const_value()`'s compile-time-literal-only
+      path. Two call sites needed the same new branch (global arrays and
+      record fields share `parse_global_assignment()`; a "local" array is
+      a separately-parsed, though storage-identical, mangled global - see
+      `add_local_array()` - so it got its own copy of the same branch,
+      directly reusing the same helper function). Confirmed a GLOBAL
+      record's own array field gets this for free (a record field is
+      just another ordinary hidden global Symbol, going through the same
+      shared function) - a CLASS's own array field (heap-offset storage,
+      a genuinely separate mechanism) and a `var`-parameter array
+      reference remain indexed-only, matching the exact same scope cut
+      the dynamic-array-literal-as-call-argument case above already
+      established (real machinery needed for a reference target, not
+      just wiring). No DCE gap this time, unlike the bare-typed-constant
+      entry just above - confirmed directly: `sweep_dead_assignments()`'s
+      existing `!sym_table[var_idx].is_array` guard already exempts every
+      indexed-array assignment from elimination unconditionally (an
+      array write's own bounds check was already a recognized always-
+      observable side effect before this feature existed), and this
+      feature's own per-element chain reuses that exact same `is_array`-
+      typed target, so it inherits the protection for free.
 
 **Considered, explicitly out of scope: inline assembly** (`asm ... end;`
 embedding raw `.sasm` directly inside a Pascal source file, letting a

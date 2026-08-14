@@ -3919,6 +3919,72 @@ anyway, so this is where they land instead.
       and
       [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
       Confirmed no regression via a full `examples/test/` sweep.
+- [x] Array-literal syntax for a **FIXED-size** array - `arr := [1, 2,
+      3];` for `array[lower..upper] of ElementType`, the one exception to
+      this compiler's long-standing "an array reference always needs an
+      index" rule. Closes the "Dynamic array follow-ups" roadmap entry's
+      last small, well-scoped piece.
+
+      **Genuinely small, reusing a pattern proven three times already
+      this session**: `parse_typed_const_declaration()`'s own FIXED-array
+      branch already lowers an aggregate `(1, 2, 3)` initializer into a
+      chain of ordinary per-element `NODE_ASSIGN`s at parse time - this
+      reuses that exact same lowering, just triggered by `:=` + `[`
+      (array-literal syntax, matching dynamic arrays' own bracket
+      convention) at an ordinary assignment site instead of only inside
+      `const`, with each element a genuine runtime `expression()` rather
+      than `parse_typed_const_value()`'s compile-time-literal-only path.
+      Wrapped in one `NODE_COMPOUND` (mirroring `parse_for_in_tail_
+      global()`'s own body-wrapping precedent) so the parser's caller
+      gets back a single statement node with its own `->next` left free
+      for whatever follows.
+
+      **Two call sites, one shared helper**: global arrays and record
+      fields already share `parse_global_assignment()` (its own long-
+      standing doc comment says so explicitly), so one new branch there
+      covers both; a "local" array is a *separately parsed* code path
+      (storage-identical to a global underneath - `add_local_array()`
+      registers it as a mangled global - but resolved through its own
+      `LocalSymbol.is_array` branch, not through `parse_global_
+      assignment()` at all), so it needed its own copy of the same
+      branch, directly reusing `parse_fixed_array_literal_assign()`
+      unchanged.
+
+      **Confirmed a GLOBAL record's own array field gets this for free**,
+      not by assumption - tested directly (`b.arr := [7, 8, 9];` for a
+      `record`'s fixed-array field) and it worked immediately, exactly
+      because record fields already route through the same shared
+      function. **Deliberately NOT extended** to a CLASS's own array
+      field (heap-offset-based storage, a genuinely separate mechanism -
+      confirmed still correctly indexed-only, unaffected) or a `var`-
+      parameter array reference (the array lives in the caller's storage,
+      referenced indirectly - would need real new machinery, not just
+      wiring, matching the exact scope cut the dynamic-array-literal-as-
+      call-argument feature already drew for its own `var`/`const`
+      argument case).
+
+      **Checked for the DCE gap the previous entry just found, found none
+      this time**: `sweep_dead_assignments()`'s existing `NODE_ASSIGN`
+      case already has `!sym_table[var_idx].is_array` as an unconditional
+      elimination guard (an ordinary indexed array write's own bounds
+      check was already recognized as an always-observable side effect
+      long before this feature existed - see that guard's own comment in
+      `optimizer.c`), and this feature's per-element chain reuses that
+      exact same `is_array`-typed target, so it inherits the protection
+      automatically. Confirmed directly with the same repro shape as the
+      dynamic-array case (`wasted: array[1..1] of byte; wasted := [300];`,
+      unused) - still correctly aborts at runtime.
+
+      Zero new opcodes/`NodeType`s. See `examples/test/array/
+      test_array_literal_*.pas` (4 positive cases - global, local, a
+      global record field, and mixed literal-then-indexed-write; 2
+      compile-error cases - too few/too many elements; 2 runtime-error
+      cases - a byte-range overflow and its DCE-regression twin, an
+      unused array with the same overflow, confirming no gap analogous
+      to the bare-typed-constant entry's own DCE finding above) and
+      [docs/LANGUAGE.md](LANGUAGE.md#whole-array-assignment). Confirmed
+      no regression via a full `examples/test/` sweep (854 other files,
+      identical exit codes before/after).
 
 ### Shipped from the OOP features survey
 

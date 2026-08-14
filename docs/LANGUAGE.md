@@ -1789,10 +1789,54 @@ var
 - Indexing (`scores[i]`) requires the index expression to be `integer`,
   and it's bounds-checked **at runtime** — an out-of-range index is a
   runtime error, not undefined behavior.
-- An array reference always needs an index; there's no whole-array
-  assignment or whole-array printing.
+- An array reference always needs an index for reading, or for
+  assigning from another array/expression — there's no whole-array
+  copy (`arr1 := arr2;`) and no whole-array printing. The one exception
+  is an **array literal** as the whole assignment target's value
+  (`arr := [1, 2, 3];`) — see [Whole-array assignment](#whole-array-assignment)
+  below.
 - Total storage across every array declared in one program is capped at
   4096 elements combined (shared across every array, 1D and 2D alike).
+
+### Whole-array assignment
+
+```pascal
+var
+    arr: array[1..3] of integer;
+begin
+    arr := [10, 20, 30];       { one array literal, not three indexed writes }
+    arr[2] := 99;               { ordinary indexed access still works afterward }
+    writeln(arr[1], ' ', arr[2], ' ', arr[3]);   { 10 99 30 }
+end.
+```
+
+`arr := [e1, e2, ...]` — the one exception to "an array reference always
+needs an index" above: an **array literal** as a whole assignment's
+right-hand side. Lowers into an ordinary indexed assignment per element
+(`arr[1] := e1; arr[2] := e2; ...`, run in order) rather than any new
+storage mechanism — each element is checked/range-checked exactly like
+an ordinary indexed write, including the runtime bounds check a
+`byte`/`shortint`/`word` element type gets. The literal must supply
+**exactly** the array's own element count — too few or too many is a
+compile-time error. This is the same `[...]` syntax [dynamic
+arrays](#array-literals) use, extended to cover the fixed-size case too;
+unlike copying from another array or variable (`arr1 := arr2;`, not
+supported — see the bullet above), a literal's element count is always
+known at compile time, so there's no ambiguity about how many elements
+to expect.
+
+Works for a global array, a local array, and (falls out for free, since
+a record field is just another ordinary hidden global Symbol) a
+**global** record's own fixed-array field (`b.arr := [1, 2, 3];`).
+**Not yet supported**: a **local** record's array field (a local/
+parameter record can't have an array field at all yet — see [Record and
+class fields](#record-and-class-fields)); a **class's** own fixed-array
+field (heap-offset-based storage, a genuinely separate mechanism, still
+requires indexing); a **`var`-parameter** array reference (`procedure
+Foo(var a: array[1..3] of integer);` — still requires indexing inside
+`Foo`); and **2D/N-D arrays**, and an **array of records** (both still
+require indexing, matching this compiler's existing dynamic-array-literal
+scope cut to primitive element types).
 
 ### `low`, `high`, `length`
 
@@ -2141,10 +2185,18 @@ Not yet valid as a **`var`** or **`const`** argument, though — both
 share this compiler's ordinary variable-reference passing mechanism,
 which needs a real variable to point at; pass a literal to a plain
 by-value parameter, or assign it to a variable first if the callee needs
-`var`/`const`. Also not yet valid in any other general-expression
-position (a typed-constant initializer, a `write`/`writeln` argument,
-etc.) — only a bare assignment RHS and a by-value call argument are
-supported so far.
+`var`/`const`. Also not yet valid in a `write`/`writeln` argument or any
+other general-expression position — a bare assignment RHS, a by-value
+call argument, and a [typed constant](#typed-constants-array-initializers)'s
+own value (bare, or inside a [record/class field](#record-and-class-fields))
+are what's supported so far.
+
+A **fixed-size** array (`array[lower..upper] of ElementType`) accepts
+the same `arr := [1, 2, 3];` syntax too — see [Whole-array
+assignment](#whole-array-assignment) and [Typed
+constants](#typed-constants-array-initializers) for that case;
+everything on this page from here down is about the **dynamic**-array
+`array of ElementType` form specifically.
 
 ### Record and class fields
 
@@ -2199,14 +2251,15 @@ typed-constant field).
 - **Record, pointer, procedural, or named (type-alias/subrange/
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
-- **Array-literal syntax for a fixed-size array**; a dynamic-array
-  literal as a `var`/`const` call argument; and a dynamic-array
-  literal in any other general-expression position (a `write`/`writeln`
-  argument, etc.) — see "Array literals" above for what IS supported (an
+- **A dynamic-array literal as a `var`/`const` call argument**, and in
+  any other general-expression position (a `write`/`writeln` argument,
+  etc.) — see "Array literals" above for what IS supported (an
   assignment RHS, a by-value call argument, and — see [Typed
   constants](#typed-constants-array-initializers) — a bare dynamic-array
   typed constant's own value, or a record/class field's own value
-  *inside* one).
+  *inside* one). A **fixed-size** array's own array-literal restrictions
+  are tracked separately — see [Whole-array
+  assignment](#whole-array-assignment) above.
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
   comparison against `nil` is supported; standard Pascal doesn't define
   whole-array comparison either.

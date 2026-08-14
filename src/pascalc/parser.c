@@ -12356,11 +12356,68 @@ static ASTNode *parse_dynarray_literal(DataType dynarr_type) {
 // and builds the appropriate assignment node. Shared between plain
 // global-variable assignment and record field assignment - mirrors
 // parse_global_symbol_reference on the read side.
+// Parses '[v1, v2, ...]' as a whole-array-literal value for a FIXED-size
+// array assignment ('arr := [1, 2, 3];', as opposed to indexed
+// assignment, 'arr[i] := 1;') - lowers into a chain of ordinary per-
+// element NODE_ASSIGN nodes (index = a compile-time-constant literal,
+// value = the parsed element expression), wrapped in one NODE_COMPOUND
+// so the caller gets back a single statement node whose own ->next
+// stays free for whatever statement follows (NODE_COMPOUND's codegen
+// generates ->left - this whole chain, itself walked via NODE_ASSIGN's
+// own ->next handling - then ->next, exactly like every other multi-
+// statement construction in this file, e.g. parse_for_in_tail_global()'s
+// own body_compound). Mirrors parse_typed_const_declaration()'s
+// existing fixed-array branch almost exactly - the one real difference
+// is each element here is an ordinary expression() (this is a RUNTIME
+// assignment, not a typed constant - no compile-time-literal-folding
+// requirement), not parse_typed_const_value()'s literal-only path.
+// Scope matches parse_dynarray_literal()'s own: primitive element types
+// only (an array-of-records/2D/ND array never reaches here - the caller
+// only takes this path for a plain 1D, non-record array).
+static ASTNode *parse_fixed_array_literal_assign(int array_sym_idx, int line) {
+    match(TOKEN_LBRACKET);
+    int lower = sym_table[array_sym_idx].array_lower;
+    int upper = sym_table[array_sym_idx].array_upper;
+    int count = upper - lower + 1;
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    for (int i = 0; i < count; i++) {
+        ASTNode *stmt = create_node(NODE_ASSIGN);
+        stmt->data.var_idx = array_sym_idx;
+        stmt->left = make_default_value_node(TYPE_INTEGER, lower + i, line);
+        stmt->right = wrap_range_check(expression(), sym_table[array_sym_idx].is_subrange,
+                                        sym_table[array_sym_idx].subrange_lower, sym_table[array_sym_idx].subrange_upper);
+        if (!head) head = stmt; else tail->next = stmt;
+        tail = stmt;
+        if (i < count - 1) {
+            if (token.type != TOKEN_COMMA) {
+                compile_error(token.line, "Array literal for '%s': expected %d elements, got fewer", sym_table[array_sym_idx].name, count);
+            }
+            match(TOKEN_COMMA);
+        }
+    }
+    if (token.type == TOKEN_COMMA) {
+        compile_error(token.line, "Array literal for '%s': expected %d elements, got more", sym_table[array_sym_idx].name, count);
+    }
+    match(TOKEN_RBRACKET);
+    ASTNode *compound = create_node(NODE_COMPOUND);
+    compound->left = head;
+    return compound;
+}
+
 static ASTNode *parse_global_assignment(int idx) {
     if (sym_table[idx].is_const) {
         compile_error(token.line, "Cannot assign to constant '%s'", sym_table[idx].name);
     }
     if (sym_table[idx].is_array) {
+        if (token.type == TOKEN_ASSIGN && !sym_table[idx].is_2d && !sym_table[idx].is_nd && !sym_table[idx].is_record_array) {
+            int line = token.line;
+            match(TOKEN_ASSIGN);
+            if (token.type != TOKEN_LBRACKET) {
+                compile_error(line, "Array '%s' must be indexed for assignment, or given a whole array-literal value ('[v1, v2, ...]')", sym_table[idx].name);
+            }
+            return parse_fixed_array_literal_assign(idx, line);
+        }
         if (token.type != TOKEN_LBRACKET) {
             compile_error(token.line, "Array '%s' must be indexed for assignment", sym_table[idx].name);
         }
@@ -13905,6 +13962,20 @@ static ASTNode *statement(void) {
             if (ls->is_array) {
                 int arr_sym_idx = ls->array_sym_idx;
                 match(TOKEN_IDENTIFIER);
+                // A "local" array is really just a mangled GLOBAL
+                // underneath (add_local_array() - see LocalSymbol's own
+                // comment), so parse_fixed_array_literal_assign() (built
+                // for parse_global_assignment()'s identical case) is
+                // directly reusable here unchanged, keyed off the exact
+                // same arr_sym_idx this whole branch already uses.
+                if (token.type == TOKEN_ASSIGN && !sym_table[arr_sym_idx].is_2d && !sym_table[arr_sym_idx].is_nd && !sym_table[arr_sym_idx].is_record_array) {
+                    int line = token.line;
+                    match(TOKEN_ASSIGN);
+                    if (token.type != TOKEN_LBRACKET) {
+                        compile_error(line, "Array '%s' must be indexed for assignment, or given a whole array-literal value ('[v1, v2, ...]')", ls->name);
+                    }
+                    return parse_fixed_array_literal_assign(arr_sym_idx, line);
+                }
                 if (token.type != TOKEN_LBRACKET) {
                     compile_error(token.line, "Array '%s' must be indexed for assignment", ls->name);
                 }

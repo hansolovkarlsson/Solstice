@@ -560,9 +560,15 @@ typed constant's own field value via array-literal syntax — a *bare*
 dynamic-array typed constant (`const X: array of integer = [1, 2, 3];`,
 no record involved) works the same way (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#typed-constants-array-initializers)
-and [docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)). Not
-yet implemented: `copy`/slicing or a named alias for a
-fixed-size array; an array literal for a fixed-size array, as a
-`var`/`const` call argument, or in any other general-expression
-position; variant records; and a whole
-record or an array element as a `var` argument.
+and [docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)). A
+**fixed-size** array also now accepts array-literal assignment
+(`arr := [1, 2, 3];` for `array[lower..upper] of ElementType`, the one
+exception to "an array reference always needs an index") — global,
+local, and (falls out for free) a global record's own array field; a
+class's own array field and a `var`-parameter array reference still
+require indexing (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#whole-array-assignment)). Not yet
+implemented: `copy`/slicing or a named alias for a fixed-size array; a
+dynamic-array literal as a `var`/`const` call argument, or in any other
+general-expression position; variant records; and a whole record or an
+array element as a `var` argument.
