@@ -254,6 +254,13 @@ static const char *type_name(DataType type) {
     // integer (and every new typed-file opcode's own TYPE_TYPED_FILE
     // check would then reject it after reassembly).
     if (type == TYPE_TYPED_FILE) return "typedfile";
+    // Same reasoning as TYPE_TYPED_FILE just above - TYPE_UNTYPED_FILE
+    // also sits past TYPE_ENUM_BASE (TYPE_DYNARRAY_BASE + MAX_DYNARRAY_
+    // TYPES) but has genuine VM-level state (the same vm_open_files[]
+    // table, see vm.c) that a solas/desole round-trip must preserve, not
+    // degrade to "integer" - checked explicitly, before the catch-all
+    // below, for the identical reason.
+    if (type == TYPE_UNTYPED_FILE) return "untypedfile";
     if (type >= TYPE_ENUM_BASE) return "integer";
     switch (type) {
         case TYPE_INTEGER: return "integer";

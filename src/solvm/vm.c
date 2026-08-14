@@ -501,16 +501,24 @@ static FILE *vm_file_handle(int idx, const char *action) {
     return vm_open_files[idx].handle;
 }
 
-// Typed-file twin of vm_file_handle() above - checks TYPE_TYPED_FILE
-// instead of TYPE_FILE. A separate function rather than a shared one
-// with a type parameter, matching this file's own established
-// "duplicate a narrow, easy-to-read helper rather than generalize it"
-// convention (see e.g. is_typed_file_safe_scalar()'s own precedent in
-// parser.c for the identical reasoning on the compiler side).
+// Typed/untyped-file twin of vm_file_handle() above - checks
+// TYPE_TYPED_FILE or TYPE_UNTYPED_FILE instead of TYPE_FILE (both open
+// in binary mode via the same OP_TYPED_FILE_RESET/REWRITE and share the
+// same per-value leaf read/write opcodes - see common.h's own comment
+// on TYPE_UNTYPED_FILE). OP_FILE_SEEK/OP_FILE_SIZE also route through
+// here, but parser.c never emits either for an untyped file (both are
+// rejected at compile time - 'seek'/'filesize' aren't supported for
+// untyped files yet), so accepting TYPE_UNTYPED_FILE here is inert for
+// those two, not a runtime hole. A separate function rather than a
+// shared one with a type parameter, matching this file's own
+// established "duplicate a narrow, easy-to-read helper rather than
+// generalize it" convention (see e.g. is_typed_file_safe_scalar()'s own
+// precedent in parser.c for the identical reasoning on the compiler
+// side).
 static FILE *vm_typed_file_handle(int idx, const char *action) {
     vm_var_index(idx);
-    if (sym_table[idx].type != TYPE_TYPED_FILE) {
-        fprintf(stderr, "VM Runtime Error: '%s' is not a typed file variable\n", sym_table[idx].name);
+    if (sym_table[idx].type != TYPE_TYPED_FILE && sym_table[idx].type != TYPE_UNTYPED_FILE) {
+        fprintf(stderr, "VM Runtime Error: '%s' is not a typed or untyped file variable\n", sym_table[idx].name);
         fatal_abort();
     }
     if (!vm_open_files[idx].handle) {
@@ -1329,7 +1337,8 @@ int run_vm(void) {
 
             case OP_FILE_ASSIGN: {
                 int idx = vm_var_index(instr.arg);
-                if (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE) {
+                if (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE
+                    && sym_table[idx].type != TYPE_UNTYPED_FILE) {
                     fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
                     fatal_abort();
                 }
@@ -1364,7 +1373,8 @@ int run_vm(void) {
 
             case OP_FILE_CLOSE: {
                 int idx = vm_var_index(instr.arg);
-                if (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE) {
+                if (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE
+                    && sym_table[idx].type != TYPE_UNTYPED_FILE) {
                     fprintf(stderr, "VM Runtime Error: '%s' is not a file variable\n", sym_table[idx].name);
                     fatal_abort();
                 }
@@ -1382,8 +1392,8 @@ int run_vm(void) {
                 int file_sym_idx = instr.arg % MAX_SYMBOLS;
                 int record_byte_size = instr.arg / MAX_SYMBOLS;
                 int idx = vm_var_index(file_sym_idx);
-                if (sym_table[idx].type != TYPE_TYPED_FILE) {
-                    fprintf(stderr, "VM Runtime Error: '%s' is not a typed file variable\n", sym_table[idx].name);
+                if (sym_table[idx].type != TYPE_TYPED_FILE && sym_table[idx].type != TYPE_UNTYPED_FILE) {
+                    fprintf(stderr, "VM Runtime Error: '%s' is not a typed or untyped file variable\n", sym_table[idx].name);
                     fatal_abort();
                 }
                 if (!vm_open_files[idx].assigned) {
@@ -1406,7 +1416,7 @@ int run_vm(void) {
                 FILE *f = vm_typed_file_handle(instr.arg, "read");
                 int val;
                 if (fread(&val, sizeof(int), 1, f) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed/untyped file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
                     fatal_abort();
                 }
                 vm_push(&sp, val);
@@ -1424,7 +1434,7 @@ int run_vm(void) {
                 FILE *f = vm_typed_file_handle(instr.arg, "read");
                 unsigned char b;
                 if (fread(&b, 1, 1, f) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed/untyped file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
                     fatal_abort();
                 }
                 vm_push(&sp, (int)b);
@@ -1442,7 +1452,7 @@ int run_vm(void) {
                 FILE *f = vm_typed_file_handle(instr.arg, "read");
                 signed char b;
                 if (fread(&b, 1, 1, f) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed/untyped file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
                     fatal_abort();
                 }
                 vm_push(&sp, (int)b); // signed char -> int sign-extends
@@ -1460,7 +1470,7 @@ int run_vm(void) {
                 FILE *f = vm_typed_file_handle(instr.arg, "read");
                 unsigned short w;
                 if (fread(&w, sizeof(unsigned short), 1, f) != 1) {
-                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
+                    fprintf(stderr, "VM Runtime Error: Attempted to read past the end of typed/untyped file '%s'\n", sym_table[vm_var_index(instr.arg)].name);
                     fatal_abort();
                 }
                 vm_push(&sp, (int)w);

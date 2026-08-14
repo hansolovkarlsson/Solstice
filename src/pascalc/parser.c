@@ -1561,17 +1561,19 @@ static int find_var(const char *name) {
 }
 
 // Soft lookup for a GLOBAL file variable specifically (files are always
-// global - see TYPE_FILE/TYPE_TYPED_FILE) - returns its sym_table[]
-// index, or -1 if `name` isn't a declared file variable AT ALL (either
-// kind - not an error - this is used everywhere a leading 'read(f, ...)'/
-// 'write(f, ...)'/'eof(f)'/'assign(f, ...)' file argument needs to be
-// *detected*, not required, falling back to the ordinary stdin/stdout
-// path when it's absent). Callers that need to tell text and typed
-// files apart check sym_table[idx].type == TYPE_TYPED_FILE themselves
+// global - see TYPE_FILE/TYPE_TYPED_FILE/TYPE_UNTYPED_FILE) - returns
+// its sym_table[] index, or -1 if `name` isn't a declared file variable
+// AT ALL (any of the three kinds - not an error - this is used
+// everywhere a leading 'read(f, ...)'/'write(f, ...)'/'eof(f)'/
+// 'assign(f, ...)' file argument needs to be *detected*, not required,
+// falling back to the ordinary stdin/stdout path when it's absent).
+// Callers that need to tell the three kinds apart check
+// sym_table[idx].type == TYPE_TYPED_FILE/TYPE_UNTYPED_FILE themselves
 // afterward.
 static int find_file_var_soft(const char *name) {
     int idx = find_var_soft_visible(name);
-    if (idx == -1 || (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE)) return -1;
+    if (idx == -1 || (sym_table[idx].type != TYPE_FILE && sym_table[idx].type != TYPE_TYPED_FILE
+                       && sym_table[idx].type != TYPE_UNTYPED_FILE)) return -1;
     return idx;
 }
 
@@ -2828,8 +2830,10 @@ static DataType parse_scalar_type(void) {
     }
     if (token.type == TOKEN_FILE_TYPE) {
         // Same restriction, same reasoning, as TOKEN_TEXT_TYPE just
-        // above - a typed file variable can only be global too.
-        compile_error(token.line, "'file of ...' can only declare a global file variable in the main program's own 'var' section - not as a parameter, local, record field, or array element type (see docs/LANGUAGE.md)");
+        // above - a typed OR untyped file variable can only be global
+        // too (this fires before ever peeking for 'of', so it covers
+        // both 'file of T' and bare 'file' uniformly).
+        compile_error(token.line, "'file'/'file of ...' can only declare a global file variable in the main program's own 'var' section - not as a parameter, local, record field, or array element type (see docs/LANGUAGE.md)");
         return TYPE_UNKNOWN; // unreachable
     }
     if (token.type == TOKEN_IDENTIFIER) {
@@ -5931,15 +5935,16 @@ static ASTNode *factor(void) {
             if (token.type == TOKEN_IDENTIFIER) {
                 int fidx = find_file_var_soft(token.text);
                 if (fidx != -1) {
-                    if (kind == TOKEN_EOLN && sym_table[fidx].type == TYPE_TYPED_FILE) {
+                    if (kind == TOKEN_EOLN && (sym_table[fidx].type == TYPE_TYPED_FILE
+                                                || sym_table[fidx].type == TYPE_UNTYPED_FILE)) {
                         // No line concept in binary data - see the v1
                         // scope cut in docs/LANGUAGE.md.
-                        compile_error(token.line, "'eoln' doesn't apply to a typed file - use 'eof' instead");
+                        compile_error(token.line, "'eoln' doesn't apply to a typed or untyped file - use 'eof' instead");
                     }
                     match(TOKEN_IDENTIFIER);
                     ASTNode *file_ref = create_node(NODE_VARIABLE);
                     file_ref->data.var_idx = fidx;
-                    file_ref->expression_type = sym_table[fidx].type; // TYPE_FILE or TYPE_TYPED_FILE
+                    file_ref->expression_type = sym_table[fidx].type; // TYPE_FILE, TYPE_TYPED_FILE, or TYPE_UNTYPED_FILE
                     node->left = file_ref;
                 }
             }
@@ -8376,49 +8381,67 @@ static void parse_var_section(void) {
             // 'file of TRecord'/'file of integer' etc. - a typed
             // (binary) file. Same "own branch here, own global-only
             // restriction" reasoning as TOKEN_TEXT_TYPE just above -
-            // this is the ONLY place 'file of ...' is legal.
+            // this is the ONLY place 'file of ...' is legal. Peeks for
+            // 'of' BEFORE matching it - bare 'file' (no 'of') is an
+            // UNTYPED file instead (see below), mirroring exactly how
+            // 'array'/'array of T' (dynamic arrays) are disambiguated
+            // by peeking for '[' before committing to either path.
             match(TOKEN_FILE_TYPE);
-            match(TOKEN_OF);
-            int type_line = token.line;
-            int rt_idx = (token.type == TOKEN_IDENTIFIER) ? find_record_type(token.text) : -1;
-            int is_record = (rt_idx != -1);
-            DataType scalar_type = TYPE_UNKNOWN;
-            if (is_record) {
-                match(TOKEN_IDENTIFIER);
-                if (!record_type_is_typed_file_safe(rt_idx)) {
-                    compile_error(type_line, "Record type '%s' can't be used as a typed file's element type - no array, string, char, pointer, or procedural-typed fields allowed (their raw storage isn't meaningful once written to a file)", record_types[rt_idx].name);
+            if (token.type != TOKEN_OF) {
+                // 'file;' (no 'of Type') - an untyped file: no fixed
+                // element type or on-disk record size, read/written in
+                // caller-specified chunks via BlockRead/BlockWrite (see
+                // parse_block_read()/parse_block_write() below). No side
+                // table needed (unlike TypedFileVarDef) - there's no
+                // element type or byte size to remember at all. Falls
+                // through to the shared trailing match(TOKEN_SEMI) below,
+                // same as the TOKEN_TEXT_TYPE branch above.
+                for (int i = 0; i < count; i++) {
+                    add_var(temporary_names[i], TYPE_UNTYPED_FILE);
                 }
             } else {
-                // Reuses parse_scalar_type() directly - it already
-                // resolves every non-record scalar/enum/subrange/alias/
-                // pointer/procedural type name (and rejects 'text'/
-                // 'file' with its own clear error), exactly the same
-                // resolution a 'file of X' element type needs.
-                scalar_type = parse_scalar_type();
-                if (!is_typed_file_safe_scalar(scalar_type)) {
-                    compile_error(type_line, "This type can't be used as a typed file's element type - only integer, real, boolean, an enumerated type, a subrange, or a set are allowed");
+                match(TOKEN_OF);
+                int type_line = token.line;
+                int rt_idx = (token.type == TOKEN_IDENTIFIER) ? find_record_type(token.text) : -1;
+                int is_record = (rt_idx != -1);
+                DataType scalar_type = TYPE_UNKNOWN;
+                if (is_record) {
+                    match(TOKEN_IDENTIFIER);
+                    if (!record_type_is_typed_file_safe(rt_idx)) {
+                        compile_error(type_line, "Record type '%s' can't be used as a typed file's element type - no array, string, char, pointer, or procedural-typed fields allowed (their raw storage isn't meaningful once written to a file)", record_types[rt_idx].name);
+                    }
+                } else {
+                    // Reuses parse_scalar_type() directly - it already
+                    // resolves every non-record scalar/enum/subrange/alias/
+                    // pointer/procedural type name (and rejects 'text'/
+                    // 'file' with its own clear error), exactly the same
+                    // resolution a 'file of X' element type needs.
+                    scalar_type = parse_scalar_type();
+                    if (!is_typed_file_safe_scalar(scalar_type)) {
+                        compile_error(type_line, "This type can't be used as a typed file's element type - only integer, real, boolean, an enumerated type, a subrange, or a set are allowed");
+                    }
                 }
-            }
-            int leaf_count = is_record ? record_type_leaf_count(rt_idx) : 1;
-            TokenType scalar_disk_width = is_record ? 0 : scalar_type_disk_width;
-            int byte_size = is_record ? record_type_byte_size(rt_idx)
-                : (scalar_disk_width == TOKEN_BYTE || scalar_disk_width == TOKEN_SHORTINT) ? 1
-                : (scalar_disk_width == TOKEN_WORD) ? 2
-                : (int)sizeof(int);
-            for (int i = 0; i < count; i++) {
-                add_var(temporary_names[i], TYPE_TYPED_FILE);
-                int sym_idx = sym_count - 1;
-                if (typed_file_var_count >= MAX_TYPED_FILE_VARS) {
-                    compile_error(type_line, "Too many typed file variables (limit is %d)", MAX_TYPED_FILE_VARS);
+                int leaf_count = is_record ? record_type_leaf_count(rt_idx) : 1;
+                TokenType scalar_disk_width = is_record ? 0 : scalar_type_disk_width;
+                int byte_size = is_record ? record_type_byte_size(rt_idx)
+                    : (scalar_disk_width == TOKEN_BYTE || scalar_disk_width == TOKEN_SHORTINT) ? 1
+                    : (scalar_disk_width == TOKEN_WORD) ? 2
+                    : (int)sizeof(int);
+                for (int i = 0; i < count; i++) {
+                    add_var(temporary_names[i], TYPE_TYPED_FILE);
+                    int sym_idx = sym_count - 1;
+                    if (typed_file_var_count >= MAX_TYPED_FILE_VARS) {
+                        compile_error(type_line, "Too many typed file variables (limit is %d)", MAX_TYPED_FILE_VARS);
+                    }
+                    TypedFileVarDef *tf = &typed_file_vars[typed_file_var_count++];
+                    tf->sym_idx = sym_idx;
+                    tf->is_record = is_record;
+                    tf->record_type_idx = rt_idx;
+                    tf->scalar_type = scalar_type;
+                    tf->leaf_count = leaf_count;
+                    tf->disk_width = scalar_disk_width;
+                    tf->byte_size = byte_size;
                 }
-                TypedFileVarDef *tf = &typed_file_vars[typed_file_var_count++];
-                tf->sym_idx = sym_idx;
-                tf->is_record = is_record;
-                tf->record_type_idx = rt_idx;
-                tf->scalar_type = scalar_type;
-                tf->leaf_count = leaf_count;
-                tf->disk_width = scalar_disk_width;
-                tf->byte_size = byte_size;
             }
         } else {
             DataType target_type = parse_scalar_type();
@@ -10481,6 +10504,188 @@ static ASTNode *parse_typed_file_write(TypedFileVarDef *tf) {
     return compound;
 }
 
+// Resolves 'name' to a 1D array's underlying GLOBAL sym_table[] index,
+// element type, and declared bounds - for BlockRead/BlockWrite's own
+// array-argument resolution below. Checks a LOCAL array first (a local
+// array is already a hidden mangled GLOBAL under the hood - see
+// LocalSymbol.array_sym_idx's own comment - so both cases end up
+// resolving to a plain global index either way, with no levels_up
+// indirection ever needed), falling back to an ordinary global. Returns
+// 0 (and leaves every out-param untouched) if 'name' isn't a declared
+// 1D array at all - the caller reports its own specific error message.
+static int resolve_blockio_array(const char *name, int *out_sym_idx, DataType *out_elem_type,
+                                  int *out_lower, int *out_upper) {
+    int levels_up;
+    int local_idx = find_local_outward(name, &levels_up);
+    if (local_idx != -1) {
+        LocalSymbol *ls = local_at(local_idx, levels_up);
+        if (!ls->is_array || ls->is_2d || ls->is_nd) return 0;
+        *out_sym_idx = ls->array_sym_idx;
+        *out_elem_type = ls->type;
+        *out_lower = ls->array_lower;
+        *out_upper = ls->array_upper;
+        return 1;
+    }
+    int gidx = find_var_soft_visible(name);
+    if (gidx == -1 || !sym_table[gidx].is_array || sym_table[gidx].is_2d || sym_table[gidx].is_nd) return 0;
+    *out_sym_idx = gidx;
+    *out_elem_type = sym_table[gidx].type;
+    *out_lower = sym_table[gidx].array_lower;
+    *out_upper = sym_table[gidx].array_upper;
+    return 1;
+}
+
+// 'BlockRead(f, arr, count)' / 'BlockWrite(f, arr, count)' - an untyped
+// file only (TYPE_UNTYPED_FILE). Desugars entirely into a synthesized
+// NODE_FOR loop this compiler already knows how to generate - no new
+// NodeType, no new opcode - mirroring parse_for_in_tail_global()'s own
+// array-loop desugaring exactly:
+//
+//     __blockread_idxN := 0;
+//     for __blockread_idxN := 0 to count - 1 do
+//         arr[arr_lower + __blockread_idxN] := <one raw value read from f>;
+//
+// (BlockWrite's body is the write-leaf twin, reading arr[...] instead of
+// assigning to it.) 'count' is a general runtime expression - unlike a
+// record's always-static field count, this can't be unrolled at compile
+// time - but array bounds-checking comes entirely free this way: the
+// loop body is an ORDINARY array-element assignment/read, running
+// through this VM's existing runtime bounds check like any other one,
+// so a 'count' too large for arr's own declared bounds already produces
+// this VM's standard "Array index out of range" error with no extra
+// code needed here.
+//
+// v1 scope: every element always transfers as a full 4-byte value,
+// regardless of the array's own declared subrange bounds - this
+// compiler has no per-ARRAY equivalent of RecordField.disk_width/
+// TypedFileVarDef.disk_width to distinguish an array of literal 'byte'
+// from an ordinary hand-written '0..255' subrange (Symbol only tracks
+// is_subrange/subrange_lower/subrange_upper, not which keyword produced
+// them), so narrower on-disk transfer for a byte/shortint/word array
+// element isn't supported yet (see docs/LANGUAGE.md) - a documented
+// gap, not a silent one.
+static ASTNode *parse_block_read_write(int is_read) {
+    int line = token.line;
+    match(is_read ? TOKEN_BLOCKREAD : TOKEN_BLOCKWRITE);
+    match(TOKEN_LPAREN);
+
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'%s' expects an untyped file variable", is_read ? "BlockRead" : "BlockWrite");
+    }
+    int fidx = find_file_var_soft(token.text);
+    if (fidx == -1 || sym_table[fidx].type != TYPE_UNTYPED_FILE) {
+        compile_error(token.line, "'%s' is not an untyped file variable", token.text);
+    }
+    match(TOKEN_IDENTIFIER);
+    match(TOKEN_COMMA);
+
+    if (token.type != TOKEN_IDENTIFIER) {
+        compile_error(token.line, "'%s' expects an array variable", is_read ? "BlockRead" : "BlockWrite");
+    }
+    char arr_name[MAX_NAME];
+    strcpy(arr_name, token.text);
+    int arr_sym_idx, arr_lower, arr_upper;
+    DataType elem_type;
+    if (!resolve_blockio_array(arr_name, &arr_sym_idx, &elem_type, &arr_lower, &arr_upper)) {
+        compile_error(token.line, "'%s' must be a declared 1D array", arr_name);
+    }
+    if (sym_table[arr_sym_idx].is_record_array) {
+        // resolve_blockio_array() doesn't reject this itself - a record-
+        // element array still has is_array set, just with a meaningless
+        // placeholder 'type' (TYPE_INTEGER - see is_record_array's own
+        // comment in common.h), which is_typed_file_safe_scalar() below
+        // would otherwise wrongly accept as "array of integer".
+        compile_error(token.line, "'%s' array element type must be integer, real, boolean, an enumerated type, "
+                       "a subrange, or a set - not a record", is_read ? "BlockRead" : "BlockWrite");
+    }
+    if (!is_typed_file_safe_scalar(elem_type)) {
+        compile_error(token.line, "'%s' array element type must be integer, real, boolean, an enumerated type, "
+                       "a subrange, or a set", is_read ? "BlockRead" : "BlockWrite");
+    }
+    int elem_is_subrange = sym_table[arr_sym_idx].is_subrange;
+    int elem_subrange_lower = sym_table[arr_sym_idx].subrange_lower;
+    int elem_subrange_upper = sym_table[arr_sym_idx].subrange_upper;
+    match(TOKEN_IDENTIFIER);
+    match(TOKEN_COMMA);
+    ASTNode *count_expr = expression();
+    match(TOKEN_RPAREN);
+
+    char idx_name[MAX_NAME];
+    snprintf(idx_name, MAX_NAME, "__blockio_idx%d", sym_count);
+    int idx_sym_idx = sym_count;
+    add_var(idx_name, TYPE_INTEGER);
+
+    ASTNode *for_node = create_node(NODE_FOR);
+    for_node->line = line;
+    for_node->data.var_idx = idx_sym_idx;
+    for_node->op = TOKEN_TO;
+    ASTNode *lo = create_node(NODE_NUMBER);
+    lo->data.num_value = 0;
+    lo->expression_type = TYPE_INTEGER;
+    for_node->left = lo;
+    ASTNode *one = create_node(NODE_NUMBER);
+    one->data.num_value = 1;
+    one->expression_type = TYPE_INTEGER;
+    ASTNode *hi = create_node(NODE_BINARY_OP);
+    hi->op = TOKEN_MINUS;
+    hi->left = count_expr;
+    hi->right = one;
+    hi->expression_type = TYPE_INTEGER;
+    for_node->right = hi;
+
+    ASTNode *idx_read = create_node(NODE_VARIABLE);
+    idx_read->data.var_idx = idx_sym_idx;
+    idx_read->expression_type = TYPE_INTEGER;
+
+    ASTNode *index_expr = idx_read;
+    if (arr_lower != 0) {
+        ASTNode *lower_lit = create_node(NODE_NUMBER);
+        lower_lit->data.num_value = arr_lower;
+        lower_lit->expression_type = TYPE_INTEGER;
+        index_expr = create_node(NODE_BINARY_OP);
+        index_expr->op = TOKEN_PLUS;
+        index_expr->left = idx_read;
+        index_expr->right = lower_lit;
+        index_expr->expression_type = TYPE_INTEGER;
+    }
+    (void)arr_upper; // bounds enforcement comes from the array's own runtime check, not a compile-time comparison here
+
+    ASTNode *body_stmt;
+    if (is_read) {
+        ASTNode *leaf = create_node(NODE_TYPED_FILE_READ_LEAF);
+        leaf->line = line;
+        leaf->data.var_idx = fidx;
+        leaf->expression_type = elem_type;
+        leaf->op = (TokenType)0; // always full-width - see this function's own v1 scope comment above
+        ASTNode *assign = create_node(NODE_ASSIGN);
+        assign->line = line;
+        assign->data.var_idx = arr_sym_idx;
+        assign->left = index_expr;
+        assign->right = wrap_range_check(leaf, elem_is_subrange, elem_subrange_lower, elem_subrange_upper);
+        assign->expression_type = elem_type;
+        body_stmt = assign;
+    } else {
+        ASTNode *elem_read = create_node(NODE_ARRAY_ACCESS);
+        elem_read->line = line;
+        elem_read->data.var_idx = arr_sym_idx;
+        elem_read->left = index_expr;
+        elem_read->expression_type = elem_type;
+        ASTNode *leaf = create_node(NODE_TYPED_FILE_WRITE_LEAF);
+        leaf->line = line;
+        leaf->data.var_idx = fidx;
+        leaf->left = elem_read;
+        leaf->expression_type = elem_type;
+        leaf->op = (TokenType)0;
+        body_stmt = leaf;
+    }
+
+    ASTNode *body = create_node(NODE_COMPOUND);
+    body->left = body_stmt;
+    for_node->extra = body;
+
+    return for_node;
+}
+
 // 'read(a[, b, c...])' / 'readln(a[, b, c...])' - a comma-separated list
 // of read targets (see parse_read_target() above). 'read' and 'readln'
 // differ only in whether the LAST target consumes the rest of the input
@@ -10531,6 +10736,16 @@ static ASTNode *parse_read_statement(int is_readln) {
                 ASTNode *result = parse_typed_file_read(&typed_file_vars[find_typed_file_var(fidx)]);
                 match(TOKEN_RPAREN);
                 return result;
+            }
+            if (sym_table[fidx].type == TYPE_UNTYPED_FILE) {
+                // Plain 'read'/'readln' don't apply to an untyped file at
+                // all (no fixed record shape to transfer, no text to
+                // parse) - use 'BlockRead' instead. Rejected explicitly
+                // here rather than silently falling into the text-read
+                // loop below, which would otherwise misinterpret this as
+                // an ordinary text file target.
+                compile_error(token.line, "'%s' doesn't apply to an untyped file - use 'BlockRead' instead",
+                               is_readln ? "readln" : "read");
             }
             file_sym_idx = fidx;
             match(TOKEN_IDENTIFIER);
@@ -10609,6 +10824,7 @@ static int is_statement_start(TokenType t) {
            t == TOKEN_BREAK || t == TOKEN_CONTINUE || t == TOKEN_INC || t == TOKEN_DEC || t == TOKEN_WITH ||
            t == TOKEN_ASSERT || t == TOKEN_CASE || t == TOKEN_GOTO ||
            t == TOKEN_FILE_ASSIGN || t == TOKEN_RESET || t == TOKEN_REWRITE || t == TOKEN_CLOSE || t == TOKEN_SEEK ||
+           t == TOKEN_BLOCKREAD || t == TOKEN_BLOCKWRITE ||
            t == TOKEN_NEW || t == TOKEN_DISPOSE || t == TOKEN_INHERITED ||
            t == TOKEN_TRY || t == TOKEN_RAISE || t == TOKEN_WARNING || t == TOKEN_RANDOMIZE ||
            t == TOKEN_DELETE || t == TOKEN_INSERT || t == TOKEN_SETLENGTH || t == TOKEN_EXIT || t == TOKEN_HALT ||
@@ -12828,6 +13044,10 @@ static ASTNode *statement(void) {
         return dynarray_writeback_assign_node(read_node, value_node);
     }
 
+    if (token.type == TOKEN_BLOCKREAD || token.type == TOKEN_BLOCKWRITE) {
+        return parse_block_read_write(token.type == TOKEN_BLOCKREAD);
+    }
+
     if (token.type == TOKEN_FILE_ASSIGN) {
         // 'assign(f, name)' - binds a filename to f. Doesn't open
         // anything yet (matching real Pascal - reset()/rewrite() do
@@ -12872,7 +13092,8 @@ static ASTNode *statement(void) {
         ASTNode *stmt = create_node(NODE_FILE_OP);
         stmt->op = kind;
         stmt->data.var_idx = fidx;
-        if ((kind == TOKEN_RESET || kind == TOKEN_REWRITE) && sym_table[fidx].type == TYPE_TYPED_FILE) {
+        if ((kind == TOKEN_RESET || kind == TOKEN_REWRITE) &&
+            (sym_table[fidx].type == TYPE_TYPED_FILE || sym_table[fidx].type == TYPE_UNTYPED_FILE)) {
             // Bakes the file's own record BYTE size in at PARSE time
             // (right is otherwise unused on NODE_FILE_OP) rather than
             // having codegen.c look it up itself - typed_file_vars[] is
@@ -12885,8 +13106,18 @@ static ASTNode *statement(void) {
             // narrower than sizeof(int), so "leaf count" and "byte
             // count" have diverged since typed_file_vars[].byte_size
             // was introduced; see record_type_byte_size().
+            //
+            // An UNTYPED file has no fixed record size at all - packs 0,
+            // reusing this exact same opcode purely for its "open in
+            // binary mode" behavior (see OP_TYPED_FILE_RESET/REWRITE's
+            // own comment in common.h). The cached 0 is never read back:
+            // OP_FILE_SEEK/OP_FILE_SIZE/OP_TYPED_FILE_EOF (the only
+            // consumers of vm_open_files[idx].record_byte_size) aren't
+            // supported for untyped files yet (see 'seek'/'filesize'
+            // parsing below, which explicitly rejects TYPE_UNTYPED_FILE).
             ASTNode *record_size_lit = create_node(NODE_NUMBER);
-            record_size_lit->data.num_value = typed_file_vars[find_typed_file_var(fidx)].byte_size;
+            record_size_lit->data.num_value = sym_table[fidx].type == TYPE_TYPED_FILE
+                ? typed_file_vars[find_typed_file_var(fidx)].byte_size : 0;
             record_size_lit->expression_type = TYPE_INTEGER;
             stmt->right = record_size_lit;
         }
@@ -12976,6 +13207,15 @@ static ASTNode *statement(void) {
                             ASTNode *result = parse_typed_file_write(&typed_file_vars[find_typed_file_var(fidx)]);
                             match(TOKEN_RPAREN);
                             return result;
+                        }
+                        if (sym_table[fidx].type == TYPE_UNTYPED_FILE) {
+                            // Plain 'write'/'writeln' don't apply to an
+                            // untyped file at all - use 'BlockWrite'
+                            // instead. Same reasoning as
+                            // parse_read_statement()'s own untyped-file
+                            // rejection.
+                            compile_error(token.line, "'%s' doesn't apply to an untyped file - use 'BlockWrite' instead",
+                                           kind == TOKEN_WRITELN ? "writeln" : "write");
                         }
                         match(TOKEN_IDENTIFIER);
                         ASTNode *file_ref = create_node(NODE_VARIABLE);

@@ -1246,6 +1246,90 @@ same mechanism. Every leaf transfers a full 4-byte value, **except** a
 bytes instead — decided per leaf at compile time, so a record's actual
 on-disk byte size can be smaller than `4 * (number of fields)`.
 
+### Untyped files
+
+```pascal
+var
+    f: file;
+    buf: array[0..9] of integer;
+
+begin
+    assign(f, 'raw.bin');
+    rewrite(f);
+    buf[0] := 42;
+    BlockWrite(f, buf, 1);
+    close(f);
+
+    reset(f);
+    BlockRead(f, buf, 1);
+    close(f);
+    writeln(buf[0]);   { 42 }
+end.
+```
+
+`var f: file;` (no `of Type`) — a raw binary file with no fixed record
+shape, distinct from both `text` and `file of T`. `assign`/`reset`/
+`rewrite`/`close`/`eof` all work exactly as they do for the other two
+file kinds (`reset`/`rewrite` open in binary mode, same as a typed
+file). There's no plain `read`/`write` for an untyped file at all —
+transfer happens only via:
+
+- **`BlockRead(f, arr, count)`** reads `count` elements from `f`'s
+  current position into `arr`, starting at `arr`'s own declared lower
+  bound (`arr[low..low+count-1]`) — matching real Pascal, which always
+  fills the buffer argument's own base, never a caller-specified offset
+  into it.
+- **`BlockWrite(f, arr, count)`** is the write twin.
+- **`arr` must be a plain 1D array** (global or local), with an element
+  type that's typed-file-safe (see "Typed (binary) files" above —
+  `integer`, `real`, `boolean`, an enumerated type, a subrange, or a
+  `set`; no array-typed, record-typed, or string/char/pointer/
+  procedural-typed elements).
+- **`count` is an ordinary runtime expression**, not required to be a
+  compile-time constant. A `count` larger than `arr`'s own declared size
+  is a runtime "Array index out of range" error — the exact same check
+  every other array access already has, not a special case.
+- **`f` must already be `reset`/`rewrite`d**, exactly like the other two
+  file kinds.
+
+**Not implemented yet:**
+
+- **`seek`/`filesize` on an untyped file** — both are tied to a *fixed*
+  record size for a typed file; an untyped file has none (real Pascal's
+  equivalent needs an optional record-size argument on `Reset`/
+  `Rewrite`, deliberately not added here). Using either on an untyped
+  file is a compile-time error.
+- **A scalar (non-array) `BlockRead`/`BlockWrite` target.**
+- **The optional `Result` parameter** some Pascal dialects add to
+  `BlockRead`/`BlockWrite`, reporting how many elements were actually
+  transferred for graceful short-read handling — reading past the end
+  of an untyped file is a fatal `VM Runtime Error` instead, matching
+  the exact same "failure surface stays minimal" convention typed files
+  already have.
+- **Narrower on-disk transfer for a `byte`/`shortint`/`word` array
+  element** — every element always transfers as a full 4-byte value
+  regardless of the array's own declared subrange bounds. Unlike a
+  typed file's record fields (which each carry their own explicit
+  on-disk width, set at declaration time), this compiler's arrays have
+  no equivalent per-array width tracking to tell a literal `byte`-typed
+  array apart from an ordinary hand-written `0..255` subrange array —
+  a real gap, not a rounding-down default.
+- **`type TFileType = file;`** — a named, reusable untyped-file type
+  alias, same cut `file of T` already has.
+- **An untyped file variable as a parameter, local, record field, or
+  array element** — global only, same restriction the other two file
+  kinds already have.
+
+Implemented entirely by reusing typed files' own machinery: `BlockRead`/
+`BlockWrite` desugar, at parse time, into an ordinary `for` loop —
+`for i := 0 to count - 1 do arr[low + i] := <one raw value transfer>;`
+— built from the exact same per-value read/write primitive `read(f,
+rec)`/`write(f, rec)` above already compiles a typed file's own leaf
+fields into. No new opcode exists anywhere for this feature; array
+bounds-checking on `count` comes for free from the loop body being an
+ordinary array-element access, running through this VM's existing
+runtime check like any other one.
+
 ## Real
 
 ```pascal

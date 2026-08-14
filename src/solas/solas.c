@@ -906,7 +906,8 @@ void assemble(char *source, const char *filename) {
                 else if (strcasecmp(type_str, "set") == 0) type = TYPE_SET;
                 else if (strcasecmp(type_str, "text") == 0) type = TYPE_FILE;
                 else if (strcasecmp(type_str, "typedfile") == 0) type = TYPE_TYPED_FILE;
-                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', 'set', 'text', or 'typedfile')", type_str); return; }
+                else if (strcasecmp(type_str, "untypedfile") == 0) type = TYPE_UNTYPED_FILE;
+                else { asm_error(line_no, "Unknown type '%s' (expected 'integer', 'boolean', 'string', 'char', 'real', 'set', 'text', 'typedfile', or 'untypedfile')", type_str); return; }
                 add_var(line_no, name, type);
             } else if (strcasecmp(directive, "array") == 0) {
                 char name[MAX_NAME], type_str[MAX_NAME];

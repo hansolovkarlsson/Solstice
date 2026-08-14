@@ -65,9 +65,6 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] Untyped files + `BlockRead`/`BlockWrite` — raw byte-oriented file
-      I/O, distinct from both `text` and typed (record) files (see
-      [docs/LANGUAGE.md](LANGUAGE.md#file-io)).
 - [ ] `@`/`Addr` and an untyped `Pointer` type — no address-of operator,
       no generic pointer that can target any type (see
       [docs/LANGUAGE.md](LANGUAGE.md#pointers) - only typed pointers

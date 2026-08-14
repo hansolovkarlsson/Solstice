@@ -3050,6 +3050,83 @@ anyway, so this is where they land instead.
       now that record typed constants exist in general - it specifically
       tests the still-correct "declared too late" case) - everything
       else byte-for-byte identical before/after.
+- [x] Untyped files + `BlockRead`/`BlockWrite` - `var f: file;` (no `of
+      Type`), a raw binary file with no fixed record shape, read/written
+      in caller-specified chunks (`BlockRead(f, arr, count)`/
+      `BlockWrite(f, arr, count)`), distinct from both `text` and typed
+      (`file of T`) files.
+
+      **Reuses typed files' own machinery almost entirely**: the single-
+      value binary transfer primitive (`NODE_TYPED_FILE_READ_LEAF`/
+      `_WRITE_LEAF`, compiling to `OP_READ_TYPED_FILE_INT`/`_BYTE`/
+      `_SHORTINT`/`_WORD` and their `WRITE` twins) never actually checked
+      that the file variable was a *typed* file specifically - it only
+      ever needed a currently-open file at a given symbol index -
+      confirmed by reading the actual opcode dispatch before writing any
+      new code, not assumed. Opening in binary mode reuses
+      `OP_TYPED_FILE_RESET`/`_REWRITE` unchanged, packing
+      `record_byte_size = 0` (an untyped file has no fixed record size,
+      and this cached value is never read back, since `seek`/`filesize`
+      aren't supported for untyped files - see below). `BlockRead`/
+      `BlockWrite` desugar entirely at PARSE TIME into an ordinary `for`
+      loop (`for i := 0 to count - 1 do arr[low + i] := <one raw value
+      transfer>;`), mirroring this compiler's existing `for x in arr do`
+      loop-synthesis pattern exactly. Net result: **zero new VM opcodes,
+      zero new codegen.c cases** - the only new opcode-adjacent surface
+      is a new `TYPE_UNTYPED_FILE` DataType and two new tokens.
+
+      **Two real gaps caught during implementation, not anticipated in
+      the plan**:
+      1. Every VM-side type assertion gating typed-file opcodes
+         (`vm_typed_file_handle()`, plus inline checks in `OP_FILE_ASSIGN`/
+         `OP_FILE_CLOSE`/`OP_TYPED_FILE_RESET`/`_REWRITE`) hard-required
+         exactly `TYPE_TYPED_FILE` - each needed broadening to also
+         accept `TYPE_UNTYPED_FILE`, found by actually running the
+         feature rather than just reasoning about the opcode-reuse story.
+      2. `desole.c`'s symbol-type-name printer had an explicit case for
+         `TYPE_TYPED_FILE` (past the generic `>= TYPE_ENUM_BASE ->
+         "integer"` catch-all, since a typed file's state is genuinely
+         VM-level, not a pascalc-frontend-only concept) but nothing for
+         the new `TYPE_UNTYPED_FILE`, which sits in the same range - an
+         untyped file variable silently disassembled as plain "integer"
+         and lost its file-ness entirely on reassembly. Caught by the
+         solas/desole round-trip test the project's own testing
+         methodology requires, not by inspection - a live demonstration
+         of why that step exists. Fixed with a matching explicit case in
+         both `desole.c` and `solas.c` (`"untypedfile"`).
+
+      **v1 scope, discovered partway through design**: every array
+      element always transfers as a full 4-byte value regardless of the
+      array's own declared subrange bounds - this compiler's arrays have
+      no per-array equivalent of `RecordField.disk_width`/
+      `TypedFileVarDef.disk_width` to tell a literal `byte`-typed array
+      apart from an ordinary hand-written `0..255` subrange array
+      (`Symbol` only tracks `is_subrange`/bounds, not which keyword
+      produced them), so narrower on-disk transfer for a byte/shortint/
+      word array element isn't supported yet - logged as a documented
+      gap rather than either building new per-array width tracking or
+      silently guessing wrong. `seek`/`filesize` on an untyped file, a
+      scalar (non-array) `BlockRead`/`BlockWrite` target, and the
+      classic optional `Result` short-read parameter are also out of
+      scope, matching the plan.
+
+      See `examples/test/untypedfile/test_untypedfile_*.pas` (6 positive
+      cases - a basic round trip, a partial transfer smaller than the
+      array's own size, one array per typed-file-safe element type, a
+      local array target, `eof`, and multiple calls against the same
+      open file confirming the position advances correctly; 5 error
+      cases - a `count` larger than the array's declared bounds caught
+      by this VM's ordinary array-bounds-check at runtime with zero new
+      code, a record-element array, a string-element array, reading past
+      actual end of file, and `BlockRead` before `reset`/`rewrite`; plus
+      a compile-time rejection of `seek` on an untyped file, already
+      free from the existing `seek`-is-typed-file-only check) and
+      [docs/LANGUAGE.md](LANGUAGE.md#untyped-files). A full regression
+      sweep (856 test files, plus a direct old-VM-vs-new-VM comparison
+      on every existing `text`/typed-file `.bin`) found only the 11 new
+      test files differing, plus one pre-existing message deliberately
+      reworded earlier this session for accuracy - everything else byte-
+      for-byte/output-for-output identical before/after.
 
 ### Shipped from the OOP features survey
 

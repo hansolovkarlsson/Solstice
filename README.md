@@ -289,6 +289,11 @@ text, compiled entirely at compile time into one raw-int transfer per
 field, the same "no runtime record-copy opcode" idiom whole-record
 assignment already uses (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#typed-binary-files)). Also working:
+untyped files (`var f: file;`, `BlockRead`/`BlockWrite(f, arr, count)`)
+— raw binary I/O with no fixed record shape, desugaring entirely into an
+ordinary `for` loop built from typed files' own per-value transfer
+primitive, so it needed no opcodes of its own (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#untyped-files)). Also working:
 sized integers — `byte` (`0..255`), `shortint` (`-128..127`), `word`
 (`0..65535`), predefined subrange types that additionally write/read
 their own narrower width (1 or 2 bytes, not 4) as a typed-file field or

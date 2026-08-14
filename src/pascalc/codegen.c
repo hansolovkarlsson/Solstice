@@ -933,12 +933,18 @@ void generate_code(ASTNode *node) {
                 // early instead of falling into the shared code below.
                 int file_idx = node->left ? node->left->data.var_idx : -1;
                 if (node->op == TOKEN_EOF_FN) {
-                    // A typed file needs a genuinely separate opcode -
-                    // text mode's OP_EOF_FILE is a byte-level fgetc+
-                    // ungetc peek, not meaningful for binary records
-                    // (parse time already rejects 'eoln' on a typed
-                    // file entirely, so no OP_TYPED_FILE_EOLN exists).
-                    if (file_idx != -1 && sym_table[file_idx].type == TYPE_TYPED_FILE) {
+                    // A typed (or untyped) file needs a genuinely
+                    // separate opcode - text mode's OP_EOF_FILE is a
+                    // byte-level fgetc+ungetc peek, not meaningful for
+                    // binary records (parse time already rejects 'eoln'
+                    // on a typed/untyped file entirely, so no
+                    // OP_TYPED_FILE_EOLN exists). OP_TYPED_FILE_EOF
+                    // itself is a pure byte-position comparison (ftell/
+                    // fseek, no record_byte_size involved at all - see
+                    // vm.c), so it's already exactly as meaningful for
+                    // an untyped file as a typed one.
+                    if (file_idx != -1 && (sym_table[file_idx].type == TYPE_TYPED_FILE
+                                            || sym_table[file_idx].type == TYPE_UNTYPED_FILE)) {
                         emit(OP_TYPED_FILE_EOF, file_idx);
                     } else {
                         emit_stdio_op(OP_EOF, OP_EOF_FILE, file_idx);
@@ -1525,7 +1531,8 @@ void generate_code(ASTNode *node) {
                 generate_code(node->left); // filename
                 emit(OP_FILE_ASSIGN, node->data.var_idx);
             } else if (node->op == TOKEN_RESET || node->op == TOKEN_REWRITE) {
-                if (sym_table[node->data.var_idx].type == TYPE_TYPED_FILE) {
+                if (sym_table[node->data.var_idx].type == TYPE_TYPED_FILE
+                    || sym_table[node->data.var_idx].type == TYPE_UNTYPED_FILE) {
                     // arg is PACKED - both halves already known at
                     // compile time, mirroring OP_STORE_VTABLE_SLOT's own
                     // precomputed-flat-index precedent - see
@@ -1533,7 +1540,10 @@ void generate_code(ASTNode *node) {
                     // common.h. record_byte_size was baked into
                     // node->right at PARSE time (parser.c) -
                     // typed_file_vars[] is parser.c-local, not visible
-                    // here.
+                    // here. An UNTYPED file packs 0 (see parser.c's own
+                    // comment on this) - reused purely for the binary-
+                    // mode "rb"/"wb" fopen behavior this opcode already
+                    // has.
                     int record_byte_size = node->right->data.num_value;
                     int arg = record_byte_size * MAX_SYMBOLS + node->data.var_idx;
                     emit(node->op == TOKEN_RESET ? OP_TYPED_FILE_RESET : OP_TYPED_FILE_REWRITE, arg);

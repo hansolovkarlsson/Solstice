@@ -293,6 +293,11 @@ typedef enum {
                       // caller's incoming value. 'const' reuses the
                       // ALREADY-existing TOKEN_CONST (const declarations)
                       // rather than needing a token of its own.
+    TOKEN_BLOCKREAD,  // 'BlockRead(f, arr, count)' - an untyped file only
+                      // (TYPE_UNTYPED_FILE). See parse_block_read() in
+                      // parser.c - desugars into a synthesized NODE_FOR
+                      // loop, no opcode of its own.
+    TOKEN_BLOCKWRITE, // Write twin of TOKEN_BLOCKREAD above.
     TOKEN_EOF
 } TokenType;
 
@@ -487,6 +492,26 @@ typedef enum {
                 // this ordinary zero-init default double as the sentinel
                 // with no explicit default-value codegen needed anywhere -
                 // see vm_heap_count's own comment in vm.c.
+    TYPE_UNTYPED_FILE = TYPE_DYNARRAY_BASE + MAX_DYNARRAY_TYPES, // 'file'
+                // (no 'of Type') - a raw binary file with no fixed record
+                // shape, read/written in caller-specified chunks via
+                // BlockRead/BlockWrite (see docs/LANGUAGE.md#file-io).
+                // A single FLAT value, like TYPE_FILE/TYPE_TYPED_FILE (no
+                // per-declaration side table needed - unlike
+                // TYPE_TYPED_FILE, an untyped file has no element type or
+                // fixed record byte size to remember at all). GLOBAL ONLY,
+                // same restriction and reasoning as TYPE_FILE/
+                // TYPE_TYPED_FILE. Real state lives in vm_open_files[] (see
+                // vm.c) exactly like the other two file types - opened via
+                // the SAME OP_TYPED_FILE_RESET/REWRITE opcodes typed files
+                // use (binary "rb"/"wb" mode is exactly what an untyped
+                // file needs too), just packing record_byte_size = 0 -
+                // never read back, since seek/filesize aren't supported
+                // for untyped files yet (see BlockRead/BlockWrite's own
+                // TOKEN_BLOCKREAD/TOKEN_BLOCKWRITE handling in parser.c).
+                // Explicitly assigned past TYPE_DYNARRAY_BASE's own range,
+                // mirroring TYPE_TYPED_FILE/TYPE_DYNARRAY_BASE's own
+                // explicit assignments above for the identical reason.
 } DataType;
 
 // One declared enumerated type ('type TColor = (Red, Green, Blue);') -
