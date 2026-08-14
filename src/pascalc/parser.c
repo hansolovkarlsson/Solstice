@@ -11892,6 +11892,51 @@ static ASTNode *parse_record_array_write(int arr_sym_idx) {
     return parse_record_array_dest_whole_assignment(arr_sym_idx, index_expr);
 }
 
+// Parses '[e1, e2, ...]' as a dynamic-array literal, for an assignment
+// RHS a caller has ALREADY determined targets a dynamic-array-typed
+// variable of type 'dynarr_type' (both call sites check
+// 'is_dynarray_type(target) && token.type == TOKEN_LBRACKET' before ever
+// reaching here) - deciding set-vs-array BEFORE parsing the '[' is the
+// whole point: NODE_SET_CONSTRUCTOR's own type_checker.c case fatally
+// rejects a real/string element on the way up the generic bottom-up
+// recursion, so reinterpreting an already-built set-constructor node
+// after the fact would be too late for exactly the element types that
+// matter most here. '[' has not been matched by the caller - matched
+// here instead, mirroring parse_record_array_write()'s own convention of
+// matching its own opening bracket.
+static ASTNode *parse_dynarray_literal(DataType dynarr_type) {
+    int line = token.line;
+    match(TOKEN_LBRACKET);
+    DynArrayTypeDef *d = &dynarray_types[dynarr_type - TYPE_DYNARRAY_BASE];
+    ASTNode *head = NULL;
+    ASTNode *tail = NULL;
+    if (token.type != TOKEN_RBRACKET) {
+        while (1) {
+            // Range syntax ('1..3') is deliberately NOT accepted here,
+            // unlike NODE_SET_CONSTRUCTOR's own '[...]' - real Delphi
+            // array literals don't have it either, and it's meaningless
+            // for a real/string element type anyway. Each element is
+            // wrapped in wrap_range_check() exactly like
+            // NODE_DYNARRAY_ASSIGN's own single value already is, for a
+            // byte/shortint/word element type - a no-op for every other
+            // element type.
+            ASTNode *elem = wrap_range_check(expression(), d->elem_is_subrange,
+                                              d->elem_subrange_lower, d->elem_subrange_upper);
+            if (!head) head = elem; else tail->next = elem;
+            tail = elem;
+            if (token.type == TOKEN_COMMA) { match(TOKEN_COMMA); continue; }
+            break;
+        }
+    }
+    match(TOKEN_RBRACKET);
+    ASTNode *node = create_node(NODE_DYNARRAY_LITERAL);
+    node->line = line;
+    node->left = head;
+    node->data.var_idx = (int)d->elem_type; // see NODE_DYNARRAY_LITERAL's own comment in common.h for why this, not expression_type
+    node->expression_type = dynarr_type; // the ARRAY type - so the ordinary NODE_ASSIGN/NODE_LOCAL_ASSIGN exact-type-match check accepts this for free
+    return node;
+}
+
 // Given an already-resolved GLOBAL symbol index, parses whatever follows
 // (array indexing, 2D array indexing) plus ':=' and the value expression,
 // and builds the appropriate assignment node. Shared between plain
@@ -12002,8 +12047,12 @@ static ASTNode *parse_global_assignment(int idx) {
     ASTNode *stmt = create_node(NODE_ASSIGN);
     stmt->data.var_idx = idx;
     match(TOKEN_ASSIGN);
-    stmt->left = wrap_range_check(expression(), sym_table[idx].is_subrange,
-                                   sym_table[idx].subrange_lower, sym_table[idx].subrange_upper); // value
+    if (is_dynarray_type(sym_table[idx].type) && token.type == TOKEN_LBRACKET) {
+        stmt->left = parse_dynarray_literal(sym_table[idx].type);
+    } else {
+        stmt->left = wrap_range_check(expression(), sym_table[idx].is_subrange,
+                                       sym_table[idx].subrange_lower, sym_table[idx].subrange_upper); // value
+    }
     return stmt;
 }
 
@@ -13350,8 +13399,12 @@ static ASTNode *statement(void) {
             stmt->op = (TokenType)levels_up;
             stmt->expression_type = ls->type; // target type, for the type checker
             match(TOKEN_ASSIGN);
-            stmt->left = wrap_range_check(expression(), ls->is_subrange,
-                ls->subrange_lower, ls->subrange_upper);
+            if (is_dynarray_type(ls->type) && token.type == TOKEN_LBRACKET) {
+                stmt->left = parse_dynarray_literal(ls->type);
+            } else {
+                stmt->left = wrap_range_check(expression(), ls->is_subrange,
+                    ls->subrange_lower, ls->subrange_upper);
+            }
             return stmt;
         }
 

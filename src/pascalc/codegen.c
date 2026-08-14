@@ -1772,6 +1772,34 @@ void generate_code(ASTNode *node) {
             }
             break;
 
+        case NODE_DYNARRAY_LITERAL: {
+            // Zero new opcodes - every element's heap offset is a
+            // compile-time constant (just its position in the literal),
+            // so this needs no runtime-index machinery at all. An empty
+            // literal is the one case with nothing to allocate: pushes
+            // the same 'not allocated'/nil value 0 every other empty
+            // dynamic array already uses.
+            int count = 0;
+            for (ASTNode *elem = node->left; elem; elem = elem->next) count++;
+            if (count == 0) {
+                emit(OP_PUSH, 0);
+                break;
+            }
+            int elem_is_char = ((DataType)node->data.var_idx == TYPE_CHAR);
+            emit(OP_NEW, count + 1);           // ptr
+            emit(OP_DUP, 0);                   // ptr, ptr
+            emit(OP_PUSH, count);               // ptr, ptr, count
+            emit(OP_STORE_HEAP_FIELD, 0);        // heap[ptr+0] = count -> ptr
+            int offset = 1;
+            for (ASTNode *elem = node->left; elem; elem = elem->next) {
+                emit(OP_DUP, 0);                // ptr, ptr
+                generate_code(elem);              // ptr, ptr, value
+                emit(elem_is_char ? OP_STORE_HEAP_FIELD_CHAR : OP_STORE_HEAP_FIELD, offset); // ptr
+                offset++;
+            }
+            break;
+        }
+
         case NODE_SET_IN:
             emit(OP_PUSH, 1);
             generate_code(node->left); // the element

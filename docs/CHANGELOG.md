@@ -3393,6 +3393,85 @@ anyway, so this is where they land instead.
       output before/after reassembly. Confirmed no regression in string
       `Copy`/`Mid` (`test_string_basic.pas`, `test_consolidation_1.pas`)
       or the existing dynamic-array regression suite.
+- [x] Array-literal syntax for dynamic arrays - `arr := [1, 2, 3];`.
+      Closes the dynamic-array half of the roadmap's "`Copy`/slicing and
+      array-literal syntax" bullet (a fixed-size array, and either array
+      kind as a general expression rather than a bare assignment RHS,
+      stay open).
+
+      **The real problem wasn't codegen, it was that `[...]` was already
+      spoken for**: `NODE_SET_CONSTRUCTOR` (`parser.c`) has parsed
+      `[e1, e2, ...]` unconditionally as a set literal since sets shipped,
+      with a `type_checker.c` case that fatally rejects any `real`/
+      `string`/`char` element - and that check runs bottom-up, before an
+      enclosing assignment node ever gets a look at its RHS. Reusing
+      that node and reinterpreting it after the fact would have been too
+      late for exactly the element types that matter most for an array
+      literal (`array of real`, `array of string`). So set-vs-array is
+      decided BEFORE any '[' is parsed at all, at the two call sites that
+      already resolve an assignment target's type ahead of its RHS
+      (`parse_global_assignment()`'s tail, and the matching local-symbol
+      fallback in `statement()` - the same two sites `Copy`'s own
+      dynarray-vs-string dispatch, shipped just above, already
+      demonstrated exist for exactly this "decide grammar from an
+      already-known type" purpose). A brand new node,
+      `NODE_DYNARRAY_LITERAL`, never goes near `NODE_SET_CONSTRUCTOR`'s
+      code at all.
+
+      **Zero new opcodes** - the one design choice worth calling out.
+      Every element's heap offset is compile-time-known (just its
+      position in the literal), so the whole thing builds from existing
+      primitives: `OP_NEW` allocates a `(count+1)`-sized block, then one
+      `OP_DUP` + `OP_STORE_HEAP_FIELD`/`OP_STORE_HEAP_FIELD_CHAR` pair per
+      slot (slot `0` = the literal's own compile-time-known element
+      count, slots `1..N` = the elements, `_CHAR` picked for a `char`
+      element type exactly like element-write codegen already does
+      elsewhere). No `solas`/`desole` change needed as a result. An empty
+      literal (`arr := [];`) skips this entirely and compiles straight to
+      `PUSH 0` - the same value `SetLength(arr, 0)` already produces.
+
+      **`node->expression_type` deliberately holds the ARRAY type, not
+      the element type** - the opposite of `NODE_DYNARRAY_ASSIGN`'s own
+      convention (which stores the element type there, since that node
+      represents a single element write). Storing the array type instead
+      means the ordinary, completely unmodified `NODE_ASSIGN`/
+      `NODE_LOCAL_ASSIGN` exact-type-match check already accepts
+      `arr := [...]` for free - no new case needed in either, mirroring
+      the exact "no dynamic-array-specific case needed" property
+      `dynarray_types[]`'s own structural dedup already gives ordinary
+      whole-array assignment. The element type instead rides in
+      `data.var_idx` (a plain int - `DataType` is enum-backed), read back
+      by both `type_checker.c` (per-element validation/widening) and
+      `codegen.c` (the `_CHAR` opcode choice).
+
+      **Per-element type-checking mirrors `NODE_CALL`'s own argument
+      walk**, not a plain `for` loop over the sibling chain: widening (an
+      `integer` literal into a `real` array) needs `try_widen_for_
+      assignment()`, which takes a pointer to the AST slot holding the
+      node so it can splice in a conversion wrapper - exactly the same
+      `ASTNode **arg_ptr` walk `NODE_CALL`'s procedure-argument checking
+      already uses, reused here instead of inventing a second pattern for
+      the identical problem.
+
+      See `examples/test/dynarray/test_dynarray_literal_*.pas` (9
+      positive/behavioral cases - a plain integer literal, an empty
+      literal compared against `nil`, `real`/`string`/`char` element
+      types - the exact cases that ruled out reusing the set-constructor
+      node, int-to-real widening, non-constant/expression elements
+      confirming `mark_used_variables` doesn't wrongly drop the
+      variables they reference, reassignment over an already-allocated
+      array, and a local (not just global) target; 2 error cases - a
+      `byte`-array element out of range at runtime via the existing
+      `wrap_range_check` machinery, and a flatly wrong element type at
+      compile time) and
+      [docs/LANGUAGE.md](LANGUAGE.md#array-literals). Round-tripped
+      through `solas`/`desole` and confirmed the disassembly contains
+      only pre-existing mnemonics (`new`/`dup`/`store_heap_field`) - a
+      direct check that this really did introduce zero new bytecode
+      capability. Confirmed no regression in the existing `set`/
+      `dynarray`/`forin` regression suites (`[...]`'s existing set-
+      constructor meaning, and every previously-shipped dynamic-array
+      feature, both untouched).
 
 ### Shipped from the OOP features survey
 

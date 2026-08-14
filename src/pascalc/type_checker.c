@@ -563,6 +563,33 @@ void type_check(ASTNode *node) {
             }
             break;
 
+        case NODE_DYNARRAY_LITERAL: {
+            // data.var_idx holds the declared ELEMENT type (a DataType,
+            // stored as a plain int - see this node's own comment in
+            // common.h for why expression_type instead holds the ARRAY
+            // type). Mirrors NODE_CALL's own arg_ptr walk just above:
+            // each element may need in-place widening (e.g. an integer
+            // literal into a 'real' array), so a plain 'for (elem =
+            // node->left; elem; elem = elem->next)' isn't enough -
+            // try_widen_for_assignment() needs a pointer to the slot
+            // holding the pointer, to be able to replace it.
+            DataType elem_type = (DataType)node->data.var_idx;
+            ASTNode **elem_ptr = &node->left;
+            int i = 1;
+            while (*elem_ptr) {
+                if (!(is_string_type(elem_type) && is_string_type((*elem_ptr)->expression_type))
+                    && (*elem_ptr)->expression_type != elem_type
+                    && !try_widen_for_assignment(elem_ptr, elem_type)) {
+                    fprintf(stderr, "%s:%d: Type Error: Array literal element %d has the wrong type\n",
+                            get_current_filename(), node->line, i);
+                    fatal_abort();
+                }
+                elem_ptr = &(*elem_ptr)->next;
+                i++;
+            }
+            break;
+        }
+
         case NODE_REF_ARRAY_ASSIGN:
             if (node->left->expression_type != TYPE_INTEGER) {
                 fprintf(stderr, "%s:%d: Type Error: Array index must be integer\n",

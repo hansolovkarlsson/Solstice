@@ -527,6 +527,13 @@ default; a call omitting trailing arguments gets the default spliced in
 Also working: `Copy`/slicing for a dynamic array (`Copy(arr)`, `Copy(arr,
 start)`, `Copy(arr, start, count)`) — a genuinely new array, not an
 alias, lenient/clamping on out-of-range `start`/`count` rather than
-erroring (see [docs/LANGUAGE.md](docs/LANGUAGE.md#copy)). Not yet
-implemented: `copy`/slicing for a fixed-size array, variant records, and
-a whole record or an array element as a `var` argument.
+erroring (see [docs/LANGUAGE.md](docs/LANGUAGE.md#copy)); and array-
+literal syntax for a dynamic array (`arr := [1, 2, 3];`) as an assignment
+right-hand side, sharing `[...]` with set constructors — which one a
+given `[...]` means is resolved from the assignment target's own type,
+not from the brackets' contents (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#array-literals)). Not yet
+implemented: `copy`/slicing or array literals for a fixed-size array, an
+array literal as a general expression (e.g. a procedure argument) for
+either array kind, variant records, and a whole record or an array
+element as a `var` argument.

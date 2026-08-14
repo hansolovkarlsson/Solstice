@@ -444,6 +444,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `SetLength(arr, n)` | statement | Resizes a dynamic array to `n` elements — see [Dynamic arrays](#dynamic-arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
 | `Copy(arr[, start[, count]])` | function | Slices/copies a dynamic array (a genuinely new array, not an alias) — see [`Copy`](#copy) |
+| `arr := [e1, e2, ...]` | assignment | Builds a dynamic array directly from its elements — see [Array literals](#array-literals) |
 | `Delete(var S, Index, Count)`, `Insert(Source, var S, Index)` | statements | In-place string mutation — see [`Delete` and `Insert`](#delete-and-insert) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 | `IntToStr`, `FloatToStr`, `StrToInt`, `StrToFloat` | functions | Number/string conversion in memory — see [String](#string) |
@@ -2043,6 +2044,40 @@ runtime error:
   every other empty dynamic array is (see "`nil`" above) — it compares
   equal to `nil` and to a never-`SetLength`'d variable.
 
+### Array literals
+
+```pascal
+var
+    a: array of integer;
+    b: array of real;
+begin
+    a := [1, 2, 3];
+    b := [1, 2.5, 3];    { the integer literals widen to real, like any other assignment }
+    a := [];               { the same empty/nil value SetLength(a, 0) produces }
+end.
+```
+
+`arr := [e1, e2, ...]` — assigns a fresh dynamic array built directly from
+the listed elements, without an explicit `SetLength` first. Each element
+can be any expression, not just a constant, and is checked against the
+array's declared element type exactly like an ordinary element write
+(`arr[i] := ...`) — including widening (an `integer` literal into a
+`real` array) and the runtime bounds check a `byte`/`shortint`/`word`
+element type already gets.
+
+This reuses the `[...]` bracket syntax a **set** constructor already
+uses (`s := [1, 2, 3];` for `s: set of ...`) — which one a given `[...]`
+means is decided by the assignment target's own declared type, not by
+looking at the brackets' contents, so there's no ambiguity in practice.
+Unlike a set constructor, there's no range syntax (`[1..3]`) — real
+Delphi array literals don't have one either, and it wouldn't mean
+anything for a `real`/`string` element type.
+
+Only valid directly as an assignment's right-hand side (`arr := [...];`)
+for now, not as a general expression — passing one directly as a
+procedure argument (`Foo([1, 2, 3])`) isn't supported yet; assign it to a
+variable first.
+
 ### What's not supported yet
 
 - **Multi-dimensional dynamic arrays** — `array of array of integer` (or
@@ -2051,8 +2086,9 @@ runtime error:
 - **Record, pointer, procedural, or named (type-alias/subrange/
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
-- **Array-literal syntax** (`arr := [1, 2, 3];`) — doesn't exist yet for
-  either array kind in this language.
+- **Array-literal syntax for a fixed-size array**, and as a general
+  expression (e.g. a procedure argument) for either array kind — see
+  "Array literals" above for what IS supported.
 - **A dynamic-array-typed `record`/class field, or function return
   type** — only a plain `var`/parameter is supported so far.
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only

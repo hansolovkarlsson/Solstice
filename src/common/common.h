@@ -2399,6 +2399,55 @@ typedef enum {
                        // when the element type is 'char' (same reasoning
                        // as NODE_HEAP_FIELD_ASSIGN's own expression_type
                        // use).
+    NODE_DYNARRAY_LITERAL, // 'arr := [e1, e2, ...]' as an expression - a
+                       // dynamic-array literal, GENUINELY separate from
+                       // NODE_SET_CONSTRUCTOR despite sharing '[...]'
+                       // syntax: which one a given '[...]' parses to is
+                       // decided at the exact assignment call sites that
+                       // already resolve the target's type before parsing
+                       // the RHS (parse_global_assignment()'s tail/the
+                       // matching local fallback in parser.c), never by
+                       // reinterpreting a NODE_SET_CONSTRUCTOR after the
+                       // fact - that node's own type_checker.c case
+                       // already fatally rejects non-ordinal (real/
+                       // string) elements on the way up the generic
+                       // recursion, before any assignment-level code
+                       // could intervene. left = the element list, threaded
+                       // through ->next (same sibling-list idiom
+                       // NODE_SET_CONSTRUCTOR's own left/next already
+                       // uses) - each element an ordinary already-typed
+                       // expression, pre-wrapped in wrap_range_check() at
+                       // parse time exactly like NODE_DYNARRAY_ASSIGN's
+                       // own value already is, for a byte/shortint/word
+                       // element type. data.var_idx = the array's
+                       // declared ELEMENT type (a DataType, stored as a
+                       // plain int - see MAX_DYNARRAY_TYPES) - needed by
+                       // type_checker.c to validate/widen each element
+                       // and by codegen.c to pick OP_STORE_HEAP_FIELD_CHAR
+                       // over the plain variant, mirroring NODE_DYNARRAY_
+                       // ASSIGN's own use of expression_type for the
+                       // identical char-vs-plain choice; NOT reused here
+                       // because expression_type on THIS node instead
+                       // holds the ARRAY's own TYPE_DYNARRAY_BASE+idx
+                       // type (deliberately - so the ordinary, otherwise-
+                       // unmodified NODE_ASSIGN/NODE_LOCAL_ASSIGN exact-
+                       // type-match check already accepts 'arr := [...]'
+                       // for free, no new case needed there, same "no
+                       // dynamic-array-specific case needed" property
+                       // dynarray_types[]'s own dedup already gives
+                       // ordinary whole-array assignment). Codegen needs
+                       // zero new opcodes: OP_NEW allocates a (count+1)-
+                       // sized block, then one OP_DUP + OP_STORE_HEAP_
+                       // FIELD[_CHAR] pair per slot (slot 0 = the
+                       // compile-time-known element count, slots 1..N =
+                       // the elements) - every offset is a compile-time
+                       // constant, since it's just the element's position
+                       // in the literal, so there's no need for the
+                       // runtime-index machinery OP_SETLENGTH/
+                       // OP_COPY_DYNARR need. An empty literal ('arr :=
+                       // [];') skips all of this and compiles directly to
+                       // 'PUSH 0' - the same "not allocated"/nil value
+                       // every other empty dynamic array already is.
     NODE_ADDR_OF, // '@(p^)' / '@(p^.field)' / 'Addr(...)' - see
                        // parse_addr_expression() in parser.c. left = the
                        // pointer's own value expression (reused directly
