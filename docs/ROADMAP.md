@@ -86,13 +86,29 @@ anyway, so this is where they land instead.
       unsupported); a named alias for a FIXED-size array;
       and comparing two dynamic arrays directly (`arr1 = arr2`, as
       opposed to comparison against `nil`, which now works).
-- [ ] Inline assembly (`asm ... end;`) — not itself a priority (this
-      project's VM isn't x86, so there's no existing assembly dialect to
-      match), but worth a from-scratch equivalent someday: embedding raw
-      `.sasm` directly inside a Pascal source file, letting a procedure
-      body drop to hand-written bytecode the way real Delphi drops to
-      hand-written x86 - genuinely on-brand for a project with its own
-      VM and assembler already under project control.
+
+**Considered, explicitly out of scope: inline assembly** (`asm ... end;`
+embedding raw `.sasm` directly inside a Pascal source file, letting a
+procedure body drop to hand-written bytecode the way real Delphi drops
+to hand-written x86). Scoped in detail, not just floated: `solas`'s own
+`assemble()` (`solas.c`) can't be called as-is to implement this - it
+unconditionally resets `sym_count`/`code_idx`/`string_count`/
+`array_mem_count`/`label_count` to zero at its own top, since it's built
+as a one-shot whole-program assembler, not something that can append
+into a program `pascalc` has already partly generated. Making this work
+needs real surgery on that tested, working file first (parameterizing
+`assemble()` to skip those resets and start `code_idx`/label numbering
+from wherever the enclosing Pascal compile already stands), before any
+of the Pascal-side lexer/parser/codegen work even starts - a bigger,
+more structurally invasive change than anything shipped this session,
+for a feature the project's own original framing already called "not
+itself a priority." Global Pascal variables would likely be reachable
+from an asm block almost for free once that refactor exists (`solas`'s
+own `OPERAND_VAR` resolution already searches the shared `sym_table[]`);
+locals/parameters would need genuinely new machinery on top (they live
+in `vm_frame_stack[]`/`current_locals[]`, which `solas` has no concept
+of at all). Logged here, with the actual blocker named, rather than left
+an open checklist item that reads as smaller than it is.
 
 **Considered, explicitly out of scope: closures** (a nested function
 capturing its enclosing scope and escaping/outliving its enclosing
