@@ -1596,7 +1596,7 @@ typedef enum {
                   // OP_STORE_IDX_DYN already uses); same nil/bounds checks
                   // as OP_LOAD_DYNARR_IDX; stores into
                   // vm_heap_mem[pointer + 1 + index].
-    OP_STORE_DYNARR_IDX_CHAR // Same as OP_STORE_DYNARR_IDX, but additionally
+    OP_STORE_DYNARR_IDX_CHAR, // Same as OP_STORE_DYNARR_IDX, but additionally
                   // validates the value is a single character first -
                   // chosen by codegen instead of the plain variant whenever
                   // the array's declared element type is 'char'. Needed for
@@ -1607,6 +1607,35 @@ typedef enum {
                   // all, so there's no per-call "declared type" to consult
                   // at runtime the way plain OP_STORE_IDX does for a
                   // STATIC array (whose arg IS a sym_table[] index).
+    OP_COPY_DYNARR // 'Copy(arr)'/'Copy(arr, start)'/'Copy(arr, start,
+                  // count)' on a DYNAMIC array - a genuinely separate
+                  // opcode from string OP_COPY (different stack layout,
+                  // different "missing argument" convention - see
+                  // TOKEN_COPY's dual handling in parser.c/type_checker.c/
+                  // codegen.c). No arg. Pops count, then start, then the
+                  // array's pointer value (0/negative treated as length 0,
+                  // same convention as OP_LOAD_DYNARR_LEN). Lenient/
+                  // clamping, matching string OP_COPY's own documented
+                  // policy ("never errors, just returns as much as
+                  // actually exists") rather than OP_LOAD_DYNARR_IDX's
+                  // fatal-error-on-out-of-range policy: start is clamped
+                  // to [0, len]; codegen emits the literal -1 sentinel for
+                  // count whenever the Pascal call omitted it ('Copy(arr)'
+                  // or 'Copy(arr, start)'), meaning "everything from start
+                  // to the end" - resolved here at runtime since the
+                  // array's length isn't known at compile time; any other
+                  // count is clamped to [0, len - start]. A clamped-to-
+                  // zero result pushes plain 0 - the SAME "not allocated"/
+                  // empty value SetLength(arr, 0) produces (see
+                  // TYPE_DYNARRAY_BASE), so an empty Copy() result compares
+                  // equal to nil exactly like every other empty dynamic
+                  // array does. Otherwise allocates a fresh
+                  // (count+1)-sized block via vm_heap_alloc() (slot 0 =
+                  // count) and copies 'count' elements starting at
+                  // vm_heap_mem[pointer + 1 + start] - structurally the
+                  // same allocate-and-copy shape OP_SETLENGTH already
+                  // uses, just copying from an arbitrary offset instead of
+                  // always from 0.
 } Opcode;
 
 typedef struct {

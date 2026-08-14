@@ -6356,16 +6356,37 @@ static ASTNode *factor(void) {
         return node;
     } else if (token.type == TOKEN_COPY || token.type == TOKEN_MID) {
         // copy(s, start, count) / mid(s, start, count) - mid is an alias
-        // for copy (same operation, different conventional name).
+        // for copy (same operation, different conventional name). ALSO
+        // copy(arr) / copy(arr, start) / copy(arr, start, count) on a
+        // DYNAMIC array - a different grammar (start/count optional)
+        // reusing the same TOKEN_COPY, dispatched on node->left's own
+        // type, which is already resolved by the time expression() below
+        // returns (a variable reference's expression_type is set at parse
+        // time in this compiler, not deferred to type_checker.c). See
+        // OP_COPY_DYNARR in common.h for why the array form needs its own
+        // opcode/grammar rather than reusing string copy's.
         match(token.type);
         match(TOKEN_LPAREN);
         ASTNode *node = create_node(NODE_BUILTIN_CALL);
         node->op = TOKEN_COPY;
         node->left = expression();
-        match(TOKEN_COMMA);
-        node->right = expression();
-        match(TOKEN_COMMA);
-        node->extra = expression();
+        if (is_dynarray_type(node->left->expression_type)) {
+            node->right = NULL;
+            node->extra = NULL;
+            if (token.type == TOKEN_COMMA) {
+                match(TOKEN_COMMA);
+                node->right = expression();
+                if (token.type == TOKEN_COMMA) {
+                    match(TOKEN_COMMA);
+                    node->extra = expression();
+                }
+            }
+        } else {
+            match(TOKEN_COMMA);
+            node->right = expression();
+            match(TOKEN_COMMA);
+            node->extra = expression();
+        }
         match(TOKEN_RPAREN);
         return node;
     } else if (token.type == TOKEN_LEFT || token.type == TOKEN_RIGHT) {

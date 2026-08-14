@@ -443,6 +443,7 @@ Assignment (`:=`) is a statement, not an expression — you can't write
 | `low(arr)`, `high(arr)`, `length(arr)` | functions | Array bounds and element count, resolved at compile time for a fixed-size array, at runtime for a dynamic one — see [Arrays](#arrays)/[Dynamic arrays](#dynamic-arrays) |
 | `SetLength(arr, n)` | statement | Resizes a dynamic array to `n` elements — see [Dynamic arrays](#dynamic-arrays) |
 | `copy`, `pos`, `mid`, `left`, `right`, `inpos` | functions | Substring extraction and searching — see [String](#string) |
+| `Copy(arr[, start[, count]])` | function | Slices/copies a dynamic array (a genuinely new array, not an alias) — see [`Copy`](#copy) |
 | `Delete(var S, Index, Count)`, `Insert(Source, var S, Index)` | statements | In-place string mutation — see [`Delete` and `Insert`](#delete-and-insert) |
 | `upcase`, `uppercase`, `lowercase` | functions | Case conversion — see [String](#string) |
 | `IntToStr`, `FloatToStr`, `StrToInt`, `StrToFloat` | functions | Number/string conversion in memory — see [String](#string) |
@@ -2004,6 +2005,44 @@ against `nil` doesn't compare raw values directly, precisely so this
 equivalence holds regardless of which of the three ways an array ended
 up "empty."
 
+### `Copy`
+
+```pascal
+var
+    a, b: array of integer;
+begin
+    SetLength(a, 5);
+    { ... fill a ... }
+    b := Copy(a);         { full copy - a NEW array, not an alias }
+    b := Copy(a, 2);        { elements from index 2 to the end }
+    b := Copy(a, 2, 3);      { 3 elements starting at index 2 }
+end.
+```
+
+`Copy` is the escape hatch out of dynamic arrays' own reference semantics
+(see above): it allocates a genuinely new backing block and copies
+elements into it, so mutating the result never mutates the source. This
+is the *same* `Copy`/`Mid` keyword strings already use, dispatched by the
+first argument's type at compile time (a dynamic-array-typed first
+argument gets this behavior; a `char`/`string` one gets the existing
+substring behavior described under [Strings](#strings)) — the two share
+a name but not a grammar: `start`/`count` are each optional here, where
+the string form requires both.
+
+Lenient/clamping, exactly like the string form already is — never a
+runtime error:
+
+- `start` is clamped to `[0, Length(arr)]`.
+- `count`, if given, is clamped to `[0, Length(arr) - start]`; a negative
+  `count`, or omitting it entirely, means "everything from `start` to the
+  end."
+- A source array that's never been `SetLength`'d (or `nil`) behaves as
+  length `0` — `Copy` on it returns an empty (`nil`-equal) result rather
+  than erroring.
+- A result clamped down to zero elements is the same empty/`nil` value
+  every other empty dynamic array is (see "`nil`" above) — it compares
+  equal to `nil` and to a never-`SetLength`'d variable.
+
 ### What's not supported yet
 
 - **Multi-dimensional dynamic arrays** — `array of array of integer` (or
@@ -2012,8 +2051,8 @@ up "empty."
 - **Record, pointer, procedural, or named (type-alias/subrange/
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
-- **`Copy`/slicing and array-literal syntax (`arr := [1, 2, 3];`)** —
-  neither exists yet for either array kind in this language.
+- **Array-literal syntax** (`arr := [1, 2, 3];`) — doesn't exist yet for
+  either array kind in this language.
 - **A dynamic-array-typed `record`/class field, or function return
   type** — only a plain `var`/parameter is supported so far.
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only

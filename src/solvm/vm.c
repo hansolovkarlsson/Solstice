@@ -1187,6 +1187,39 @@ int run_vm(void) {
                 break;
             }
 
+            case OP_COPY_DYNARR: {
+                // Lenient/clamping, matching string OP_COPY's own policy -
+                // never a fatal error, just returns as much as actually
+                // exists. See this opcode's own comment in common.h.
+                int count = vm_pop(&sp);
+                int start = vm_pop(&sp);
+                int base = vm_pop(&sp);
+                int len = 0;
+                if (base > 0) {
+                    if (base >= vm_heap_count) {
+                        fprintf(stderr, "VM Runtime Error: Invalid dynamic array pointer value %d in Copy\n", base);
+                        fatal_abort();
+                    }
+                    len = vm_heap_mem[base];
+                }
+                if (start < 0) start = 0;
+                if (start > len) start = len;
+                int avail = len - start;
+                if (count < 0) count = avail; // -1 sentinel (see common.h) as well as any other negative count - both mean "everything available"
+                if (count > avail) count = avail;
+                if (count <= 0) {
+                    vm_push(&sp, 0); // same "not allocated"/empty value SetLength(arr, 0) produces
+                    break;
+                }
+                int new_ptr = vm_heap_alloc(count + 1);
+                vm_heap_mem[new_ptr] = count;
+                for (int i = 0; i < count; i++) {
+                    vm_heap_mem[new_ptr + 1 + i] = vm_heap_mem[base + 1 + start + i];
+                }
+                vm_push(&sp, new_ptr);
+                break;
+            }
+
             case OP_LOAD_HEAP_FIELD: {
                 int base = vm_pop(&sp);
                 if (base < 0) {

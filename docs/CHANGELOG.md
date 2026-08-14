@@ -3339,6 +3339,60 @@ anyway, so this is where they land instead.
       type-mismatch, since the operands are now recognized as compatible
       types that simply don't support ordering) - everything else
       byte-for-byte identical before/after.
+- [x] `Copy`/slicing for dynamic arrays - `Copy(arr)`, `Copy(arr, start)`,
+      `Copy(arr, start, count)`. Closes one half of the roadmap's
+      "`Copy`/slicing and array-literal syntax" bullet (array-literal
+      syntax stays open).
+
+      **Reused the existing `TOKEN_COPY`/`Mid` keyword rather than adding
+      a new one**: strings already have `Copy(s, start, count)` (3
+      mandatory args, aliased with `Mid`); dispatched on the first
+      argument's type, mirroring how `Length`/`High`/`Low` already
+      resolve differently for a string vs. a dynamic array. The two
+      share a name but not a grammar - `start`/`count` are each optional
+      for the array form (`node->right`/`node->extra` left `NULL` when
+      omitted, the same "argument not given" convention `ParamCount`
+      already used), where the string form still requires both. The
+      parser can tell which grammar applies immediately after parsing the
+      first argument, since a variable reference's `expression_type` is
+      already resolved at parse time in this compiler, not deferred to
+      `type_checker.c`.
+
+      **Lenient/clamping, not a Runtime Error** - deliberately matching
+      the *existing* string `Copy`'s own documented policy ("never
+      errors, just returns as much as actually exists") rather than
+      `LOAD_DYNARR_IDX`'s fatal-error-on-out-of-range policy used
+      elsewhere for dynamic arrays: out-of-range `start`/`count` clamp
+      instead of aborting. Not a fresh judgment call - prior art already
+      existed in this exact codebase for the identical question on
+      strings.
+
+      **One new opcode, no new AST node, no storage-model change**:
+      `COPY_DYNARR` pops `count`/`start`/the array's pointer, clamps
+      `start` to `[0, len]`, resolves the literal `-1` sentinel codegen
+      emits for an omitted `count` (and any other negative `count`) to
+      "everything from `start` to the end", clamps a given `count` to
+      `[0, len - start]`, and - structurally the same allocate-and-copy
+      shape `SETLENGTH` already uses - allocates a fresh `(count+1)`-sized
+      block and copies `count` elements starting at the given offset. A
+      clamped-to-zero result pushes plain `0`, the same value
+      `SETLENGTH(arr, 0)` produces, so an empty `Copy` result correctly
+      compares equal to `nil` (this dynamic arrays' own `nil`-equivalence
+      invariant, shipped just above, needed no special-casing here - it
+      fell out for free from reusing the same sentinel value).
+
+      See `examples/test/dynarray/test_dynarray_copy_*.pas` (5 positive/
+      behavioral cases - full copy with an aliasing check proving the
+      result is a genuinely separate allocation, a `start`-only slice, a
+      `start`+`count` slice, clamping of an oversized count/out-of-range
+      start/negative start/negative count all in one file, and `Copy` on
+      a never-allocated/`nil` source; 2 error cases - a non-integer
+      `start`/`count` argument) and
+      [docs/LANGUAGE.md](LANGUAGE.md#copy). Round-tripped through
+      `solas`/`desole` (`COPY_DYNARR` mnemonic) with an identical VM
+      output before/after reassembly. Confirmed no regression in string
+      `Copy`/`Mid` (`test_string_basic.pas`, `test_consolidation_1.pas`)
+      or the existing dynamic-array regression suite.
 
 ### Shipped from the OOP features survey
 

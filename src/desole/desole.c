@@ -226,6 +226,7 @@ static const char *opcode_name(Opcode op) {
         case OP_LOAD_DYNARR_IDX:      return "load_dynarr_idx";
         case OP_STORE_DYNARR_IDX:     return "store_dynarr_idx";
         case OP_STORE_DYNARR_IDX_CHAR: return "store_dynarr_idx_char";
+        case OP_COPY_DYNARR:          return "copy_dynarr";
         default:       return NULL;
     }
 }

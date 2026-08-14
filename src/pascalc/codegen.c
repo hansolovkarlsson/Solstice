@@ -1032,6 +1032,16 @@ void generate_code(ASTNode *node) {
             } else if (node->op == TOKEN_RIGHT) {
                 generate_code(node->right);
                 emit(OP_RIGHT, 0);
+            } else if (node->op == TOKEN_COPY && is_dynarray_type(node->left->expression_type)) {
+                // Copy(arr[, start[, count]]) - start/count push a literal
+                // when omitted from the Pascal call: 0 for start (copy
+                // from the beginning), -1 for count (OP_COPY_DYNARR's own
+                // "to the end" sentinel - see common.h). Both can be
+                // omitted independently of each other per the grammar in
+                // parser.c.
+                if (node->right) generate_code(node->right); else emit(OP_PUSH, 0);
+                if (node->extra) generate_code(node->extra); else emit(OP_PUSH, -1);
+                emit(OP_COPY_DYNARR, 0);
             } else if (node->op == TOKEN_COPY) {
                 generate_code(node->right);
                 generate_code(node->extra);

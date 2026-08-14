@@ -663,8 +663,26 @@ void type_check(ASTNode *node) {
                     node->expression_type = TYPE_INTEGER;
                     break;
                 case TOKEN_COPY:
+                    if (is_dynarray_type(node->left->expression_type)) {
+                        // Copy(arr[, start[, count]]) - start/count are
+                        // optional (NULL when omitted - see their own
+                        // parser.c grammar), unlike the string form below
+                        // where both are mandatory.
+                        if (node->right && node->right->expression_type != TYPE_INTEGER) {
+                            fprintf(stderr, "%s:%d: Type Error: 'copy' requires an integer start argument\n",
+                                    get_current_filename(), node->line);
+                            fatal_abort();
+                        }
+                        if (node->extra && node->extra->expression_type != TYPE_INTEGER) {
+                            fprintf(stderr, "%s:%d: Type Error: 'copy' requires an integer count argument\n",
+                                    get_current_filename(), node->line);
+                            fatal_abort();
+                        }
+                        node->expression_type = node->left->expression_type;
+                        break;
+                    }
                     if (!is_string_type(node->left->expression_type)) {
-                        fprintf(stderr, "%s:%d: Type Error: 'copy'/'mid' requires a char or string first argument\n",
+                        fprintf(stderr, "%s:%d: Type Error: 'copy'/'mid' requires a char, string, or dynamic array first argument\n",
                                 get_current_filename(), node->line);
                         fatal_abort();
                     }

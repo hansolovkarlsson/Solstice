@@ -524,6 +524,9 @@ default; a call omitting trailing arguments gets the default spliced in
 (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#default-parameter-values)).
 
-Not yet implemented: array `copy`/slicing (for either a fixed-size or
-dynamic array), variant records, and a whole record or an array element
-as a `var` argument.
+Also working: `Copy`/slicing for a dynamic array (`Copy(arr)`, `Copy(arr,
+start)`, `Copy(arr, start, count)`) — a genuinely new array, not an
+alias, lenient/clamping on out-of-range `start`/`count` rather than
+erroring (see [docs/LANGUAGE.md](docs/LANGUAGE.md#copy)). Not yet
+implemented: `copy`/slicing for a fixed-size array, variant records, and
+a whole record or an array element as a `var` argument.
