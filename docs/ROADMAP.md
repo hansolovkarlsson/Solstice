@@ -86,9 +86,6 @@ anyway, so this is where they land instead.
       unsupported); a named alias for a FIXED-size array;
       and comparing two dynamic arrays directly (`arr1 = arr2`, as
       opposed to comparison against `nil`, which now works).
-- [ ] Closures (a nested function capturing its enclosing scope) —
-      standard Pascal allows nested procedures with lexical scoping, but
-      not one that escapes/outlives its enclosing call
 - [ ] Inline assembly (`asm ... end;`) — not itself a priority (this
       project's VM isn't x86, so there's no existing assembly dialect to
       match), but worth a from-scratch equivalent someday: embedding raw
@@ -96,6 +93,31 @@ anyway, so this is where they land instead.
       body drop to hand-written bytecode the way real Delphi drops to
       hand-written x86 - genuinely on-brand for a project with its own
       VM and assembler already under project control.
+
+**Considered, explicitly out of scope: closures** (a nested function
+capturing its enclosing scope and escaping/outliving its enclosing
+call). Standard Pascal's own nested procedures with lexical scoping stay
+supported and unaffected - this is specifically about a nested function
+*outliving* the call that declared it, which they can't do today (every
+nested procedure's prologue unconditionally expects a static link from
+its caller, so calling one after its enclosing call has returned would
+read a dangling `vm_static_link[fp]` slot). Not an unexamined gap: a
+**safe-escape** variant (a nested procedure/function eligible to be used
+as a procedural value if and only if it, and everything nested inside
+it, never reaches outside itself for an ordinary enclosing local/
+parameter - no captured *values*, just a static-link classification
+problem, solvable with zero new opcodes) was designed to completion and
+explicitly shelved by user decision in favor of the narrower, simpler
+alternative that actually shipped instead: non-capturing **lambda
+literals** (see [docs/CHANGELOG.md](CHANGELOG.md)'s own entry for them,
+which names this tradeoff directly). **Full value-capturing closures**
+(the classic `MakeAdder(n)` factory idiom) were never designed past that
+same decision point - they'd need a heap-allocated capture block and a
+representation migration through every existing procedural-value use
+(record/class fields, arrays, parameters, `nil` comparisons), since a
+procedural value today is uniformly just a plain int (a code address).
+Logged here, rather than left an open checklist item, so none of this
+gets mistaken for an unexamined gap later.
 
 ### Object-oriented language features under consideration (Delphi-inspired)
 
