@@ -2836,6 +2836,16 @@ static DataType parse_scalar_type(void) {
         compile_error(token.line, "'file'/'file of ...' can only declare a global file variable in the main program's own 'var' section - not as a parameter, local, record field, or array element type (see docs/LANGUAGE.md)");
         return TYPE_UNKNOWN; // unreachable
     }
+    if (token.type == TOKEN_POINTER_TYPE) {
+        // Unlike TOKEN_TEXT_TYPE/TOKEN_FILE_TYPE above, 'Pointer' has NO
+        // global-only restriction - its runtime state is just a plain
+        // int (see TYPE_UNTYPED_POINTER in common.h), not an external
+        // resource, so it's an ordinary type usable as a parameter/
+        // local/field/array-element, exactly like a named '^Target'
+        // pointer type already is.
+        match(TOKEN_POINTER_TYPE);
+        return TYPE_UNTYPED_POINTER;
+    }
     if (token.type == TOKEN_IDENTIFIER) {
         int alias_idx = find_type_alias(token.text);
         if (alias_idx != -1) {
@@ -5362,6 +5372,58 @@ static ASTNode *try_resolve_class_qualified_access(int is_statement_context) {
     return build_class_member_access(class_idx, is_statement_context);
 }
 
+// Same lookahead idea as try_resolve_class_qualified_access() just
+// above (a bare identifier is ambiguous between "a pointer type name"
+// and "a variable/function name" until the token AFTER it is known),
+// but for '(' instead of '.' - 'PFoo(genericPtr)', an explicit, always-
+// unchecked pointer-type cast, needed to make a Pointer value usable
+// again after @/Addr or an implicit widening FROM a specific pointer
+// type (see try_widen_for_assignment()'s own comment in type_checker.c
+// for why the reverse direction isn't implicit). Deliberately NOT built
+// on 'is'/'as' (TOKEN_IS/TOKEN_AS elsewhere in this file) - those
+// perform a genuine runtime check against a class instance's own type
+// tag, which is meaningless here: a Pointer carries no runtime type
+// information to check against at all, so this is a pure, always-
+// succeeding, compile-time relabeling of an already-identical runtime
+// int (closer to a C-style '(PFoo)ptr' cast than a checked downcast) -
+// applies to ANY pointer type, not just classes, unlike is/as.
+static ASTNode *try_resolve_pointer_cast(void) {
+    int ptr_idx = find_pointer_type(token.text);
+    if (ptr_idx == -1) {
+        return NULL; // cheap, non-disruptive check for the overwhelmingly common case
+    }
+    Token saved_token = token;
+    LexerPos saved_pos = lexer_save_pos();
+    int line = token.line;
+    next_token(); // peek past the pointer type name
+    if (token.type != TOKEN_LPAREN) {
+        token = saved_token;
+        lexer_restore_pos(saved_pos);
+        return NULL;
+    }
+    match(TOKEN_LPAREN);
+    ASTNode *arg = expression();
+    match(TOKEN_RPAREN);
+    if (arg->expression_type != TYPE_UNTYPED_POINTER && !is_pointer_type(arg->expression_type)) {
+        compile_error(line, "'%s(...)' expects a pointer or Pointer-typed argument", pointer_types[ptr_idx].name);
+    }
+    // A pass-through, not a new node - the underlying runtime int is
+    // identical either way (every pointer type shares the exact same
+    // representation - see TYPE_POINTER_BASE's own comment in
+    // common.h), so retyping the already-built expression is the entire
+    // cast.
+    arg->expression_type = (DataType)(TYPE_POINTER_BASE + ptr_idx);
+    // 'PFoo(generic)^' / 'PFoo(generic)^.field' - a '^'/'.' chain may
+    // immediately follow the cast, exactly like it can follow any other
+    // already-resolved pointer-typed expression (see the same check
+    // repeated at every other pointer-typed factor() resolution site in
+    // this file, e.g. the plain-variable case just below).
+    if (token.type == TOKEN_CARET || class_dot_deref_pending(arg->expression_type)) {
+        return parse_heap_deref_read(arg, line);
+    }
+    return arg;
+}
+
 // Builds the synthetic 'self'-read node any unqualified self-shorthand
 // access starts from - the same NODE_LOCAL_VAR shape an explicit 'self'
 // reference resolves to via the ordinary local lookup, just built
@@ -5852,6 +5914,49 @@ static ASTNode *parse_record_comparison(int is_local1, int record_type_idx1, con
     return result;
 }
 
+static ASTNode *factor(void);
+
+// Parses the operand of '@'/'Addr(...)' - must be exactly a pointer
+// dereference (p^, or a chain reaching a record field, p^.field or
+// deeper) - see NODE_HEAP_FIELD_ACCESS's own comment in common.h for
+// its left/right shape, reused directly here: left is already the
+// pointer's own value expression, right is already the field's
+// compile-time-constant offset (0 for a scalar target's bare '^').
+// Repackaged as left + offset (or bare left when offset is 0, avoiding
+// a wasted '+0'), retyped TYPE_UNTYPED_POINTER - no new opcode needed,
+// since the field offset is ALREADY a compile-time constant today (it's
+// baked directly into OP_LOAD_HEAP_FIELD's own arg, never pushed at
+// runtime) - this just adds it explicitly instead of letting
+// OP_LOAD_HEAP_FIELD consume it internally. A multi-level chain
+// (p^.next^.data) works with no special handling: 'left' is simply
+// whatever (possibly itself a NODE_HEAP_FIELD_ACCESS) expression the
+// existing dereference-chain parser already built for everything before
+// the LAST '^' step.
+//
+// Anything else (a plain variable, an array element, a general
+// expression) is explicitly rejected - this VM's ordinary variables
+// don't live in the same addressable heap pointers do (see
+// docs/LANGUAGE.md#pointers), so there's no meaningful address to
+// compute for them; @x/@p (the pointer variable's OWN storage slot, as
+// opposed to what it points to) are the two most likely such attempts.
+static ASTNode *parse_addr_expression(int line) {
+    ASTNode *operand = factor();
+    if (operand->type != NODE_HEAP_FIELD_ACCESS) {
+        compile_error(line, "'@'/'Addr' only applies to a pointer dereference ('p^' or 'p^.field') - not a plain "
+                       "variable, array element, or general expression (this VM's ordinary variables aren't "
+                       "heap-addressable - see docs/LANGUAGE.md)");
+    }
+    // NODE_ADDR_OF, not a NODE_BINARY_OP with a repurposed '+' tag - see
+    // that node's own comment in common.h for why (type_checker.c's
+    // NODE_BINARY_OP case would wrongly reject a pointer-typed operand).
+    ASTNode *result = create_node(NODE_ADDR_OF);
+    result->line = line;
+    result->left = operand->left;
+    result->right = operand->right;
+    result->expression_type = TYPE_UNTYPED_POINTER;
+    return result;
+}
+
 static ASTNode *factor(void) {
     if (token.type == TOKEN_MINUS || token.type == TOKEN_NOT) {
         TokenType op = token.type;
@@ -5860,6 +5965,17 @@ static ASTNode *factor(void) {
         node->op = op;
         node->left = factor();
         return node;
+    } else if (token.type == TOKEN_AT) {
+        int line = token.line;
+        match(TOKEN_AT);
+        return parse_addr_expression(line);
+    } else if (token.type == TOKEN_ADDR) {
+        int line = token.line;
+        match(TOKEN_ADDR);
+        match(TOKEN_LPAREN);
+        ASTNode *result = parse_addr_expression(line);
+        match(TOKEN_RPAREN);
+        return result;
     } else if (token.type == TOKEN_INHERITED) {
         return parse_inherited_call(0);
     } else if (token.type == TOKEN_ORD) {
@@ -6387,6 +6503,9 @@ static ASTNode *factor(void) {
 
         ASTNode *class_qualified = try_resolve_class_qualified_access(0);
         if (class_qualified) return class_qualified;
+
+        ASTNode *pointer_cast = try_resolve_pointer_cast();
+        if (pointer_cast) return pointer_cast;
 
         int const_idx = find_const(token.text);
         if (const_idx != -1) {
@@ -10172,7 +10291,7 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[with_field_idx].type >= TYPE_ENUM_BASE && sym_table[with_field_idx].type < TYPE_POINTER_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
             }
-            if (is_pointer_type(sym_table[with_field_idx].type)) {
+            if (is_pointer_type(sym_table[with_field_idx].type) || (sym_table[with_field_idx].type) == TYPE_UNTYPED_POINTER) {
                 compile_error(token.line, "readln into a pointer is not supported");
             }
             if (sym_table[with_field_idx].type == TYPE_SET) {
@@ -10210,7 +10329,7 @@ static ASTNode *parse_read_target(void) {
                 if (current_locals[resolved_idx].type >= TYPE_ENUM_BASE && current_locals[resolved_idx].type < TYPE_POINTER_BASE) {
                     compile_error(token.line, "readln into an enumerated value is not supported");
                 }
-                if (is_pointer_type(current_locals[resolved_idx].type)) {
+                if (is_pointer_type(current_locals[resolved_idx].type) || (current_locals[resolved_idx].type) == TYPE_UNTYPED_POINTER) {
                     compile_error(token.line, "readln into a pointer is not supported");
                 }
                 if (current_locals[resolved_idx].type == TYPE_SET) {
@@ -10227,7 +10346,7 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[resolved_idx].type >= TYPE_ENUM_BASE && sym_table[resolved_idx].type < TYPE_POINTER_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
             }
-            if (is_pointer_type(sym_table[resolved_idx].type)) {
+            if (is_pointer_type(sym_table[resolved_idx].type) || (sym_table[resolved_idx].type) == TYPE_UNTYPED_POINTER) {
                 compile_error(token.line, "readln into a pointer is not supported");
             }
             if (sym_table[resolved_idx].type == TYPE_SET) {
@@ -10265,7 +10384,7 @@ static ASTNode *parse_read_target(void) {
             if (sym_table[static_idx].type >= TYPE_ENUM_BASE && sym_table[static_idx].type < TYPE_POINTER_BASE) {
                 compile_error(token.line, "readln into an enumerated value is not supported");
             }
-            if (is_pointer_type(sym_table[static_idx].type)) {
+            if (is_pointer_type(sym_table[static_idx].type) || (sym_table[static_idx].type) == TYPE_UNTYPED_POINTER) {
                 compile_error(token.line, "readln into a pointer is not supported");
             }
             if (sym_table[static_idx].type == TYPE_SET) {
@@ -10281,7 +10400,7 @@ static ASTNode *parse_read_target(void) {
         if (current_locals[local_idx].type >= TYPE_ENUM_BASE && current_locals[local_idx].type < TYPE_POINTER_BASE) {
             compile_error(token.line, "readln into an enumerated value is not supported");
         }
-        if (is_pointer_type(current_locals[local_idx].type)) {
+        if (is_pointer_type(current_locals[local_idx].type) || (current_locals[local_idx].type) == TYPE_UNTYPED_POINTER) {
             compile_error(token.line, "readln into a pointer is not supported");
         }
         if (current_locals[local_idx].type == TYPE_SET) {
@@ -10298,7 +10417,7 @@ static ASTNode *parse_read_target(void) {
     if (sym_table[readln_var_idx].type >= TYPE_ENUM_BASE && sym_table[readln_var_idx].type < TYPE_POINTER_BASE) {
         compile_error(token.line, "readln into an enumerated value is not supported");
     }
-    if (is_pointer_type(sym_table[readln_var_idx].type)) {
+    if (is_pointer_type(sym_table[readln_var_idx].type) || (sym_table[readln_var_idx].type) == TYPE_UNTYPED_POINTER) {
         compile_error(token.line, "readln into a pointer is not supported");
     }
     if (sym_table[readln_var_idx].type == TYPE_SET) {

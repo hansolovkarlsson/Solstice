@@ -298,6 +298,17 @@ typedef enum {
                       // parser.c - desugars into a synthesized NODE_FOR
                       // loop, no opcode of its own.
     TOKEN_BLOCKWRITE, // Write twin of TOKEN_BLOCKREAD above.
+    TOKEN_POINTER_TYPE, // the 'Pointer' keyword ('var p: Pointer;') - see
+                      // TYPE_UNTYPED_POINTER. A dedicated token, own
+                      // branch in parse_scalar_type(), exactly like
+                      // TOKEN_TEXT_TYPE/TOKEN_FILE_TYPE - not parsed via
+                      // the ordinary named-pointer-type ('^Target')
+                      // machinery, since it has no target at all.
+    TOKEN_AT,         // '@' - address-of prefix operator ('@(p^.field)').
+                      // See parse_addr_expression() in parser.c;
+                      // TOKEN_ADDR ('Addr(...)') is the function-call
+                      // spelling of the exact same operation.
+    TOKEN_ADDR,       // the 'Addr' builtin function - see TOKEN_AT above.
     TOKEN_EOF
 } TokenType;
 
@@ -512,6 +523,33 @@ typedef enum {
                 // Explicitly assigned past TYPE_DYNARRAY_BASE's own range,
                 // mirroring TYPE_TYPED_FILE/TYPE_DYNARRAY_BASE's own
                 // explicit assignments above for the identical reason.
+    TYPE_UNTYPED_POINTER = TYPE_UNTYPED_FILE + 1, // 'Pointer' - a generic
+                // pointer with no declared target type, unlike a named
+                // 'type PFoo = ^Target;' (see TYPE_POINTER_BASE above).
+                // A single FLAT value, like TYPE_UNTYPED_FILE (there's
+                // only one "generic pointer" type, unlike named pointer
+                // types, which need a range + index to distinguish PFoo
+                // from PBar) - deliberately OUTSIDE TYPE_POINTER_BASE's
+                // own range (is_pointer_type()'s bounded check), so it's
+                // never mistaken for a specific pointer type anywhere
+                // that indexes pointer_types[] by one (new()/dispose()'s
+                // own is_pointer_type() checks correctly reject a
+                // Pointer-typed operand for free this way - see
+                // docs/LANGUAGE.md#pointers). Runtime representation is
+                // IDENTICAL to every other pointer's (a plain int, -1 for
+                // nil, else a vm_heap_mem[] offset - see
+                // TYPE_POINTER_BASE's own comment) - no new opcode
+                // anywhere needs to exist for it; only the type-checking
+                // rules around it (implicit widening FROM any specific
+                // pointer type, comparison, an explicit cast back to a
+                // specific type) are new. NOT usable with new()/
+                // dispose() (no target type to know an allocation size
+                // from - real Pascal's own answer there, GetMem/FreeMem,
+                // is deliberately not added here). Unlike TYPE_FILE/
+                // TYPE_TYPED_FILE/TYPE_UNTYPED_FILE, NOT global-only - a
+                // Pointer variable's runtime state is just a plain int,
+                // not an external resource, so it's usable as an
+                // ordinary parameter/local/field/array-element type too.
 } DataType;
 
 // One declared enumerated type ('type TColor = (Red, Green, Blue);') -
@@ -2318,7 +2356,7 @@ typedef enum {
                        // index expression. expression_type = the array's
                        // declared ELEMENT type (decoded from left's own
                        // TYPE_DYNARRAY_BASE+idx type at parse time).
-    NODE_DYNARRAY_ASSIGN // 'arr[i] := val', arr a dynamic array - the
+    NODE_DYNARRAY_ASSIGN, // 'arr[i] := val', arr a dynamic array - the
                        // write counterpart, mirroring NODE_HEAP_FIELD_
                        // ASSIGN's left/right/extra split (that node's
                        // right/extra are value/offset; here right is the
@@ -2332,6 +2370,25 @@ typedef enum {
                        // when the element type is 'char' (same reasoning
                        // as NODE_HEAP_FIELD_ASSIGN's own expression_type
                        // use).
+    NODE_ADDR_OF, // '@(p^)' / '@(p^.field)' / 'Addr(...)' - see
+                       // parse_addr_expression() in parser.c. left = the
+                       // pointer's own value expression (reused directly
+                       // from the NODE_HEAP_FIELD_ACCESS this desugars
+                       // from - see that node's own comment). right = a
+                       // NODE_NUMBER holding the field's compile-time-
+                       // constant offset (0 for a bare 'p^'). expression_
+                       // type is always TYPE_UNTYPED_POINTER, set once at
+                       // parse time - deliberately NOT NODE_BINARY_OP
+                       // with a repurposed '+' tag: type_checker.c's
+                       // NODE_BINARY_OP case actively re-validates its
+                       // operands' types (pointer arithmetic isn't a
+                       // thing standard Pascal - or this compiler -
+                       // defines), so it would wrongly reject 'left'
+                       // being pointer-typed. A dedicated node sidesteps
+                       // that entirely - deliberately has NO
+                       // type_checker.c case (nothing to validate: both
+                       // children's types are already exactly right by
+                       // construction, and expression_type is fixed).
 } NodeType;
 
 typedef struct ASTNode {

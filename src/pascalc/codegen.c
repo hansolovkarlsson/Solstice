@@ -1139,6 +1139,19 @@ void generate_code(ASTNode *node) {
             generate_code(node->next);
             break;
 
+        case NODE_ADDR_OF:
+            generate_code(node->left); // the pointer's own value
+            if (node->right->data.num_value != 0) {
+                // A nonzero field offset - reuses the exact same
+                // compile-time constant OP_LOAD_HEAP_FIELD would
+                // otherwise consume internally (see this node's own
+                // comment in common.h), just added explicitly here
+                // instead.
+                emit(OP_PUSH, node->right->data.num_value);
+                emit(OP_ADD, 0);
+            }
+            break;
+
         case NODE_HEAP_ARRAY_FIELD_ACCESS:
             generate_code(node->left);                  // base pointer
             generate_code(node->right);                 // index (already range-checked by the parser)

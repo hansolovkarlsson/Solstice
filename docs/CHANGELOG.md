@@ -3127,6 +3127,94 @@ anyway, so this is where they land instead.
       test files differing, plus one pre-existing message deliberately
       reworded earlier this session for accuracy - everything else byte-
       for-byte/output-for-output identical before/after.
+- [x] `@`/`Addr` and an untyped `Pointer` type - **narrower than real
+      Pascal's `@`, by design, not by oversight**: a pointer's runtime
+      value here is an offset into `vm_heap_mem[]`, the ONLY dynamically-
+      sized storage region this VM has - an ordinary variable lives in a
+      completely separate, statically-sized region and never becomes
+      heap-resident, so there's no meaningful address to compute for
+      `@x`. What IS representable: the address of something already
+      reached through a pointer dereference (`@(p^)`/`@(p^.field)`),
+      since a record's fields sit at fixed, already-known offsets within
+      their own allocated block. This scope decision was made explicit
+      in the plan BEFORE any code was written, not discovered partway
+      through - the roadmap bullet's own title ("`@`/`Addr`") reads like
+      it promises the general version, so this is called out prominently
+      here too.
+
+      **Small because it reuses everything about how pointers already
+      work**: every pointer type already shares the exact same runtime
+      representation (a plain int), so `Pointer` (`TYPE_UNTYPED_POINTER`,
+      a single flat value, mirroring `TYPE_UNTYPED_FILE`'s own
+      precedent) needed no new opcodes anywhere - only new type-checking
+      rules. Implicit widening from any specific pointer type into
+      `Pointer` is ONE new case in `try_widen_for_assignment()`, the
+      single shared choke point already used by all 15 assignment-like
+      contexts in this compiler (plain assignment, `var`-parameter,
+      function return, argument-passing, ...) - confirmed by reading
+      every call site, not assumed; one rule covers all of them at once.
+      `@(p^.field)`'s own codegen reuses the exact same compile-time
+      field-offset computation `p^.field`'s ordinary read/write path
+      already had - `OP_LOAD_HEAP_FIELD` already took that offset as a
+      plain compile-time constant, never pushed at runtime, so exposing
+      it as an explicit add needed zero new opcodes.
+
+      **Two real snags found by trying it, not from re-reading the
+      plan**: the first cut built `@(p^.field)` as a `NODE_BINARY_OP`
+      with a repurposed `+` tag, reusing the field-access node's own
+      `left`/`right` directly - but `type_checker.c`'s `NODE_BINARY_OP`
+      case actively RE-validates its operands (pointer arithmetic isn't
+      a thing this compiler - or standard Pascal - defines), so it
+      rejected the pointer-typed `left` outright the moment it was
+      tested end to end. Fixed with a small dedicated node,
+      `NODE_ADDR_OF`, deliberately carrying no `type_checker.c` case at
+      all (both children's types are already exactly right by
+      construction) - flagged as a live possibility in the plan itself,
+      not a surprise, but confirmed only by running it. Separately,
+      `write`/`writeln`/`readln`'s own existing pointer-rejection checks
+      (six call sites total, one in `type_checker.c`, five in
+      `parser.c`) all gated on `is_pointer_type()` alone, which
+      `TYPE_UNTYPED_POINTER` deliberately sits outside - meaning
+      `readln(genericPointer)` would have silently let a program's raw
+      input data forge an arbitrary heap offset into a `Pointer`
+      variable, later dereferenceable through an explicit cast. Caught
+      by writing the `write`-rejection test and watching it wrongly
+      pass, not anticipated - fixed at all six sites.
+
+      **Also fell out for free, confirmed by reading the code rather
+      than assumed**: `new()`/`dispose()` already reject any operand
+      failing `is_pointer_type()`, so a `Pointer`-typed operand is
+      already correctly rejected with zero new code, for the exact same
+      "deliberately outside that range" reason. The `solas`/`desole`
+      round-trip - which broke for `TYPE_UNTYPED_FILE` earlier this
+      session - does NOT need a fix here: `desole.c`'s existing `>=
+      TYPE_ENUM_BASE -> "integer"` catch-all is already exactly correct
+      for `TYPE_UNTYPED_POINTER`, since (unlike a file) a pointer's
+      runtime representation genuinely IS a plain int with no VM-level
+      side-table state to lose - confirmed with an actual round-trip
+      test per the plan's own explicit flag, not assumed correct just
+      because the reasoning sounded right the first time either.
+
+      The explicit cast (`PFoo(genericPtr)`) is new, small, parsing-only
+      syntax - deliberately NOT built on the existing `is`/`as` (checked
+      class downcasts, meaningless here since `Pointer` carries no
+      runtime type tag to check against) - a pure, always-succeeding,
+      compile-time relabeling, closer to a C-style `(PFoo)ptr` cast.
+
+      See `examples/test/addr/test_*.pas` (5 positive cases - a scalar
+      dereference target (`@(p^)`, the zero-offset case), a record field
+      target confirming write-through-the-cast mutates the original
+      storage (not a copy), widening several different specific pointer
+      types into the same `Pointer` variable across assignment/argument-
+      passing/return-value contexts, `nil`/typed-pointer comparison, and
+      a cast round-trip confirming identity; 5 error cases - `@x` for an
+      ordinary variable, `@p` for the pointer's own slot rather than
+      what it points to, `new()` on a `Pointer`, `write()` on a
+      `Pointer`, and confirming two unrelated SPECIFIC pointer types
+      still correctly fail to compare) and
+      [docs/LANGUAGE.md](LANGUAGE.md#pointer-and-addraddr). A full
+      regression sweep (866 test files) found only the 10 new test files
+      differing - everything else byte-for-byte identical before/after.
 
 ### Shipped from the OOP features survey
 

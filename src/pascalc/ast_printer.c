@@ -799,6 +799,11 @@ void print_ast(ASTNode *node, int indent) {
             }
             break;
 
+        case NODE_ADDR_OF:
+            printf("[Address Of] offset=%d\n", node->right->data.num_value);
+            print_ast(node->left, indent + 1);
+            break;
+
         case NODE_HEAP_ARRAY_FIELD_ACCESS:
             printf("[Heap Array Field Access] -> Combined offset: %d\n", node->data.num_value);
             print_indent(indent + 1);

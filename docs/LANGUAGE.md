@@ -3005,6 +3005,86 @@ you're done with a block, the same discipline `malloc`/`free` demands.
   (see [Nested records](#nested-records)) — a compile error; pointers to
   a record work only when every field is a scalar or array.
 
+### `Pointer` and `@`/`Addr`
+
+```pascal
+type
+    PInt = ^integer;
+    PPoint = ^TPoint;
+    TPoint = record
+        x, y: integer;
+    end;
+var
+    p: PPoint;
+    g: Pointer;
+    fieldPtr: PInt;
+begin
+    new(p);
+    p^.x := 10;
+    p^.y := 42;
+
+    g := @(p^.y);          { the address of p^'s own 'y' field }
+    fieldPtr := PInt(g);   { explicit cast back to a specific type }
+    writeln(fieldPtr^);    { 42 }
+
+    fieldPtr^ := 99;
+    writeln(p^.y);         { 99 - same storage, not a copy }
+end.
+```
+
+`Pointer` is a generic pointer type with no declared target — unlike
+`^Target`, it doesn't know what's at the address it holds. Any specific
+pointer type's value can be assigned to it implicitly (`g := p;`); the
+reverse needs an explicit cast (`PPoint(g)`), since going from generic
+back to specific can't be checked at compile time. `Pointer` is
+comparable with `=`/`<>` against `nil`, another `Pointer`, or any
+specific pointer type, exactly like an ordinary pointer, and — unlike
+`text`/`file`/`file of T` — it's an ordinary type, usable as a
+parameter, local, record field, or array element, since its runtime
+state is just a plain int, not an external resource.
+
+**Why `@`/`Addr` here means something narrower than in real Pascal.**
+Real Pascal's `@x` takes the address of *any* variable. That has no
+faithful representation in this VM: a pointer's runtime value is an
+offset into `vm_heap_mem[]` (see "Under the hood" above) — the *only*
+dynamically-sized storage region this VM has. An ordinary variable
+lives in a completely separate, statically-sized region
+(`vm_vars[]`/`vm_frame_stack[]` for scalars, `vm_array_mem[]` for
+arrays), never in `vm_heap_mem[]` — so there's no meaningful heap
+address to compute for it. What IS representable is the address of
+something *already* reached through a pointer dereference — a record's
+fields sit at fixed, known offsets within its own `new()`-allocated
+block, so `@(p^.field)` is just `p`'s own value plus that offset, and
+`@(p^)` (a scalar target) is simply `p` itself.
+
+- **`@expr` and `Addr(expr)` are the same operation**, prefix vs.
+  function-call spelling — pick whichever reads better.
+- **The operand must be exactly a pointer dereference** — `p^`, or a
+  chain reaching a record field (`p^.field`, or deeper). Anything else
+  — a plain variable (`@x`), the pointer variable's own storage slot
+  rather than what it points to (`@p`), an array element, a general
+  expression — is a compile-time error naming the restriction, not a
+  fallback or a silently wrong value.
+- **The result is always `Pointer`-typed.**
+- **`new`/`dispose` reject a `Pointer`-typed operand** — `new()` needs a
+  target type to know how large an allocation to make, and `Pointer`
+  has none by definition. A `Pointer` value can only ever come from an
+  existing typed pointer (via implicit widening) or `@`/`Addr`, never
+  allocated directly. (Real Pascal's own answer for allocating an
+  untyped pointer directly, `GetMem`/`FreeMem` with an explicit byte
+  count, isn't implemented here.)
+- **`write`/`writeln`/`readln` reject it**, exactly like every other
+  pointer type.
+
+**Not implemented yet:**
+
+- **`@x` for an ordinary variable** — a genuine, permanent architectural
+  limitation (see above), not a "not yet." The same applies to `@p` for
+  a pointer variable's own slot.
+- **`GetMem`/`FreeMem`** (allocating/releasing an untyped pointer's
+  target directly, with an explicit byte count) and other untyped-
+  pointer conveniences some Pascal dialects add — out of scope here.
+
 ## Classes
 
 **v1 complete** — declaration parsing, `new`/`dispose`, field

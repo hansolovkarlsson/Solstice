@@ -65,10 +65,6 @@ anyway, so this is where they land instead.
 - [ ] Closures (a nested function capturing its enclosing scope) —
       standard Pascal allows nested procedures with lexical scoping, but
       not one that escapes/outlives its enclosing call
-- [ ] `@`/`Addr` and an untyped `Pointer` type — no address-of operator,
-      no generic pointer that can target any type (see
-      [docs/LANGUAGE.md](LANGUAGE.md#pointers) - only typed pointers
-      exist).
 - [ ] Inline assembly (`asm ... end;`) — not itself a priority (this
       project's VM isn't x86, so there's no existing assembly dialect to
       match), but worth a from-scratch equivalent someday: embedding raw

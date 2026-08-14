@@ -68,7 +68,7 @@ static int is_dynarray_type(DataType t) {
 // the '='/'<>' comparison case above, just as a named helper instead of
 // inlined a 5th time.
 static int nil_compatible(DataType target, DataType value) {
-    return (is_pointer_type(target) || is_proc_type(target)) && value == TYPE_NIL;
+    return (is_pointer_type(target) || is_proc_type(target) || target == TYPE_UNTYPED_POINTER) && value == TYPE_NIL;
 }
 
 // Wraps *child in an implicit int->real widening conversion (Pascal's
@@ -111,6 +111,18 @@ static int try_widen_for_assignment(ASTNode **value, DataType target) {
         return 1;
     }
     if (class_type_is_subtype_of((*value)->expression_type, target)) {
+        return 1;
+    }
+    // Any SPECIFIC pointer type widens implicitly into the generic
+    // Pointer type - lossless (both share the exact same plain-int
+    // runtime representation, see TYPE_UNTYPED_POINTER's own comment in
+    // common.h), so no wrapper node is needed, just acceptance. The
+    // reverse (Pointer -> a specific type) deliberately needs an
+    // explicit cast instead (see parse_pointer_cast() in parser.c) -
+    // this project favors explicit over implicit narrowing wherever
+    // Pascal itself allows either, matching trunc()/round() already
+    // being required rather than an implicit real->integer narrowing.
+    if (is_pointer_type((*value)->expression_type) && target == TYPE_UNTYPED_POINTER) {
         return 1;
     }
     return 0;
@@ -238,7 +250,8 @@ void type_check(ASTNode *node) {
                 fatal_abort();
             }
             if (is_pointer_type(left_t) || is_pointer_type(right_t) || is_proc_type(left_t) || is_proc_type(right_t)
-                || left_t == TYPE_NIL || right_t == TYPE_NIL) {
+                || left_t == TYPE_NIL || right_t == TYPE_NIL
+                || left_t == TYPE_UNTYPED_POINTER || right_t == TYPE_UNTYPED_POINTER) {
                 // Standard Pascal defines only '=' and '<>' for pointers
                 // (no arithmetic, no ordering) - handled entirely here,
                 // bypassing every other branch below, since none of them
@@ -250,12 +263,22 @@ void type_check(ASTNode *node) {
                 // 'nil = nil') - unlike every other type pair in this
                 // compiler, which requires an EXACT DataType match (see
                 // is_enum_type()'s comment: equal DataTypes already mean
-                // "the same declared type").
+                // "the same declared type"). TYPE_UNTYPED_POINTER is
+                // explicitly added to this block's own ENTRY condition
+                // (not just the 'compatible' check below) - it sits
+                // outside is_pointer_type()'s bounded range on purpose
+                // (see its own comment in common.h), so without this it
+                // would silently fall through to the generic comparison
+                // path below and wrongly accept '<'/'>' on a Pointer.
                 int compatible = (left_t == right_t)
                                || (is_pointer_type(left_t) && right_t == TYPE_NIL)
                                || (left_t == TYPE_NIL && is_pointer_type(right_t))
                                || (is_proc_type(left_t) && right_t == TYPE_NIL)
                                || (left_t == TYPE_NIL && is_proc_type(right_t))
+                               || (is_pointer_type(left_t) && right_t == TYPE_UNTYPED_POINTER)
+                               || (left_t == TYPE_UNTYPED_POINTER && is_pointer_type(right_t))
+                               || (left_t == TYPE_UNTYPED_POINTER && right_t == TYPE_NIL)
+                               || (left_t == TYPE_NIL && right_t == TYPE_UNTYPED_POINTER)
                                || class_type_is_subtype_of(left_t, right_t)
                                || class_type_is_subtype_of(right_t, left_t);
                 if (!compatible) {
@@ -919,10 +942,13 @@ void type_check(ASTNode *node) {
                         get_current_filename(), node->line);
                 fatal_abort();
             }
-            if (is_pointer_type(node->left->expression_type)) {
+            if (is_pointer_type(node->left->expression_type) || node->left->expression_type == TYPE_UNTYPED_POINTER) {
                 // Same reasoning as TYPE_SET above - a pointer's runtime
                 // value (a vm_heap_mem[] offset) has no meaningful
                 // textual representation in standard Pascal either.
+                // TYPE_UNTYPED_POINTER checked explicitly alongside
+                // is_pointer_type() - it sits deliberately outside that
+                // bounded range (see its own comment in common.h).
                 fprintf(stderr, "%s:%d: Type Error: write/writeln can't print a pointer\n",
                         get_current_filename(), node->line);
                 fatal_abort();

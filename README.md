@@ -368,7 +368,12 @@ dynamically-sized memory region, a single shared heap with a size-
 bucketed freelist so `dispose` actually makes space reusable rather than
 just leaking it (see
 [docs/LANGUAGE.md](docs/LANGUAGE.md#pointers)); pointer to an array or to
-another pointer isn't supported yet. Also working: nested procedure/
+another pointer isn't supported yet. Also working: a generic `Pointer`
+type and `@`/`Addr` — narrower than real Pascal's version by design, not
+oversight: only the address of something already reached through a
+pointer dereference (`@(p^.field)`) is computable, since this VM's
+ordinary variables don't live in the same heap pointers target (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#pointer-and-addraddr)). Also working: nested procedure/
 function declarations, with lexical access to any enclosing procedure's
 own locals and parameters at arbitrary nesting depth — a local array or
 `static` local needs zero new runtime machinery to reach from a nested

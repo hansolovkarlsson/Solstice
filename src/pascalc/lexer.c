@@ -451,6 +451,8 @@ void next_token(void) {
         else if (strcasecmp(token.text, "filesize") == 0) token.type = TOKEN_FILESIZE;
         else if (strcasecmp(token.text, "blockread") == 0) token.type = TOKEN_BLOCKREAD;
         else if (strcasecmp(token.text, "blockwrite") == 0) token.type = TOKEN_BLOCKWRITE;
+        else if (strcasecmp(token.text, "pointer") == 0) token.type = TOKEN_POINTER_TYPE;
+        else if (strcasecmp(token.text, "addr") == 0) token.type = TOKEN_ADDR;
         else if (strcasecmp(token.text, "sizeof") == 0) token.type = TOKEN_SIZEOF;
         else if (strcasecmp(token.text, "abstract") == 0) token.type = TOKEN_ABSTRACT;
         else if (strcasecmp(token.text, "sealed") == 0) token.type = TOKEN_SEALED;
@@ -565,6 +567,7 @@ void next_token(void) {
         case '[': token.type = TOKEN_LBRACKET; break;
         case ']': token.type = TOKEN_RBRACKET; break;
         case '^': token.type = TOKEN_CARET; break;
+        case '@': token.type = TOKEN_AT; break;
         default:  token.type = TOKEN_EOF; break;
     }
 
