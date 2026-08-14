@@ -321,11 +321,31 @@ typed constant record gets real storage and ordinary field access
   — `(y: 2; x: 1)` (wrong order) or `(x: 1)` (missing `y`) are both
   compile-time errors. This isn't a named-in-any-order struct literal;
   it must match field declaration order exactly, same as Delphi.
-- **Only an all-scalar record type is supported** — a record type with
-  an array-typed or nested-record-typed field is rejected up front, as
-  soon as the typed constant's own type is recognized, with a clear
-  message naming the offending field (not a confusing error partway
-  through parsing the initializer).
+- **Only an all-scalar record type is supported, with one exception**: a
+  *fixed-size* array-typed or nested-record-typed field is rejected up
+  front, as soon as the typed constant's own type is recognized, with a
+  clear message naming the offending field (not a confusing error
+  partway through parsing the initializer) — but a **dynamic-array**
+  field is allowed, given an array-literal value (`values: [1, 2, 3]`),
+  the same syntax `arr := [1, 2, 3];` uses:
+  ```pascal
+  type
+      TScores = record
+          name: string;
+          values: array of integer;
+      end;
+  const
+      Bob: TScores = (name: 'Bob'; values: [10, 20, 30]);
+  ```
+  Unlike a scalar field's value, this isn't embedded as a literal in the
+  `.bin` file at all — it's ordinary generated code (the same
+  `NODE_DYNARRAY_LITERAL` construction any other array-literal
+  assignment lowers to) that runs once at program start, before `main`
+  proper, the same way every typed-constant field's initializer already
+  does. `Bob.values` is fully usable afterward exactly like any other
+  dynamic-array field — indexed, `Length`'d, `for x in ... do`'d — just
+  immutable (see the reassignment bullet below, which covers `SetLength`
+  too for this field kind).
 - **The record type must already be declared** at the point the typed
   constant is parsed — `const`/`type` sections can interleave/repeat
   (see [Program structure](#program-structure)), so a record type
@@ -341,6 +361,9 @@ typed constant record gets real storage and ordinary field access
   constant's element (each field's own hidden global is marked
   constant, and field assignment already resolves down to that same
   symbol regardless of whether it came from `var` or a typed constant).
+  A dynamic-array field is protected the same way, at both the points
+  that could otherwise mutate it: `Bob.values := [...]` (reassignment)
+  and `SetLength(Bob.values, ...)` are both compile-time errors.
 
 ## Literals
 
@@ -2141,10 +2164,10 @@ assignment (`b2 := b1;`) copies a dynamic-array field's pointer, not its
 contents — the same shallow-copy behavior a pointer-typed field already
 has.
 
-**The one remaining gap**: a dynamic array field can't be a typed
-constant's own field value — there's no literal syntax for one (a typed
-constant needs a genuine compile-time value; a dynamic array only ever
-gets one via `SetLength`/an array literal, both runtime-only).
+A dynamic-array field can also be a [typed constant](#typed-constants-record-initializers)'s
+own field value, given an array literal (`values: [1, 2, 3]`) — see that
+section for the details (it's immutable afterward, same as a scalar
+typed-constant field).
 
 ### What's not supported yet
 
@@ -2155,11 +2178,14 @@ gets one via `SetLength`/an array literal, both runtime-only).
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
 - **Array-literal syntax for a fixed-size array**; a dynamic-array
-  literal as a `var`/`const` call argument; and a dynamic-array literal
-  in any other general-expression position (a typed-constant
-  initializer, a `write`/`writeln` argument, etc.) — see "Array
-  literals" above for what IS supported (an assignment RHS, and a
-  by-value call argument).
+  literal as a `var`/`const` call argument; a *bare* dynamic-array typed
+  constant (`const X: array of integer = [1, 2, 3];` — `array of` isn't
+  recognized as a typed-constant's own type at all); and a dynamic-array
+  literal in any other general-expression position (a `write`/`writeln`
+  argument, etc.) — see "Array literals" above for what IS supported (an
+  assignment RHS, a by-value call argument, and — see [Typed
+  constants](#typed-constants-record-initializers) — a record/class
+  field's own value *inside* a typed constant, specifically).
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
   comparison against `nil` is supported; standard Pascal doesn't define
   whole-array comparison either.

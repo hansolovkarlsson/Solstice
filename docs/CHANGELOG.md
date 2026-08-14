@@ -3808,6 +3808,56 @@ anyway, so this is where they land instead.
       `for...in` case (both a plain record's and a class's set-typed
       field) and confirmed no regression via a full `examples/test/`
       sweep (839 other files, identical exit codes before/after).
+- [x] A dynamic-array field's own value inside a **typed constant** -
+      `Bob: TScores = (name: 'Bob'; values: [10, 20, 30]);`. Closes the
+      dynamic-array record/class fields entry's own last remaining gap
+      (a dynamic-array field previously had to be rejected outright in a
+      typed constant, with no literal syntax to give it a value at all).
+
+      **The key realization**: this doesn't need a compile-time literal
+      form for a dynamic array to exist (it never will - a dynamic array
+      is fundamentally a runtime heap allocation). `parse_typed_const_
+      record_declaration()` already had exactly the right mechanism
+      sitting unused for this case: `typed_const_init_head`/`tail`, a
+      chain of ordinary STATEMENTS executed once at program start,
+      already used by a *fixed-size* array field's own typed-constant
+      initializer (one synthesized `NODE_ASSIGN` per element). A dynamic-
+      array field's initializer reuses the exact same chain, just with
+      `parse_dynarray_literal()` (the same function `arr := [1, 2, 3];`
+      already uses) producing the value instead of `parse_typed_const_
+      value()`'s compile-time-literal-folding path - the field's storage
+      is real generated code either way, so there's nothing special
+      about it being a typed constant from codegen's point of view once
+      parsing hands back an ordinary `NODE_ASSIGN`.
+
+      **A newly-reachable gap found and fixed, not pre-existing in
+      practice**: `SetLength` on a const record field compiled
+      successfully and silently mutated the "constant" - the record-field
+      branch of `parse_dynarray_writeback_target()` had never checked
+      `is_const` at all (only the plain bare-variable fallback further
+      down that same function did). This was dormant rather than a
+      latent bug in the traditional sense: no dynamic-array record field
+      could ever have been `is_const` before this feature existed, so
+      the gap had no way to be reached until this same session made it
+      reachable. Caught by testing the const-immutability case directly,
+      not by inspection. Fixed by adding the identical `is_const` check
+      to that branch (global fields only - a *local* record's field can
+      never be `is_const` at all, since `LocalSymbol` has no such concept
+      in the first place; only a global typed-constant record's fields,
+      via `add_record_var()`, do).
+
+      Immutability is enforced at both points that could otherwise
+      mutate the field: reassignment (`Bob.values := [...]`, the
+      existing plain-constant check) and `SetLength` (the fix above).
+      Zero new opcodes/`NodeType`s. See `examples/test/dynarray/
+      test_dynarray_field_typedconst_*.pas` (2 positive cases - a normal
+      and an empty array literal; 2 error cases - `SetLength` and
+      reassignment) plus the pre-existing `test_dynarray_field_
+      badtypedconst.pas` (repurposed - now demonstrates that a non-
+      array-literal value like `nil` is still rejected, rather than that
+      dynamic arrays are rejected outright) and
+      [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-record-initializers).
+      Confirmed no regression via a full `examples/test/` sweep.
 
 ### Shipped from the OOP features survey
 

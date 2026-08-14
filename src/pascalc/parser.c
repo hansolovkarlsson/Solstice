@@ -7276,20 +7276,6 @@ static void parse_typed_const_record_declaration(const char *name, int decl_line
                            "only all-scalar record types are supported as a typed constant's type yet",
                            name, rt->name, rt->fields[i].name);
         }
-        // A dynamic-array field (is_array/is_record both false, but not
-        // a plain scalar type either) has no literal-initializer syntax
-        // at all - a typed constant needs a genuine compile-time value,
-        // and a dynamic array only ever gets one via SetLength/an array
-        // literal, both runtime-only constructs. Checked separately from
-        // the is_array/is_record case above since it's neither of those
-        // - would otherwise silently fall through to whatever generic
-        // scalar-initializer parsing runs next instead of a clear
-        // rejection.
-        if (is_dynarray_type(rt->fields[i].type)) {
-            compile_error(decl_line, "Typed constant '%s': record type '%s' has a dynamic-array field '%s' - "
-                           "a typed constant can't initialize a dynamic array (see docs/LANGUAGE.md)",
-                           name, rt->name, rt->fields[i].name);
-        }
     }
     match(TOKEN_IDENTIFIER); // the record type name, already confirmed by the caller
     match(TOKEN_EQ);
@@ -7306,10 +7292,33 @@ static void parse_typed_const_record_declaration(const char *name, int decl_line
         }
         match(TOKEN_IDENTIFIER);
         match(TOKEN_COLON);
-        ASTNode *value = parse_typed_const_value(name, "Field");
         ASTNode *stmt = create_node(NODE_ASSIGN);
         stmt->data.var_idx = rv->field_sym_idx[i];
-        stmt->left = wrap_range_check(value, f->is_subrange, f->subrange_lower, f->subrange_upper);
+        if (is_dynarray_type(f->type)) {
+            // No compile-time literal exists for a dynamic array (see
+            // parse_typed_const_value()'s own comment - it requires
+            // folding to NODE_NUMBER/REAL_NUMBER/BOOLEAN/STRING, which a
+            // dynamic array can never do), so this doesn't go through
+            // that function at all. Instead it reuses the exact same
+            // array-literal RUNTIME construction 'arr := [1, 2, 3];'
+            // already uses elsewhere (parse_dynarray_literal() - a
+            // NODE_DYNARRAY_LITERAL, lowered to an OP_NEW/OP_STORE_HEAP_
+            // FIELD... chain at codegen time, not a literal encoded in
+            // the .bin file) - safe here specifically because typed_
+            // const_init_head/tail is a chain of ordinary STATEMENTS run
+            // once at program start (see its own comment above), not a
+            // compile-time VALUE embedded into the constant's own
+            // storage - the field's own storage is real generated code
+            // either way, exactly like a scalar field's synthesized
+            // NODE_ASSIGN already is.
+            if (token.type != TOKEN_LBRACKET) {
+                compile_error(token.line, "Typed constant '%s': field '%s' is a dynamic array - expects an array literal, e.g. '[1, 2, 3]' or '[]'", name, f->name);
+            }
+            stmt->left = parse_dynarray_literal(f->type);
+        } else {
+            ASTNode *value = parse_typed_const_value(name, "Field");
+            stmt->left = wrap_range_check(value, f->is_subrange, f->subrange_lower, f->subrange_upper);
+        }
         append_typed_const_init(stmt);
         sym_table[rv->field_sym_idx[i]].is_const = 1;
         if (i < rt->field_count - 1) {
@@ -11512,6 +11521,19 @@ static ASTNode *parse_dynarray_writeback_target(void) {
             DataType field_type = rv_is_local ? local_at(leaf_idx, rv_levels_up)->type : sym_table[leaf_idx].type;
             if (!is_dynarray_type(field_type)) {
                 compile_error(line, "'SetLength' expects a dynamic array field, not a field of '%s' with a different type", rec_name);
+            }
+            // A LOCAL record's field can never be const (LocalSymbol has
+            // no is_const concept at all - only a GLOBAL typed-constant
+            // record's fields, added via add_record_var() in
+            // parse_typed_const_record_declaration(), do), so this only
+            // needs to check the global case. Newly reachable now that a
+            // dynamic-array field can be part of a typed constant at all
+            // (see that function) - previously no dynarray record field
+            // could ever be is_const, so this branch never needed the
+            // check the plain bare-variable fallback further below
+            // already has.
+            if (!rv_is_local && sym_table[leaf_idx].is_const) {
+                compile_error(line, "'SetLength' cannot be used on constant '%s'", sym_table[leaf_idx].name);
             }
             return record_field_read_node(rv_is_local, leaf_idx, rv_levels_up);
         }

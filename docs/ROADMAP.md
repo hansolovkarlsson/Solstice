@@ -116,9 +116,31 @@ anyway, so this is where they land instead.
       being aliased, which now works - an alias still can't stand in for
       a record/pointer/procedural/named-type ELEMENT type); array
       literals for a fixed-size array, as a `var`/`const` call argument,
-      or in any other general-expression position; a named alias for a
-      FIXED-size array; and comparing two dynamic arrays directly (`arr1
-      = arr2`, as opposed to comparison against `nil`, which now works).
+      or in any other general-expression position; a *bare* dynamic-
+      array typed constant (`const X: array of integer = [1, 2, 3];` - a
+      record/class field's own dynamic-array value inside a typed
+      constant has shipped, see below, but `array of` still isn't
+      recognized as a typed-constant's own type at the top level); a
+      named alias for a FIXED-size array; and comparing two dynamic
+      arrays directly (`arr1 = arr2`, as opposed to comparison against
+      `nil`, which now works).
+
+      A dynamic-array field's own value inside a **typed constant** has
+      shipped too (`Bob: TScores = (name: 'Bob'; values: [10, 20, 30]);`)
+      - reuses `typed_const_init_head`/`tail` (the existing chain of
+      runtime-init statements a *fixed-size* array field's typed-constant
+      initializer already relied on) rather than `parse_typed_const_
+      value()`'s compile-time-literal-folding path, since a dynamic array
+      has no compile-time literal form at all; the field's initializer is
+      instead an ordinary `parse_dynarray_literal()` call, generating the
+      same `NODE_DYNARRAY_LITERAL` construction any other array-literal
+      assignment lowers to, run once at program start like every other
+      typed-constant field's own init statement. Found and fixed one
+      newly-reachable gap along the way: `SetLength` on a const record
+      field never checked `is_const` at all (only the plain bare-variable
+      fallback did) - dormant until now, since no dynarray record field
+      could previously ever BE `is_const`; fixed by adding the same
+      check to that branch of `parse_dynarray_writeback_target()`.
 
 **Considered, explicitly out of scope: inline assembly** (`asm ... end;`
 embedding raw `.sasm` directly inside a Pascal source file, letting a
