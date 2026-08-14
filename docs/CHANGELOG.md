@@ -3721,21 +3721,22 @@ anyway, so this is where they land instead.
       a field all work correctly, via the same underlying machinery, no
       extra code needed for any of them.
 
-      **One real, still-open gap, found and left explicitly documented
-      rather than chased further**: `for x in rec.field do` doesn't
+      **One real gap, found and left explicitly documented rather than
+      chased further in this pass**: `for x in rec.field do` didn't
       recognize a record/class field as an iterable - `for x in ...`'s
       own collection-type resolution has a separate, elaborate
-      desugaring path per collection kind that would need its own
-      record-field-aware fix, a distinct piece of work from everything
-      above. `for x in ...` on a bare dynamic-array variable is
-      unaffected.
+      desugaring path per collection kind that needed its own record-
+      field-aware fix, a distinct piece of work from everything above.
+      `for x in ...` on a bare dynamic-array variable was unaffected.
+      **Closed in a follow-up shipped later the same session** - see
+      "`for x in ...` over a record/class dynamic-array field" below.
 
       See `examples/test/dynarray/test_dynarray_field_*.pas` (8 positive
       cases - global and local record fields, a class field, nesting,
       cross-compatibility with a plain `array of integer`, whole-record
-      copy semantics, value-parameter semantics, and `Copy()`; 2 error
-      cases - the typed-constant rejection and the documented `for...in`
-      gap) and [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields).
+      copy semantics, value-parameter semantics, and `Copy()`; 1 error
+      case - the typed-constant rejection) and
+      [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields).
       Round-tripped through `solas`/`desole` (zero new opcodes - every
       fix reuses existing node types: `NODE_HEAP_FIELD_ACCESS/ASSIGN`,
       `NODE_DYNARRAY_ACCESS/ASSIGN`, `NODE_LOCAL_VAR`, `NODE_NUMBER`).
@@ -3743,6 +3744,70 @@ anyway, so this is where they land instead.
       including a crash-specific pass (exit code > 1) that surfaced two
       false positives (`halt(N)`'s own deliberate process-exit-code
       tests) and zero real ones.
+- [x] `for x in ...` over a record/class dynamic-array field - closes the
+      one gap left open by the dynamic-array record/class fields entry
+      just above.
+
+      The dispatch point is `try_resolve_forin_dynarray_here()` - the
+      same lookahead-and-resolve function `for x in arr do` already used
+      for a bare dynamic-array variable, extended with two new branches
+      after its existing local/global bare-variable checks: a plain
+      record/nested-record field (reusing `find_any_record_var_outward()`
+      + `resolve_record_field_leaf()`, then read exactly like a bare
+      variable - a field is just another ordinary hidden global/local
+      slot, so `ForInDynArrayTarget` needed no new shape for this case at
+      all), and a class/pointer field (heap-offset storage, genuinely
+      different - a new `is_heap_field` variant of `ForInDynArrayTarget`,
+      with `build_forin_dynarray_read()` growing a branch that wraps a
+      fresh base-variable read in `NODE_HEAP_FIELD_ACCESS`, mirroring
+      `make_heap_field_access()`).
+
+      **Deliberately reimplements a narrow, terminal-only field lookup
+      for the class-field branch instead of calling the general
+      `resolve_heap_deref_step()`** - a dynamic-array field is never
+      itself a nested record or a fixed-size array field (`is_record`/
+      `is_array` are always false for one), so the property/method/array-
+      field branches that function also handles could never actually
+      fire for this case anyway; staying out of them entirely means this
+      *speculative* lookahead (which must be able to roll back cleanly if
+      the field turns out not to be a dynamic array - e.g. a set-typed
+      field, which must still fall through to the ordinary set `for...in`
+      path) never risks triggering a method call's own argument-parsing
+      side effects before deciding whether to commit.
+
+      **A real regression caught in review, before it shipped**: the
+      first version of the extended `try_resolve_forin_dynarray_here()`
+      kept the existing local-variable check's `if
+      (!is_dynarray_type(ls->type)) return 0;` unchanged - correct for
+      the ORIGINAL function (a local match of any other type really did
+      mean "not a match, stop looking"), but wrong now that two more
+      branches follow it: an unconditional `return 0` there exits the
+      *entire* function, so a LOCAL class instance's dynamic-array field
+      (`for x in f.data do` where `f` is a procedure's own local) was
+      silently never recognized, while the identical GLOBAL case worked
+      correctly (the global branch never had an equivalent unconditional
+      early return to begin with - it just fell through to the new checks
+      naturally). Caught by testing the local-class-instance case
+      specifically, not by inspection - `test_dynarray_field_forin_class_
+      local.pas` failed with "'for x in ...' expects a set, array, or
+      string" before the fix. Fixed by restructuring so a local match of
+      some other type falls through instead of returning, while keeping
+      the global bare-variable check gated on `local_idx == -1` (an
+      `else`, not a second independent `if`) so shadowing - a local
+      hiding a same-named global - stays correct.
+
+      Zero new opcodes, zero new `NodeType` - `NODE_HEAP_FIELD_ACCESS`
+      under `Length()`/`NODE_DYNARRAY_ACCESS` needed no codegen changes
+      either, since `generate_code()` already recurses into whatever
+      expression node sits at `node->left` generically. See
+      `examples/test/dynarray/test_dynarray_field_forin_*.pas` (4
+      positive cases - global and local record fields, a global and a
+      local class field) and
+      [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields). Confirmed
+      the rollback path doesn't regress the pre-existing set-field
+      `for...in` case (both a plain record's and a class's set-typed
+      field) and confirmed no regression via a full `examples/test/`
+      sweep (839 other files, identical exit codes before/after).
 
 ### Shipped from the OOP features survey
 

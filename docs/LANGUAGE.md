@@ -2123,30 +2123,28 @@ begin
     SetLength(f.data, 2);
     f.data[0] := 100;
     writeln(Length(b.data), ' ', f.data[0]);
+
+    for x in b.data do writeln(x);   { 'for x in <record/class field> do' works too }
 end.
 ```
 
 A `record` field or a `class` field can be a dynamic array — declared,
 `SetLength`'d, indexed, read, and written exactly like a plain variable
-of the same type, including array-literal assignment and `Copy`. Works
-for a global or local record/class variable, a record nested inside
-another record, and a `record`/`class` passed as an ordinary (non-`var`)
-parameter (the field's pointer is shared with the caller exactly like a
-plain dynamic-array value parameter's own reference semantics — an
-element write is visible to the caller, `SetLength` inside the callee
-isn't). Whole-record assignment (`b2 := b1;`) copies a dynamic-array
-field's pointer, not its contents — the same shallow-copy behavior a
-pointer-typed field already has.
+of the same type, including array-literal assignment, `Copy`, and
+`for x in ... do` iteration. Works for a global or local record/class
+variable, a record nested inside another record, and a `record`/`class`
+passed as an ordinary (non-`var`) parameter (the field's pointer is
+shared with the caller exactly like a plain dynamic-array value
+parameter's own reference semantics — an element write is visible to
+the caller, `SetLength` inside the callee isn't). Whole-record
+assignment (`b2 := b1;`) copies a dynamic-array field's pointer, not its
+contents — the same shallow-copy behavior a pointer-typed field already
+has.
 
-**The one gap**: `for x in someRecord.someField do` doesn't recognize a
-record/class field as a valid iterable yet, even though the identical
-expression works everywhere else (indexing, `Length`, `Copy`,
-`SetLength`) — assign it to a plain variable first (`arr :=
-someRecord.someField; for x in arr do ...`) as a workaround. A dynamic
-array field also can't be a typed constant's own field value — there's
-no literal syntax for one (a typed constant needs a genuine compile-time
-value; a dynamic array only ever gets one via `SetLength`/an array
-literal, both runtime-only).
+**The one remaining gap**: a dynamic array field can't be a typed
+constant's own field value — there's no literal syntax for one (a typed
+constant needs a genuine compile-time value; a dynamic array only ever
+gets one via `SetLength`/an array literal, both runtime-only).
 
 ### What's not supported yet
 
@@ -2162,8 +2160,6 @@ literal, both runtime-only).
   initializer, a `write`/`writeln` argument, etc.) — see "Array
   literals" above for what IS supported (an assignment RHS, and a
   by-value call argument).
-- **`for x in ...` over a record/class field** — see "Record and class
-  fields" just above.
 - **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
   comparison against `nil` is supported; standard Pascal doesn't define
   whole-array comparison either.

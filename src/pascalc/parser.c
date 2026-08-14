@@ -12773,6 +12773,12 @@ typedef struct {
     int is_local;      // 0 = global (idx is a sym_table[] index), 1 =
                         // local/'var'-parameter (idx is a local slot,
                         // levels_up meaningful - see find_local_outward())
+                        // - meaningless when is_heap_field is set (a
+                        // PLAIN record's field is just another ordinary
+                        // hidden global/local slot, so it's described the
+                        // exact same way as a bare variable via idx/
+                        // levels_up; a CLASS/pointer's field is not, see
+                        // is_heap_field below).
     int idx;
     int levels_up;
     DataType dynarray_type; // the variable's OWN type (TYPE_DYNARRAY_BASE
@@ -12781,6 +12787,22 @@ typedef struct {
                         // and NODE_DYNARRAY_ACCESS's base.
     DataType elem_type;
     int elem_is_subrange, elem_subrange_lower, elem_subrange_upper;
+    int is_heap_field; // 1 = this target is a CLASS instance's or plain
+                        // record-pointer's dynamic-array FIELD ('c.arr'/
+                        // 'p^.arr') - heap-based storage (an offset
+                        // within the pointer's own heap block, see
+                        // resolve_heap_deref_step()), fundamentally
+                        // different from is_local/idx/levels_up's "which
+                        // ordinary slot" shape; is_local/idx/levels_up
+                        // are meaningless when this is set - heap_base_*/
+                        // heap_field_offset below take over instead.
+    int heap_base_is_local;
+    int heap_base_idx;
+    int heap_base_levels_up;
+    DataType heap_base_type; // the pointer/class variable's OWN type -
+                        // needed to rebuild a fresh read of it (see
+                        // build_forin_dynarray_read() below).
+    int heap_field_offset;
 } ForInDynArrayTarget;
 
 // Same lookahead contract as try_resolve_forin_array_here() just above
@@ -12801,32 +12823,171 @@ static int try_resolve_forin_dynarray_here(ForInDynArrayTarget *out) {
     int levels_up;
     int local_idx = find_local_outward(name, &levels_up);
     if (local_idx != -1) {
+        // A local match of some OTHER type (e.g. a class-pointer local
+        // about to turn out to be 'f.data' below) deliberately does NOT
+        // return 0 here - unlike a plain bare-variable miss, it must
+        // still fall through to the record-field/heap-field checks
+        // further down (which each re-resolve 'name' in the correct
+        // scope themselves). It must NOT also fall through to the
+        // find_var_soft_visible() global check just below, though - that
+        // would break shadowing (a local hiding a same-named global) -
+        // hence gating that check on local_idx == -1 via 'else' rather
+        // than the two independent top-level 'if's this block used to be.
         LocalSymbol *ls = local_at(local_idx, levels_up);
-        if (!is_dynarray_type(ls->type)) return 0;
-        match(TOKEN_IDENTIFIER);
-        out->is_local = 1;
-        out->idx = local_idx;
-        out->levels_up = levels_up;
-        out->dynarray_type = ls->type;
-        DynArrayTypeDef *d = &dynarray_types[ls->type - TYPE_DYNARRAY_BASE];
-        out->elem_type = d->elem_type;
-        out->elem_is_subrange = d->elem_is_subrange;
-        out->elem_subrange_lower = d->elem_subrange_lower;
-        out->elem_subrange_upper = d->elem_subrange_upper;
-        return 1;
+        if (is_dynarray_type(ls->type)) {
+            match(TOKEN_IDENTIFIER);
+            out->is_local = 1;
+            out->idx = local_idx;
+            out->levels_up = levels_up;
+            out->dynarray_type = ls->type;
+            DynArrayTypeDef *d = &dynarray_types[ls->type - TYPE_DYNARRAY_BASE];
+            out->elem_type = d->elem_type;
+            out->elem_is_subrange = d->elem_is_subrange;
+            out->elem_subrange_lower = d->elem_subrange_lower;
+            out->elem_subrange_upper = d->elem_subrange_upper;
+            out->is_heap_field = 0;
+            return 1;
+        }
+    } else {
+        int global_idx = find_var_soft_visible(name);
+        if (global_idx != -1 && is_dynarray_type(sym_table[global_idx].type)) {
+            match(TOKEN_IDENTIFIER);
+            out->is_local = 0;
+            out->idx = global_idx;
+            out->dynarray_type = sym_table[global_idx].type;
+            DynArrayTypeDef *d = &dynarray_types[sym_table[global_idx].type - TYPE_DYNARRAY_BASE];
+            out->elem_type = d->elem_type;
+            out->elem_is_subrange = d->elem_is_subrange;
+            out->elem_subrange_lower = d->elem_subrange_lower;
+            out->elem_subrange_upper = d->elem_subrange_upper;
+            out->is_heap_field = 0;
+            return 1;
+        }
     }
-    int global_idx = find_var_soft_visible(name);
-    if (global_idx != -1 && is_dynarray_type(sym_table[global_idx].type)) {
-        match(TOKEN_IDENTIFIER);
-        out->is_local = 0;
-        out->idx = global_idx;
-        out->dynarray_type = sym_table[global_idx].type;
-        DynArrayTypeDef *d = &dynarray_types[sym_table[global_idx].type - TYPE_DYNARRAY_BASE];
-        out->elem_type = d->elem_type;
-        out->elem_is_subrange = d->elem_is_subrange;
-        out->elem_subrange_lower = d->elem_subrange_lower;
-        out->elem_subrange_upper = d->elem_subrange_upper;
-        return 1;
+    // 'for x in rec.arr do' - a plain record variable's dynamic-array
+    // FIELD (global or local, current scope or an enclosing one). Each
+    // field is its own ordinary hidden global/local slot (see
+    // find_any_record_var_outward()'s own comment) - once resolved, it's
+    // read exactly like a bare dynamic-array variable, so this populates
+    // the SAME is_local/idx/levels_up shape as the two blocks above, just
+    // from the field's own slot instead of a whole variable's. Unlike
+    // parse_dynarray_writeback_target()'s identical-looking record-field
+    // branch (which can consume unconditionally - 'SetLength('s argument
+    // MUST be a dynamic array already), this needs the lexer save/
+    // restore lookahead this function's contract requires: 'rec' here
+    // might legitimately be followed by a non-dynarray field (a set-
+    // typed one, say) that must still fall through to
+    // arithmetic_expression() below untouched.
+    {
+        int rv_levels_up, rv_is_local, rv_record_type_idx;
+        const int *rv_field_idx;
+        if (find_any_record_var_outward(name, &rv_levels_up, &rv_is_local, &rv_record_type_idx, &rv_field_idx)) {
+            Token saved_token = token;
+            LexerPos saved_pos = lexer_save_pos();
+            match(TOKEN_IDENTIFIER);
+            if (token.type == TOKEN_PERIOD) {
+                match(TOKEN_PERIOD);
+                if (token.type == TOKEN_IDENTIFIER && find_record_field(rv_record_type_idx, token.text) != -1) {
+                    int leaf_idx = resolve_record_field_leaf(rv_record_type_idx, rv_field_idx, name);
+                    DataType field_type = rv_is_local ? local_at(leaf_idx, rv_levels_up)->type : sym_table[leaf_idx].type;
+                    if (is_dynarray_type(field_type)) {
+                        out->is_local = rv_is_local;
+                        out->idx = leaf_idx;
+                        out->levels_up = rv_levels_up;
+                        out->dynarray_type = field_type;
+                        DynArrayTypeDef *d = &dynarray_types[field_type - TYPE_DYNARRAY_BASE];
+                        out->elem_type = d->elem_type;
+                        out->elem_is_subrange = d->elem_is_subrange;
+                        out->elem_subrange_lower = d->elem_subrange_lower;
+                        out->elem_subrange_upper = d->elem_subrange_upper;
+                        out->is_heap_field = 0;
+                        return 1;
+                    }
+                }
+            }
+            token = saved_token;
+            lexer_restore_pos(saved_pos);
+        }
+    }
+    // 'for x in c.arr do' / 'for x in p^.arr do' - a CLASS instance's or
+    // plain record-pointer's dynamic-array FIELD - heap-based storage
+    // (an offset within the pointer's own heap block, see
+    // resolve_heap_deref_step()), fundamentally different from the
+    // plain-record-field branch just above. Deliberately reimplements
+    // just the terminal scalar/dynarray-leaf lookup inline rather than
+    // calling resolve_heap_deref_step() itself: a dynamic-array field is
+    // never itself a nested record or fixed-size array field (is_record/
+    // is_array are always false for one), so the property/method/array-
+    // field branches that function also handles can never actually fire
+    // here - and staying out of them means this speculative lookahead
+    // never risks THEIR side effects (e.g. parsing a method call's own
+    // argument list) before this function has decided whether to commit.
+    {
+        int hlevels_up;
+        int hlocal_idx = find_local_outward(name, &hlevels_up);
+        int base_is_local = 0, base_idx = -1, base_levels_up = 0;
+        DataType base_type = TYPE_INTEGER;
+        int base_found = 0;
+        if (hlocal_idx != -1) {
+            LocalSymbol *ls = local_at(hlocal_idx, hlevels_up);
+            if (is_pointer_type(ls->type)) {
+                base_found = 1;
+                base_is_local = 1;
+                base_idx = hlocal_idx;
+                base_levels_up = hlevels_up;
+                base_type = ls->type;
+            }
+        } else {
+            int sym_idx = find_var_soft_visible(name);
+            if (sym_idx != -1 && is_pointer_type(sym_table[sym_idx].type)) {
+                base_found = 1;
+                base_idx = sym_idx;
+                base_type = sym_table[sym_idx].type;
+            }
+        }
+        if (base_found && pointer_types[base_type - TYPE_POINTER_BASE].target_is_record) {
+            PointerTypeDef *pt = &pointer_types[base_type - TYPE_POINTER_BASE];
+            Token saved_token = token;
+            LexerPos saved_pos = lexer_save_pos();
+            match(TOKEN_IDENTIFIER); // consume the base variable name
+            int has_deref = (token.type == TOKEN_CARET) || class_dot_deref_pending(base_type);
+            int committed = 0;
+            if (has_deref) {
+                if (token.type == TOKEN_CARET) match(TOKEN_CARET); else match(TOKEN_PERIOD);
+                if (token.type == TOKEN_IDENTIFIER) {
+                    RecordTypeDef *target_rt = &record_types[pt->target_record_type_idx];
+                    int field_idx = find_record_field(pt->target_record_type_idx, token.text);
+                    if (field_idx != -1) {
+                        RecordField *f = &target_rt->fields[field_idx];
+                        int accessible = 1;
+                        if (f->is_private && current_class_ptr_idx != f->declaring_class_ptr_idx) accessible = 0;
+                        if (f->is_protected && !class_ptr_idx_is_or_descends_from(current_class_ptr_idx, f->declaring_class_ptr_idx)) accessible = 0;
+                        if (accessible && is_dynarray_type(f->type)) {
+                            match(TOKEN_IDENTIFIER); // consume the field name
+                            out->is_heap_field = 1;
+                            out->heap_base_is_local = base_is_local;
+                            out->heap_base_idx = base_idx;
+                            out->heap_base_levels_up = base_levels_up;
+                            out->heap_base_type = base_type;
+                            out->heap_field_offset = pt->is_class ? class_field_base_offset(target_rt, field_idx) : field_idx;
+                            out->dynarray_type = f->type;
+                            DynArrayTypeDef *d = &dynarray_types[f->type - TYPE_DYNARRAY_BASE];
+                            out->elem_type = d->elem_type;
+                            out->elem_is_subrange = d->elem_is_subrange;
+                            out->elem_subrange_lower = d->elem_subrange_lower;
+                            out->elem_subrange_upper = d->elem_subrange_upper;
+                            committed = 1;
+                        }
+                    }
+                }
+            }
+            if (!committed) {
+                token = saved_token;
+                lexer_restore_pos(saved_pos);
+            } else {
+                return 1;
+            }
+        }
     }
     return 0;
 }
@@ -12839,6 +13000,32 @@ static int try_resolve_forin_dynarray_here(ForInDynArrayTarget *out) {
 // places, matching this file's own documented AST-double-free hazard
 // (see build_forin_array_element_read()'s own comment above).
 static ASTNode *build_forin_dynarray_read(ForInDynArrayTarget *t) {
+    if (t->is_heap_field) {
+        // Mirrors make_heap_field_access() exactly (base + a constant
+        // field-offset literal, wrapped in NODE_HEAP_FIELD_ACCESS) -
+        // duplicated rather than shared since that function takes an
+        // already-built base node, and this one must build a FRESH base
+        // read from t->heap_base_* every call (see this function's own
+        // "called twice" comment above).
+        ASTNode *base;
+        if (t->heap_base_is_local) {
+            LocalSymbol *ls = local_at(t->heap_base_idx, t->heap_base_levels_up);
+            base = create_node(ls->is_var_param ? NODE_VAR_PARAM_READ : NODE_LOCAL_VAR);
+            base->op = (TokenType)t->heap_base_levels_up;
+        } else {
+            base = create_node(NODE_VARIABLE);
+        }
+        base->data.var_idx = t->heap_base_idx;
+        base->expression_type = t->heap_base_type;
+        ASTNode *node = create_node(NODE_HEAP_FIELD_ACCESS);
+        node->left = base;
+        ASTNode *offset_lit = create_node(NODE_NUMBER);
+        offset_lit->data.num_value = t->heap_field_offset;
+        offset_lit->expression_type = TYPE_INTEGER;
+        node->right = offset_lit;
+        node->expression_type = t->dynarray_type;
+        return node;
+    }
     ASTNode *node;
     if (t->is_local) {
         LocalSymbol *ls = local_at(t->idx, t->levels_up);

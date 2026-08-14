@@ -89,10 +89,28 @@ anyway, so this is where they land instead.
       have silently misrouted a dynamic-array field's own assignment,
       since `TYPE_DYNARRAY_BASE` sits numerically above `TYPE_PROC_BASE`
       - same class of bug as the return-type work's own `TYPE_PROC_BASE`
-      finding). One real, still-open gap: `for x in rec.field do` doesn't
-      recognize a record/class field as an iterable yet (assign to a
-      plain variable first as a workaround) - see
-      [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields). Still
+      finding). `for x in rec.field do`/`for x in c.field do` has shipped
+      too - a plain record field reuses `for x in arr do`'s existing bare-
+      variable machinery unchanged (a field is just another ordinary
+      hidden global/local slot); a class/pointer field needed its own
+      lookahead branch (heap-offset storage, not a slot), deliberately
+      reimplemented as a narrow, terminal-only field lookup rather than
+      calling the general `resolve_heap_deref_step()`, so the speculative
+      "is this a dynamic-array field at all" check can never accidentally
+      trigger a method call's own argument-parsing side effects before
+      deciding whether to commit. Caught one real bug in review before it
+      shipped: the FIRST version's local-variable lookahead branch
+      returned 0 (the whole function's own "not a match" signal) the
+      instant a local name resolved to something other than a bare
+      dynamic array - which incorrectly also cut off the new record/
+      class-field checks below it whenever the base variable itself was a
+      *local* (a LOCAL class instance's field silently stayed
+      unrecognized, while the identical GLOBAL case worked, since the
+      global branch had never had an equivalent unconditional early
+      return). Fixed by restructuring so a local-but-not-dynarray match
+      falls through instead of returning, while still gating the
+      global-variable check on `local_idx == -1` so shadowing isn't
+      broken. Still
       open: multi-dimensional dynamic arrays; record/named-type/nested-
       array element types (this is different from the array's own type
       being aliased, which now works - an alias still can't stand in for

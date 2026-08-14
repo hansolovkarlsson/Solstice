@@ -554,10 +554,10 @@ array-typed **record/class field** (`data: array of integer;` inside a
 `record`/`class`) — declared, `SetLength`'d, indexed, and assigned
 (including an array literal) exactly like a plain variable, for a
 global/local/nested/value-parameter record or a class, sharing storage
-on whole-record copy the same way a pointer-typed field already does
-(see [docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)) — one
-gap: `for x in rec.field do` doesn't recognize a field as an iterable
-yet. Not yet implemented: `copy`/slicing or a named alias for a
+on whole-record copy the same way a pointer-typed field already does,
+including `for x in rec.field do`/`for x in c.field do` iteration (see
+[docs/LANGUAGE.md](docs/LANGUAGE.md#record-and-class-fields)). Not yet
+implemented: `copy`/slicing or a named alias for a
 fixed-size array; an array literal for a fixed-size array, as a
 `var`/`const` call argument, or in any other general-expression
 position; variant records; and a whole record or an array element as a
