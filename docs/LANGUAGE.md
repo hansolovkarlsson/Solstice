@@ -1976,6 +1976,34 @@ after `new` already is (see [Pointers](#pointers)'s own "There is no
 garbage collector" note) — not a new kind of problem this feature
 introduces.
 
+### `nil`
+
+```pascal
+var
+    arr: array of integer;
+begin
+    if arr = nil then writeln('starts nil');   { true - never SetLength'd }
+    SetLength(arr, 3);
+    if arr <> nil then writeln('now allocated');
+    SetLength(arr, 0);
+    if arr = nil then writeln('emptied back to nil');
+    arr := nil;
+    if arr = nil then writeln('explicitly nil-ed');
+end.
+```
+
+`nil` can be assigned to a dynamic array, and compared against one with
+`=`/`<>` (no other operator, same restriction pointers already have) —
+in either operand order. **A never-`SetLength`'d array, one just
+`SetLength(arr, 0)`'d back down, and one explicitly assigned `nil` all
+compare equal to `nil`** — deliberately, matching real Delphi, where a
+zero-length dynamic array and a `nil` one are the same reference. Under
+the hood a dynamic array's own "not allocated" sentinel is `0`, not the
+`-1` `nil` uses for pointers (see "Under the hood" above) — comparing
+against `nil` doesn't compare raw values directly, precisely so this
+equivalence holds regardless of which of the three ways an array ended
+up "empty."
+
 ### What's not supported yet
 
 - **Multi-dimensional dynamic arrays** — `array of array of integer` (or
@@ -1984,13 +2012,13 @@ introduces.
 - **Record, pointer, procedural, or named (type-alias/subrange/
   enumerated) element types** — same restriction as above; only the
   built-in primitive type keywords are accepted.
-- **The `nil` literal** — a dynamic array can't be compared or assigned
-  `nil`; use `SetLength(arr, 0)` to explicitly empty one instead.
-- **`Copy`/slicing, array-literal syntax (`arr := [1, 2, 3];`), and `for
-  x in arr do`** — none of these exist yet for either array kind in this
-  language.
+- **`Copy`/slicing and array-literal syntax (`arr := [1, 2, 3];`)** —
+  neither exists yet for either array kind in this language.
 - **A dynamic-array-typed `record`/class field, or function return
   type** — only a plain `var`/parameter is supported so far.
+- **Comparing two dynamic arrays directly** (`arr1 = arr2`) — only
+  comparison against `nil` is supported; standard Pascal doesn't define
+  whole-array comparison either.
 
 ## Type aliases
 

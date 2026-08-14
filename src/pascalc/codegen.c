@@ -530,6 +530,32 @@ void generate_code(ASTNode *node) {
                 emit(OP_EQ, 0);
                 break;
             }
+            // 'arr = nil'/'arr <> nil' (either operand order) - NOT a
+            // plain EQ/NEQ against nil's own literal -1: a dynamic
+            // array's "not allocated" sentinel is 0 (zero-init and
+            // SetLength(arr, 0) both produce it - see TYPE_DYNARRAY_BASE
+            // in common.h), not -1, so comparing against literal -1
+            // would wrongly treat a SetLength(arr, 0)'d array as not
+            // nil. Every dynamic-array runtime opcode already treats
+            // "<= 0" uniformly as "not allocated" (OP_LOAD_DYNARR_LEN/
+            // IDX, OP_SETLENGTH - see vm.c) - this reuses that exact
+            // test instead, generating only the array operand (nil's
+            // own value is irrelevant here) and comparing it against a
+            // fresh literal 0, so SetLength(arr, 0), a never-
+            // initialized array, and an explicit 'arr := nil;' all
+            // correctly compare equal - matching real Delphi, where a
+            // zero-length dynamic array and a nil one are the same
+            // reference. Handled here, before the generic two-operand
+            // preamble below, same idiom as the set subset/superset
+            // case just above.
+            if ((is_dynarray_type(node->left->expression_type) && node->right->expression_type == TYPE_NIL)
+                || (node->left->expression_type == TYPE_NIL && is_dynarray_type(node->right->expression_type))) {
+                ASTNode *arr_operand = is_dynarray_type(node->left->expression_type) ? node->left : node->right;
+                generate_code(arr_operand);
+                emit(OP_PUSH, 0);
+                emit(node->op == TOKEN_EQ ? OP_LTE : OP_GT, 0);
+                break;
+            }
             generate_code(node->left);
             generate_code(node->right);
             int operand_is_real = (node->left->expression_type == TYPE_REAL);

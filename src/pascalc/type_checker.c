@@ -68,7 +68,8 @@ static int is_dynarray_type(DataType t) {
 // the '='/'<>' comparison case above, just as a named helper instead of
 // inlined a 5th time.
 static int nil_compatible(DataType target, DataType value) {
-    return (is_pointer_type(target) || is_proc_type(target) || target == TYPE_UNTYPED_POINTER) && value == TYPE_NIL;
+    return (is_pointer_type(target) || is_proc_type(target) || target == TYPE_UNTYPED_POINTER
+            || is_dynarray_type(target)) && value == TYPE_NIL;
 }
 
 // Wraps *child in an implicit int->real widening conversion (Pascal's
@@ -279,6 +280,22 @@ void type_check(ASTNode *node) {
                                || (left_t == TYPE_UNTYPED_POINTER && is_pointer_type(right_t))
                                || (left_t == TYPE_UNTYPED_POINTER && right_t == TYPE_NIL)
                                || (left_t == TYPE_NIL && right_t == TYPE_UNTYPED_POINTER)
+                               // A dynamic array vs 'nil' only - NOT
+                               // dynamic-array-vs-dynamic-array (that
+                               // stays exactly as unsupported as it
+                               // already is; this doesn't touch the
+                               // block's own ENTRY condition, unlike
+                               // TYPE_UNTYPED_POINTER above, since
+                               // 'right_t == TYPE_NIL'/'left_t ==
+                               // TYPE_NIL' already gets it in here).
+                               // Codegen (see NODE_BINARY_OP in
+                               // codegen.c) deliberately does NOT emit a
+                               // plain EQ/NEQ against nil's own literal
+                               // -1 for this case - see that code's own
+                               // comment for why (a dynamic array's
+                               // "not allocated" sentinel is 0, not -1).
+                               || (is_dynarray_type(left_t) && right_t == TYPE_NIL)
+                               || (left_t == TYPE_NIL && is_dynarray_type(right_t))
                                || class_type_is_subtype_of(left_t, right_t)
                                || class_type_is_subtype_of(right_t, left_t);
                 if (!compatible) {
@@ -1006,8 +1023,8 @@ void type_check(ASTNode *node) {
                 }
                 DataType expected = proc->param_types[i];
                 DataType actual = (*arg_ptr)->expression_type;
-                if (!(is_string_type(expected) && is_string_type(actual)) && expected != actual
-                    && !try_widen_for_assignment(arg_ptr, expected)) {
+                if (!(is_string_type(expected) && is_string_type(actual)) && !nil_compatible(expected, actual)
+                    && expected != actual && !try_widen_for_assignment(arg_ptr, expected)) {
                     fprintf(stderr, "%s:%d: Type Error: Argument %d to procedure '%s' has the wrong type\n",
                             get_current_filename(), node->line, i + 1, proc->name);
                     fatal_abort();

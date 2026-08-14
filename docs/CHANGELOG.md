@@ -3264,6 +3264,81 @@ anyway, so this is where they land instead.
       [docs/LANGUAGE.md](LANGUAGE.md#for-x-in--do). A full regression
       sweep (874 test files) found only the 8 new test files differing -
       everything else byte-for-byte identical before/after.
+- [x] The `nil` literal for dynamic arrays - `arr := nil;`, `arr =
+      nil`/`arr <> nil` (either operand order). Closes the exact gap
+      `docs/LANGUAGE.md`'s own "What's not supported yet" list already
+      named.
+
+      **The actual substance was one design question, not the
+      plumbing**: a dynamic array's "not allocated" sentinel has always
+      been `0` (chosen when dynamic arrays shipped so zero-init needs no
+      explicit default-value codegen), but `nil` itself has always meant
+      the literal `-1` everywhere else in this compiler (pointers,
+      procedural types) - a single generic literal built once at parse
+      time with no awareness of context. Left unresolved, `SetLength(
+      arr, 0)` (value `0`) would NOT have compared equal to `arr := nil`
+      (value `-1`), even though both mean "no elements, no backing
+      allocation" in every other sense - a real functional gap, not a
+      style nit: real Delphi treats a zero-length dynamic array and a
+      `nil` one as the same reference, so this compiler diverging would
+      have been a surprise, not a documented tradeoff worth keeping.
+
+      **Resolved by reading the actual VM opcodes, not by picking a
+      value and hoping**: `OP_LOAD_DYNARR_LEN`/`OP_LOAD_DYNARR_IDX`/
+      `OP_STORE_DYNARR_IDX`/`OP_SETLENGTH` (`vm.c`) already test `<= 0`/
+      `> 0` uniformly, never `== 0` specifically - meaning `-1` already
+      behaves exactly like `0` everywhere except a raw integer equality
+      comparison. So assignment (`arr := nil;`) needed literally nothing
+      beyond `nil_compatible()` gaining `is_dynarray_type(target)` (the
+      same shared choke point extended for `Pointer` two features ago) -
+      it just stores nil's ordinary, unchanged `-1`, already handled
+      correctly by every existing opcode. Comparison needed a small,
+      real addition: a new early special case in `codegen.c`'s
+      `NODE_BINARY_OP` (mirroring an existing precedent in the very same
+      function - the set subset/superset special case, added for the
+      identical "needs different codegen than the generic two-operand
+      preamble gives" reason), generating only the dynamic-array operand
+      and comparing it against a fresh literal `0` via the existing
+      `OP_LTE`/`OP_GT` opcodes, instead of a raw `OP_EQ`/`OP_NEQ` against
+      `nil`'s own `-1` - so `SetLength(arr, 0)`, a never-initialized
+      array, and an explicit `arr := nil;` all correctly compare equal.
+      Zero new opcodes.
+
+      **A related, pre-existing gap found while testing, fixed within
+      the same small change**: passing the literal `nil` as a plain
+      (non-`var`) VALUE argument to a procedure/function never worked
+      for pointers either, not just dynamic arrays - the by-value
+      argument-type check in `type_checker.c` never called
+      `nil_compatible()` at all, only `try_widen_for_assignment()`. Found
+      by writing the obvious argument-passing test for this feature and
+      watching it fail with the exact same error a `nil`-pointer-
+      argument test produces today. Fixed with the same one-line
+      addition, benefiting pointers/procedural types/`Pointer`/dynamic
+      arrays uniformly, not just this feature's own target type.
+
+      **Deliberately NOT touched**: general dynamic-array-to-array
+      comparison (`arr1 = arr2`) - not part of the roadmap bullet this
+      closes, still correctly rejected exactly as before (confirmed via
+      regression sweep, not just left alone and assumed), and now
+      explicitly documented as its own open gap rather than an
+      unstated one.
+
+      See `examples/test/dynarray/test_dynarray_nil_*.pas` (6 positive
+      cases - a never-initialized array, explicit assignment with a
+      working `SetLength`/element-write afterward, the specific
+      `SetLength(arr, 0)`-equals-`nil` case motivating the codegen
+      design, a populated array correctly NOT equal to `nil`, `nil`
+      passed as both a value and `var` argument, and both comparison
+      operand orders; 2 error/regression cases - `arr < nil` still
+      correctly rejected, and `arr1 = arr2` confirmed still rejected
+      exactly as before) and
+      [docs/LANGUAGE.md](LANGUAGE.md#nil). A full regression sweep
+      (882 test files) found only the 7 new test files differing, plus
+      one deliberately more-accurate error message (`arr < nil` now
+      correctly reports "only `=`/`<>` are defined" instead of a generic
+      type-mismatch, since the operands are now recognized as compatible
+      types that simply don't support ordering) - everything else
+      byte-for-byte identical before/after.
 
 ### Shipped from the OOP features survey
 
