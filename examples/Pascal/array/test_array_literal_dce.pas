@@ -1,5 +1,5 @@
 program TestArrayLiteralDce;
-{ Regression check (companion to examples/test/dynarray/test_dynarray_
+{ Regression check (companion to examples/Pascal/dynarray/test_dynarray_
   dce.pas, which found this exact class of bug for a DYNAMIC array
   literal): an unused fixed-size array's own literal assignment must
   still range-check its elements at runtime, not get silently dropped

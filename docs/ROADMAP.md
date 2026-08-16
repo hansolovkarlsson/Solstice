@@ -425,6 +425,33 @@ compatibility with any one dialect, but pulling in features across
 BASIC's history (from early BASIC through Visual Basic/VB.NET) for
 whatever's useful, with OOP support of its own.
 
+**Milestone 1 shipped**: a sixth binary, `basicc` (`src/basicc/`), compiling
+classic line-numbered BASIC to the same `.bin` format `solvm` already
+runs — zero opcode/`.bin`-format/`solas`/`desole` changes, confirming the
+VM/bytecode layer really is language-agnostic. `basicc` deliberately does
+NOT share `common.h`'s `TokenType`/`NodeType`/`ASTNode` with `pascalc` (its
+own `BasicTokenType`/`BasicNodeType`/`BasicASTNode` live in
+`src/basicc/basic.h`) — the two front ends are separate binaries that
+never link together, so nothing is gained by extending Pascal's own much
+larger enums, and it keeps `common.h` untouched. What v1 covers, see
+[docs/BASIC.md](BASIC.md); see [docs/CHANGELOG.md](CHANGELOG.md) for the
+design decisions and one real bug found (an `ast_printer.c` `-v`-only
+double-print, not a codegen bug — see there). Still open, roughly in
+priority order:
+
+- [ ] Arrays (`DIM`)
+- [ ] String functions (`LEFT$`/`RIGHT$`/`MID$`/`LEN`/`INSTR`/...)
+- [ ] User-defined `SUB`/`FUNCTION` (modern structured BASIC, layered on
+      top of v1's classic line-numbered core)
+- [ ] `^` exponentiation (no `OP_POW`/`OP_EXP` opcode exists yet — needs
+      either a new opcode or constant-exponent expansion)
+- [ ] Caching a `FOR` loop's `TO`/`STEP` bound at loop entry instead of
+      re-evaluating it every iteration (v1's documented simplification -
+      see docs/BASIC.md)
+- [ ] `DATA`/`READ`/`RESTORE`
+- [ ] File I/O
+- [ ] OOP support of BASIC's own, once the above lands
+
 Further out and more speculative, roughly in order of interest: **Logo**,
 **Prolog**, **LISP**, **Smalltalk**, and possibly a **C** front end
 (`.c`/`.h`). Prolog is the intended home for a rules engine in the

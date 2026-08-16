@@ -207,7 +207,7 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       [docs/LANGUAGE.md](LANGUAGE.md#goto-and-labels).
 - [x] `for x in s do` — iterates `x` over a [set](LANGUAGE.md#sets)'s
       members in ascending order. Not standard Wirth Pascal (a later-
-      dialect extension), added after `examples/test/test_set_print.pas`
+      dialect extension), added after `examples/Pascal/test_set_print.pas`
       turned out to use this syntax. Implemented entirely as a parse-
       time desugaring into AST nodes this compiler already had - zero
       new NodeType, zero new opcodes: `s` is cached once into a hidden
@@ -276,7 +276,7 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       parameter - a record-field or `with`-field array specifically
       isn't recognized as a target and falls through to a natural,
       not purpose-written, compile error. See
-      `examples/test/forin/test_forin_array_*.pas`/
+      `examples/Pascal/forin/test_forin_array_*.pas`/
       `test_forin_string_*.pas` (7 positive cases including the
       flagship evaluate-once-for-a-function-returning-a-string case and
       a runtime range-check confirmation, and 4 error cases) and
@@ -636,7 +636,7 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       check before the catch-all, since a typed file's runtime state
       genuinely IS VM-level (unlike enum/pointer), so `desole` CAN and
       must print it accurately for a `solas`/`desole` round-trip to
-      stay correct. See `examples/test/typedfile/test_typedfile_*.pas`
+      stay correct. See `examples/Pascal/typedfile/test_typedfile_*.pas`
       (7 positive cases including a dedicated DCE-hazard regression
       test, and 4 compile-time error cases) and
       [docs/LANGUAGE.md](LANGUAGE.md#typed-binary-files).
@@ -809,7 +809,7 @@ optimizer → `ast_printer` → codegen → `vm.c` → `solas`/`desole`).
       `subroutine_declaration()`, since that's the only point
       `current_locals[]` (a parser-only scratch table) still holds this
       procedure's own local metadata. Found a real, pre-existing latent
-      bug on its first run: `examples/test/local/test_local_for_recursion.pas`
+      bug on its first run: `examples/Pascal/local/test_local_for_recursion.pas`
       declared `factorialViaLoop` as a `function` that never set its own
       return value (only ever called as a statement, for its side
       effects) - fixed by redeclaring it `procedure` - see
@@ -904,7 +904,7 @@ primitives instead of each reinventing them.
       class-typed variable — confirmed working unmodified, exactly as
       predicted in step 1 (a class variable is an ordinary pointer
       variable under the hood). See
-      `examples/test/class/test_class_new_dispose.pas`.
+      `examples/Pascal/class/test_class_new_dispose.pas`.
 - [x] Classes and instances, step 3/5: `f.field` read/write, routed
       through the existing heap-dereference codegen - `f.field` on a
       class variable now compiles exactly like `f^.field` already does
@@ -927,7 +927,7 @@ primitives instead of each reinventing them.
       class itself - `resolve_heap_deref_step()` now uses `pt->name`
       for a class specifically, matching the fix already noted as a
       known gap when step 1 landed. See
-      `examples/test/class/test_class_field_access.pas`,
+      `examples/Pascal/class/test_class_field_access.pas`,
       `test_class_field_local_and_var.pas`.
 - [x] Classes and instances, step 4/5: method bodies — `procedure
       TFoo.Method; ... end;` / `function TFoo.Method; ... end;`
@@ -957,7 +957,7 @@ primitives instead of each reinventing them.
       fails with an ordinary "unknown procedure" error). Unqualified
       `self.` shorthand was later added - see the dedicated entry below.
       See
-      `examples/test/class/test_class_method_basic.pas`,
+      `examples/Pascal/class/test_class_method_basic.pas`,
       `test_class_method_samename.pas`, `test_class_method_varparam.pas`.
 - [x] Classes and instances, step 5/5: `f.Method(args)` call syntax —
       `f.Method(args)` now compiles to an ordinary call to the method's
@@ -984,7 +984,7 @@ primitives instead of each reinventing them.
       anything assignment-shaped. Along the way, fixed the last
       mangled-name leaks into user-facing errors (argument-count and
       `var`-argument mismatches now show the method's real short name).
-      See `examples/test/class/test_class_call_basic.pas`,
+      See `examples/Pascal/class/test_class_call_basic.pas`,
       `test_class_call_procedure_statement.pas`,
       `test_class_call_samename.pas`.
 - [x] Classes and instances: single inheritance — `class TCircle(TShape)
@@ -1019,7 +1019,7 @@ primitives instead of each reinventing them.
       `subroutine_declaration()`'s parameter-copy loop for any
       scalar/1D/2D parameter - harmless by chance until this work
       shifted stack layouts enough to trip it into a real crash. See
-      `examples/test/class/test_class_inherit_basic.pas`,
+      `examples/Pascal/class/test_class_inherit_basic.pas`,
       `test_class_inherit_method.pas`, `test_class_inherit_upcast.pas`,
       `test_class_inherit_multilevel.pas`, and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
@@ -1052,7 +1052,7 @@ primitives instead of each reinventing them.
       leaving a silent "sometimes untagged" gap - a real utility to
       deep-copy an AST subtree would be needed to support it properly,
       and didn't exist. See
-      `examples/test/class/test_class_tag_basic.pas`,
+      `examples/Pascal/class/test_class_tag_basic.pas`,
       `test_class_tag_inherit.pas`, `test_class_bad_tag_chain_new.pas`.
 - [x] Virtual/dynamic dispatch — every class method is now dynamically
       dispatched by default (Java-style: no `virtual`/`override`
@@ -1105,7 +1105,7 @@ primitives instead of each reinventing them.
       AddressSanitizer/UBSan sweep (clean - surfaced two unrelated,
       pre-existing latent bugs elsewhere in the codebase instead,
       logged separately, out of scope here). See
-      `examples/test/class/test_class_virtual_basic.pas` and
+      `examples/Pascal/class/test_class_virtual_basic.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes)'s "Virtual dispatch"
       subsection.
 - [x] Unqualified `self.` shorthand — a bare identifier inside a method
@@ -1140,7 +1140,7 @@ primitives instead of each reinventing them.
       compile, one changes its resolved value on purpose to prove the
       new precedence rule, one - a same-named local parameter - was
       already unaffected since ordinary local lookup already covered
-      it). See `examples/test/class/test_class_selfshorthand_*.pas` and
+      it). See `examples/Pascal/class/test_class_selfshorthand_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [x] Composite (nested-record) class fields — a class field can now be
       a plain `record ... end;` type (composition by value, e.g.
@@ -1181,7 +1181,7 @@ primitives instead of each reinventing them.
       reachable for the first time (see `test_class_composite_bad_toolarge.pas`).
       Verified with the same full `examples/` old-vs-new regression diff
       methodology used for the previous two features. See
-      `examples/test/class/test_class_composite_*.pas` and
+      `examples/Pascal/class/test_class_composite_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [x] Constructors — `new`'s own syntax grows an optional second
       argument, `new(c, Init(args))`, allocating and initializing in one
@@ -1219,7 +1219,7 @@ primitives instead of each reinventing them.
       `dispose(c, Cleanup)` destructor sugar. Verified with the same
       `examples/` old-vs-new regression diff methodology used for the
       previous three features. See
-      `examples/test/class/test_class_ctor_*.pas` and
+      `examples/Pascal/class/test_class_ctor_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [x] Array-typed class fields — the last classes v1 field-type gap.
       `data: array[0..3] of integer;` as a class field, read/written via
@@ -1270,7 +1270,7 @@ primitives instead of each reinventing them.
       arithmetic with a runtime-computed index; the sweep's only hits
       were the same two unrelated, already-logged pre-existing bugs
       below, confirmed present on the pre-feature build too). See
-      `examples/test/class/test_class_arrayfield_*.pas` and
+      `examples/Pascal/class/test_class_arrayfield_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#classes).
 - [x] `inherited` method calls — an overriding method can now reach its
       ancestor's own implementation, both `inherited MethodName(args)`
@@ -1305,7 +1305,7 @@ primitives instead of each reinventing them.
       `mark_used_variables()` correctly marks a global used only inside
       an `inherited` call's argument, verified directly with a test
       rather than assumed). `ast_printer.c` needed a case (no `default:`
-      there). See `examples/test/class/test_class_inherited_*.pas` and
+      there). See `examples/Pascal/class/test_class_inherited_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#inherited).
 - [x] Class-level `private`/`public` — `private`/`public` sections
       inside a `class ... end;` body, restricting a field or method to
@@ -1368,7 +1368,7 @@ primitives instead of each reinventing them.
       function-returning-a-class pattern doesn't complete correctly
       either. Neither is in scope for this feature - logged here as
       newly-confirmed, not newly-introduced. See
-      `examples/test/class/test_class_visibility_*.pas` and
+      `examples/Pascal/class/test_class_visibility_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#privatepublic).
 - [x] Properties — `property Name: Type read ReadTarget [write
       WriteTarget];`, a named class member that reads/writes like a
@@ -1433,7 +1433,7 @@ primitives instead of each reinventing them.
       "Not implemented yet"): no indexed properties, no `default` array
       property, no class-level properties, no property overriding in a
       subclass, no `protected` visibility. See
-      `examples/test/property/test_property_*.pas` (7 positive cases -
+      `examples/Pascal/property/test_property_*.pas` (7 positive cases -
       field-backed read/write, field-backed write, getter-only read-
       only, self-shorthand, inheritance, a public property fronting
       private members, setter int-&gt;real widening - and 14 error cases
@@ -1496,7 +1496,7 @@ primitives instead of each reinventing them.
       class, not the actual runtime source class (no tag-to-name-string
       machinery exists); class types only, no non-class pointer types;
       one-shot precedence tier, no chaining. See
-      `examples/test/isas/test_isas_*.pas` (6 positive cases including
+      `examples/Pascal/isas/test_isas_*.pas` (6 positive cases including
       the ancestor-typed-variable scenario that makes the feature
       meaningful, and 5 error cases - 4 compile-time, 1 uncaught runtime
       exception) and [docs/LANGUAGE.md](LANGUAGE.md#isas).
@@ -1572,7 +1572,7 @@ primitives instead of each reinventing them.
       shortly after this one shipped); same-directory-only unit
       resolution, no search path. No new opcodes were added, so (per
       CLAUDE.md's own checklist) no solas/desole changes were needed
-      either. See `examples/test/units/test_units_*.pas` and
+      either. See `examples/Pascal/units/test_units_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#units).
 - [x] Unit-level visibility for procedures/functions and global
       variables — something a unit declares only in its
@@ -1633,7 +1633,7 @@ primitives instead of each reinventing them.
       duplicate declaration - real per-unit name mangling would be a
       materially different, larger feature). No new opcodes - purely a
       parse-time concept, so no VM/solas/desole changes either. See
-      `examples/test/units/test_units_visibility_*.pas` and
+      `examples/Pascal/units/test_units_visibility_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#units).
 
 ### Language extensions beyond standard Pascal
@@ -1691,7 +1691,7 @@ anyway, so this is where they land instead.
       be renamed (`arg_count_mismatch.pas`, `program
       ArgCountMismatch;`) since its old name is now a reserved word -
       confirmed via a full `examples/` grep that nothing else collides.
-      See `examples/test/args/test_args_*.pas` and
+      See `examples/Pascal/args/test_args_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#built-in-functions-and-procedures).
 - [x] `try`/`except`/`raise` — `raise <message>;` (any string/char
       expression) unwinds straight to the innermost active `try`'s
@@ -1760,7 +1760,7 @@ anyway, so this is where they land instead.
       already recurse generically into any node type they don't
       specifically special-case. solas/desole round-trip verified (new
       opcodes were added). See
-      `examples/test/except/test_except_*.pas` and
+      `examples/Pascal/except/test_except_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#try--except--raise).
 - [x] `try`/`finally` — `try <body> finally <cleanup> end;`, guaranteed
       cleanup that runs whether or not `body` raised, then lets any
@@ -1819,7 +1819,7 @@ anyway, so this is where they land instead.
       their generic recursion into `left`/`right`/`next`/`extra`, and
       `optimizer.c`'s single pass completes before codegen's double-visit
       ever happens, so it only ever sees the finally-body once). See
-      `examples/test/finally/test_finally_*.pas` (5 positive cases
+      `examples/Pascal/finally/test_finally_*.pas` (5 positive cases
       including a deep-call-frame unwind and cleanup-itself-raises, and 2
       error cases) and [docs/LANGUAGE.md](LANGUAGE.md#try--finally).
 - [x] Procedural types / function pointers — `type TProc = procedure(x:
@@ -1903,7 +1903,7 @@ anyway, so this is where they land instead.
       skips validating a procedural parameter slot (trusting the parser
       to have already checked it, via a shared `TYPE_INTEGER` placeholder
       convention every branch in both functions uses for exactly this
-      reason). See `examples/test/proctype/test_proctype_return_*.pas`
+      reason). See `examples/Pascal/proctype/test_proctype_return_*.pas`
       and [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
 - [x] Record/class field of procedural type — a `record`/`class` field
       can itself be a named procedural type. Turned out much bigger than
@@ -1956,7 +1956,7 @@ anyway, so this is where they land instead.
       return-values feature just above); passing it to a class METHOD's
       own procedural parameter needed fix 5 above, combined with that
       same existing fallback inside `parse_proc_value()`. See
-      `examples/test/proctype/test_proctype_field_*.pas` and
+      `examples/Pascal/proctype/test_proctype_field_*.pas` and
       [docs/LANGUAGE.md](LANGUAGE.md#procedural-types).
 - [x] Static (persistent-across-calls) local variables — `static name:
       type;` reuses the exact "hidden mangled global" trick local arrays
@@ -2031,7 +2031,7 @@ anyway, so this is where they land instead.
       logic to understand a second backing-table shape); no class method
       virtual dispatch/overriding; `inherited` and bare instance-member
       access are both rejected inside a class method body (no `self`
-      exists there). See `examples/test/classmember/test_classmember_*.pas`
+      exists there). See `examples/Pascal/classmember/test_classmember_*.pas`
       (7 positive cases including inheritance-shared-storage - the one
       most likely to silently regress if a class var were accidentally
       copied instead of shared - and 14 error cases covering every
@@ -2107,7 +2107,7 @@ anyway, so this is where they land instead.
       a TRUE class method can never be abstract (rejected at
       declaration - class methods are never overridable, so it could
       never get an implementation). See
-      `examples/test/abstract/test_abstract_*.pas` (4 positive cases
+      `examples/Pascal/abstract/test_abstract_*.pas` (4 positive cases
       including the flagship base-typed-reference dispatch scenario and
       a 3-level-deep multi-abstract hierarchy, and 6 error cases
       covering every rejection path) and
@@ -2183,7 +2183,7 @@ anyway, so this is where they land instead.
       Documented with an explicit warning, matching this codebase's
       existing "the pointer's value is undefined after dispose"
       precedent for a similar footgun. See
-      `examples/test/destructor/test_destructor_*.pas` (6 positive cases
+      `examples/Pascal/destructor/test_destructor_*.pas` (6 positive cases
       including virtual dispatch + `inherited` chaining together through
       a base-typed variable, and 10 error cases covering every rejection
       path) and [docs/LANGUAGE.md](LANGUAGE.md#destructors).
@@ -2223,7 +2223,7 @@ anyway, so this is where they land instead.
       relative to a `warning()` call when both streams are captured
       together (a terminal, `2>&1`, or this project's own testing
       convention of combining both for hand-verification). See
-      `examples/test/warning/test_warning_*.pas` (4 positive cases
+      `examples/Pascal/warning/test_warning_*.pas` (4 positive cases
       including one specifically built around the interleaved-ordering
       guarantee, 1 error case) and
       [docs/LANGUAGE.md](LANGUAGE.md#warning).
@@ -2279,7 +2279,7 @@ anyway, so this is where they land instead.
       language change. Verified two ways: a dedicated test with such a
       field confirms it still round-trips at the original 4-byte width,
       and a byte-for-byte comparison of every existing
-      `examples/test/typedfile/` program's *written output files*
+      `examples/Pascal/typedfile/` program's *written output files*
       (old binary vs. new, not just stdout) came back identical.
 
       **A pre-existing, unrelated bug noticed along the way - logged,
@@ -2292,7 +2292,7 @@ anyway, so this is where they land instead.
       feature's own opcodes need no such check), not folded into this
       change's diff.
 
-      See `examples/test/sizedint/test_sizedint_*.pas` (4 positive cases
+      See `examples/Pascal/sizedint/test_sizedint_*.pas` (4 positive cases
       including a mixed-width typed-file record exercising `seek`'s new
       byte-stride math and the byte/shortint/word bare-scalar-element
       case, plus the compatibility test above; 3 error cases, one per
@@ -2347,7 +2347,7 @@ anyway, so this is where they land instead.
       falling back to variable resolution, then reuse
       `parse_scalar_type()` wholesale (including its
       `scalar_type_disk_width` side channel) once it commits to the
-      type-name path. See `examples/test/sizeof/test_sizeof_*.pas` (5
+      type-name path. See `examples/Pascal/sizeof/test_sizeof_*.pas` (5
       positive cases including a typed-file variable's answer before
       the file is ever opened, and a named subrange type confirming the
       same compatibility guarantee sized integers already have; 5 error
@@ -2383,7 +2383,7 @@ anyway, so this is where they land instead.
       session, rather than reintroducing the control-flow entanglement
       that ruled out `exit`/`halt` as the alternative pick.
 
-      See `examples/test/strnum/test_strnum_*.pas` (4 positive cases
+      See `examples/Pascal/strnum/test_strnum_*.pas` (4 positive cases
       including round-trips through both conversions and `FloatToStr`'s
       int-argument widening; 3 error cases covering trailing garbage,
       an empty/whitespace-only string, and an unparseable real) and
@@ -2415,7 +2415,7 @@ anyway, so this is where they land instead.
       minimal shape exactly; `Random(n)` reuses the `NODE_BUILTIN_CALL`
       dispatch pattern the `IntToStr`/`StrToInt`/`FloatToStr`/
       `StrToFloat` entry just above already established. See
-      `examples/test/random/test_random_*.pas` (a value-range check
+      `examples/Pascal/random/test_random_*.pas` (a value-range check
       over 1000 iterations via `assert`, a `Randomize`-present smoke
       test, an explicit determinism test verified by running the
       compiled binary twice, and the `Random(0)` error case) and
@@ -2471,7 +2471,7 @@ anyway, so this is where they land instead.
       corrected while documenting `Delete`/`Insert`, which lean on the
       exact same machinery.
 
-      See `examples/test/deleteinsert/test_deleteinsert_*.pas` (5
+      See `examples/Pascal/deleteinsert/test_deleteinsert_*.pas` (5
       positive cases including the full lenient-clamping edge-case
       matrix for both functions and a `var`-parameter target
       specifically exercising the third write-back path; 3 error cases:
@@ -2578,7 +2578,7 @@ anyway, so this is where they land instead.
       pre-existing `HALT` mnemonic and English prose in comments,
       confirming it was safe to make both reserved keywords.
 
-      See `examples/test/exit/test_exit_*.pas` (9 positive cases -
+      See `examples/Pascal/exit/test_exit_*.pas` (9 positive cases -
       bare `exit`, `exit(value)`, unwinding out of nested `if`/`for`,
       top-level `exit`, a recursive base case, single- and
       doubly-nested `try`/`finally`, `exit` out of a `try`/`except`'s
@@ -2586,7 +2586,7 @@ anyway, so this is where they land instead.
       raising call to the same procedure right after to confirm no
       `vm_except_stack` corruption, and a class method; 2 error cases:
       `exit(value)` in a plain `procedure`, `exit(value)` at top level)
-      and `examples/test/halt/test_halt_*.pas` (bare `halt` out of a
+      and `examples/Pascal/halt/test_halt_*.pas` (bare `halt` out of a
       loop, `halt(n)` with a literal and with a runtime expression -
       both checked against the actual process exit code, and a
       `halt`-does-NOT-run-`finally` negative test), plus a `solas`/
@@ -2635,7 +2635,7 @@ anyway, so this is where they land instead.
       `lo == hi` case. Error message broadened from "Duplicate case
       label" to "Duplicate or overlapping case label" accordingly.
 
-      See `examples/test/case/test_case_range_*.pas` (4 positive cases -
+      See `examples/Pascal/case/test_case_range_*.pas` (4 positive cases -
       mixed integer ranges and plain values, boundary-inclusive checks,
       a char range, an enum range; 6 error cases - overlapping ranges, a
       plain value inside a range in both declaration orders, a backwards
@@ -2729,7 +2729,7 @@ anyway, so this is where they land instead.
       Direct assignment to the constant itself is fully blocked; this
       indirect path is a stated v1 gap, not a silent one.
 
-      See `examples/test/const/test_const_typed_array_*.pas` (5 positive
+      See `examples/Pascal/const/test_const_typed_array_*.pas` (5 positive
       cases - integer/char/boolean/real elements, a `byte`-subrange
       element type, an initializer expression referencing an earlier
       plain `const`, and a typed constant read from inside a procedure
@@ -2836,7 +2836,7 @@ anyway, so this is where they land instead.
       `sweep_dead_assignments()` simply doesn't pattern-match the new
       node types, passing them through its generic fallback unchanged.
 
-      See `examples/test/dynarray/test_dynarray_*.pas` (10 positive cases
+      See `examples/Pascal/dynarray/test_dynarray_*.pas` (10 positive cases
       - basic fill/read, growing/shrinking preserving data, `SetLength(
       arr, 0)`/never-initialized `Length`, every in-scope element type,
       value-parameter/`var`-parameter/`const`-parameter semantics,
@@ -2917,7 +2917,7 @@ anyway, so this is where they land instead.
       signature grammar - caught during testing, not anticipated in the
       design (the first cut required parens unconditionally).
 
-      See `examples/test/lambda/test_lambda_*.pas` (9 positive cases -
+      See `examples/Pascal/lambda/test_lambda_*.pas` (9 positive cases -
       a named-procedural-type assignment, a procedure-typed lambda, direct
       argument-passing, a `var` parameter, a record field, capturing a
       `static` local, capturing an array, a lambda literal nested inside
@@ -2984,7 +2984,7 @@ anyway, so this is where they land instead.
       parse a record's own (differently-shaped, field-named) initializer
       syntax at all; tracked as its own roadmap item.
 
-      See `examples/test/declorder/test_declorder_*.pas` (5 positive
+      See `examples/Pascal/declorder/test_declorder_*.pas` (5 positive
       cases - type-then-const, a const/type/const chain where a later
       const references an earlier type's enum value, var-then-type-then-
       var, a self-referential pointer pair split across two `type`
@@ -3033,7 +3033,7 @@ anyway, so this is where they land instead.
       declare-before-use, now that section interleaving makes "already
       declared" position-dependent rather than keyword-dependent).
 
-      See `examples/test/const/test_const_typed_record_*.pas` (4
+      See `examples/Pascal/const/test_const_typed_record_*.pas` (4
       positive cases - basic field access, a `byte`/subrange field, the
       exact type-before-const scenario the interleaving work's own
       roadmap bullet was framed around, and using a field as an ordinary
@@ -3110,7 +3110,7 @@ anyway, so this is where they land instead.
       classic optional `Result` short-read parameter are also out of
       scope, matching the plan.
 
-      See `examples/test/untypedfile/test_untypedfile_*.pas` (6 positive
+      See `examples/Pascal/untypedfile/test_untypedfile_*.pas` (6 positive
       cases - a basic round trip, a partial transfer smaller than the
       array's own size, one array per typed-file-safe element type, a
       local array target, `eof`, and multiple calls against the same
@@ -3201,7 +3201,7 @@ anyway, so this is where they land instead.
       runtime type tag to check against) - a pure, always-succeeding,
       compile-time relabeling, closer to a C-style `(PFoo)ptr` cast.
 
-      See `examples/test/addr/test_*.pas` (5 positive cases - a scalar
+      See `examples/Pascal/addr/test_*.pas` (5 positive cases - a scalar
       dereference target (`@(p^)`, the zero-offset case), a record field
       target confirming write-through-the-cast mutates the original
       storage (not a copy), widening several different specific pointer
@@ -3254,7 +3254,7 @@ anyway, so this is where they land instead.
       grows the array mid-loop and confirms the iteration count still
       matches the length at loop start, not after.
 
-      See `examples/test/forin/test_forin_dynarray_*.pas` (7 positive
+      See `examples/Pascal/forin/test_forin_dynarray_*.pas` (7 positive
       cases - summing a global array, a local array, a `var`-parameter
       array, an empty/never-`SetLength`'d array, a `byte`-element array
       confirming range-checking still applies, the loop variable itself
@@ -3323,7 +3323,7 @@ anyway, so this is where they land instead.
       explicitly documented as its own open gap rather than an
       unstated one.
 
-      See `examples/test/dynarray/test_dynarray_nil_*.pas` (6 positive
+      See `examples/Pascal/dynarray/test_dynarray_nil_*.pas` (6 positive
       cases - a never-initialized array, explicit assignment with a
       working `SetLength`/element-write afterward, the specific
       `SetLength(arr, 0)`-equals-`nil` case motivating the codegen
@@ -3381,7 +3381,7 @@ anyway, so this is where they land instead.
       invariant, shipped just above, needed no special-casing here - it
       fell out for free from reusing the same sentinel value).
 
-      See `examples/test/dynarray/test_dynarray_copy_*.pas` (5 positive/
+      See `examples/Pascal/dynarray/test_dynarray_copy_*.pas` (5 positive/
       behavioral cases - full copy with an aliasing check proving the
       result is a genuinely separate allocation, a `start`-only slice, a
       `start`+`count` slice, clamping of an oversized count/out-of-range
@@ -3453,7 +3453,7 @@ anyway, so this is where they land instead.
       already uses, reused here instead of inventing a second pattern for
       the identical problem.
 
-      See `examples/test/dynarray/test_dynarray_literal_*.pas` (9
+      See `examples/Pascal/dynarray/test_dynarray_literal_*.pas` (9
       positive/behavioral cases - a plain integer literal, an empty
       literal compared against `nil`, `real`/`string`/`char` element
       types - the exact cases that ruled out reusing the set-constructor
@@ -3517,13 +3517,13 @@ anyway, so this is where they land instead.
       the alias, so aliasing isn't quietly making something newly
       reachable-but-broken.
 
-      See `examples/test/alias/test_alias_dynarray_*.pas` (4 positive
+      See `examples/Pascal/alias/test_alias_dynarray_*.pas` (4 positive
       cases - basic `SetLength`/indexing/array-literal-assignment through
       an alias, cross-compatibility with a directly-declared array of the
       same shape, `var`/value parameters, and alias-of-alias chaining; 1
       new error case - the fixed-size-array rejection) and
       [docs/LANGUAGE.md](LANGUAGE.md#type-aliases). Confirmed no
-      regression in the pre-existing `examples/test/alias/` suite.
+      regression in the pre-existing `examples/Pascal/alias/` suite.
 - [x] Dynamic-array-typed function return types - `function MakeArr:
       array of integer;`. Closes half of the roadmap's "a dynamic-array-
       typed record/class field, or function return type" gap (a record/
@@ -3587,7 +3587,7 @@ anyway, so this is where they land instead.
       idx`/`proc_table[]` are already shared uniformly between plain
       functions and methods.
 
-      See `examples/test/dynarray/test_dynarray_return_*.pas` (6
+      See `examples/Pascal/dynarray/test_dynarray_return_*.pas` (6
       positive cases - basic `SetLength`+indexed read/write, array-
       literal assignment to the own name, `Length`/`High`/`Copy` reading
       mid-body, `exit([...])` with a literal, the recursive self-call-
@@ -3597,7 +3597,7 @@ anyway, so this is where they land instead.
       [docs/LANGUAGE.md](LANGUAGE.md#functions). Round-tripped through
       `solas`/`desole` (zero new opcodes - this is pure parser-level
       dispatch, the return slot is just an ordinary local). Confirmed no
-      regression via a full sweep of `examples/test/`, including a
+      regression via a full sweep of `examples/Pascal/`, including a
       before/after comparison (via `git stash`) of every file the sweep
       initially flagged, to separate genuine regressions from pre-
       existing, unrelated expected-error tests.
@@ -3639,7 +3639,7 @@ anyway, so this is where they land instead.
       is gated on the callee's declared parameter type, so nothing about
       set-typed call arguments changed.
 
-      See `examples/test/dynarray/test_dynarray_literal_arg_*.pas` (5
+      See `examples/Pascal/dynarray/test_dynarray_literal_arg_*.pas` (5
       positive cases - a plain `array of integer` argument, `array of
       real` with widening, an empty literal argument, a literal
       alongside ordinary arguments in other positions, and a `set of
@@ -3731,7 +3731,7 @@ anyway, so this is where they land instead.
       **Closed in a follow-up shipped later the same session** - see
       "`for x in ...` over a record/class dynamic-array field" below.
 
-      See `examples/test/dynarray/test_dynarray_field_*.pas` (8 positive
+      See `examples/Pascal/dynarray/test_dynarray_field_*.pas` (8 positive
       cases - global and local record fields, a class field, nesting,
       cross-compatibility with a plain `array of integer`, whole-record
       copy semantics, value-parameter semantics, and `Copy()`; 1 error
@@ -3740,7 +3740,7 @@ anyway, so this is where they land instead.
       Round-tripped through `solas`/`desole` (zero new opcodes - every
       fix reuses existing node types: `NODE_HEAP_FIELD_ACCESS/ASSIGN`,
       `NODE_DYNARRAY_ACCESS/ASSIGN`, `NODE_LOCAL_VAR`, `NODE_NUMBER`).
-      Confirmed no regression via a full `examples/test/` sweep,
+      Confirmed no regression via a full `examples/Pascal/` sweep,
       including a crash-specific pass (exit code > 1) that surfaced two
       false positives (`halt(N)`'s own deliberate process-exit-code
       tests) and zero real ones.
@@ -3800,13 +3800,13 @@ anyway, so this is where they land instead.
       under `Length()`/`NODE_DYNARRAY_ACCESS` needed no codegen changes
       either, since `generate_code()` already recurses into whatever
       expression node sits at `node->left` generically. See
-      `examples/test/dynarray/test_dynarray_field_forin_*.pas` (4
+      `examples/Pascal/dynarray/test_dynarray_field_forin_*.pas` (4
       positive cases - global and local record fields, a global and a
       local class field) and
       [docs/LANGUAGE.md](LANGUAGE.md#record-and-class-fields). Confirmed
       the rollback path doesn't regress the pre-existing set-field
       `for...in` case (both a plain record's and a class's set-typed
-      field) and confirmed no regression via a full `examples/test/`
+      field) and confirmed no regression via a full `examples/Pascal/`
       sweep (839 other files, identical exit codes before/after).
 - [x] A dynamic-array field's own value inside a **typed constant** -
       `Bob: TScores = (name: 'Bob'; values: [10, 20, 30]);`. Closes the
@@ -3849,7 +3849,7 @@ anyway, so this is where they land instead.
       Immutability is enforced at both points that could otherwise
       mutate the field: reassignment (`Bob.values := [...]`, the
       existing plain-constant check) and `SetLength` (the fix above).
-      Zero new opcodes/`NodeType`s. See `examples/test/dynarray/
+      Zero new opcodes/`NodeType`s. See `examples/Pascal/dynarray/
       test_dynarray_field_typedconst_*.pas` (2 positive cases - a normal
       and an empty array literal; 2 error cases - `SetLength` and
       reassignment) plus the pre-existing `test_dynarray_field_
@@ -3857,7 +3857,7 @@ anyway, so this is where they land instead.
       array-literal value like `nil` is still rejected, rather than that
       dynamic arrays are rejected outright) and
       [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-record-initializers).
-      Confirmed no regression via a full `examples/test/` sweep.
+      Confirmed no regression via a full `examples/Pascal/` sweep.
 - [x] A **bare** dynamic-array typed constant - `const X: array of
       integer = [1, 2, 3];`, no record involved. Closes the "Dynamic
       array follow-ups" roadmap entry's last remaining piece of the
@@ -3910,7 +3910,7 @@ anyway, so this is where they land instead.
 
       Immutability enforced at both mutation points, exactly like the
       record-field case (reassignment and `SetLength`, both compile-time
-      errors). Zero new opcodes/`NodeType`s. See `examples/test/dynarray/
+      errors). Zero new opcodes/`NodeType`s. See `examples/Pascal/dynarray/
       test_dynarray_typedconst_*.pas` (2 positive cases - a normal and an
       empty array literal; 3 error cases - `SetLength`, reassignment, and
       a non-array-literal value) and `test_dynarray_dce.pas` (the
@@ -3918,7 +3918,7 @@ anyway, so this is where they land instead.
       `test_ptr_dce.pas`'s own `has_heap_alloc_side_effect()` precedent)
       and
       [docs/LANGUAGE.md](LANGUAGE.md#typed-constants-array-initializers).
-      Confirmed no regression via a full `examples/test/` sweep.
+      Confirmed no regression via a full `examples/Pascal/` sweep.
 - [x] Array-literal syntax for a **FIXED-size** array - `arr := [1, 2,
       3];` for `array[lower..upper] of ElementType`, the one exception to
       this compiler's long-standing "an array reference always needs an
@@ -3975,7 +3975,7 @@ anyway, so this is where they land instead.
       dynamic-array case (`wasted: array[1..1] of byte; wasted := [300];`,
       unused) - still correctly aborts at runtime.
 
-      Zero new opcodes/`NodeType`s. See `examples/test/array/
+      Zero new opcodes/`NodeType`s. See `examples/Pascal/array/
       test_array_literal_*.pas` (4 positive cases - global, local, a
       global record field, and mixed literal-then-indexed-write; 2
       compile-error cases - too few/too many elements; 2 runtime-error
@@ -3983,7 +3983,7 @@ anyway, so this is where they land instead.
       unused array with the same overflow, confirming no gap analogous
       to the bare-typed-constant entry's own DCE finding above) and
       [docs/LANGUAGE.md](LANGUAGE.md#whole-array-assignment). Confirmed
-      no regression via a full `examples/test/` sweep (854 other files,
+      no regression via a full `examples/Pascal/` sweep (854 other files,
       identical exit codes before/after).
 
 ### Shipped from the OOP features survey
@@ -4026,7 +4026,7 @@ open) stays there.
       sealed and (via an abstract method) abstract at once - legal but
       self-defeating (neither subclassable nor instantiable) - not
       specially rejected, matching Delphi's own behavior for the same
-      combination. See `examples/test/sealed/test_sealed_*.pas` (3
+      combination. See `examples/Pascal/sealed/test_sealed_*.pas` (3
       positive cases including sealed-with-parent and the sealed+
       abstract combination, 1 error case) and
       [docs/LANGUAGE.md](LANGUAGE.md#sealed-classes).
@@ -4098,7 +4098,7 @@ open) stays there.
       otherwise. Inherits every existing `var`-parameter restriction
       for free (addressable-variable arguments only, no whole records/
       array elements, no `readln` target, no `for`-loop counter). See
-      `examples/test/constout/test_constout_*.pas` (5 positive cases
+      `examples/Pascal/constout/test_constout_*.pas` (5 positive cases
       including the shallow-const mutation and the forward-declaration
       regression test, 6 error cases, 1 warning case) and
       [docs/LANGUAGE.md](LANGUAGE.md#const-parameters).
@@ -4164,7 +4164,7 @@ open) stays there.
       default lives on the forward declaration when one exists, needing
       zero extra code, since a completing body can never re-list
       parameters at all under this compiler's existing forward-
-      declaration convention. See `examples/test/defaults/test_defaults_
+      declaration convention. See `examples/Pascal/defaults/test_defaults_
       *.pas` (8 positive cases including the forward-declaration and
       override-static-resolution scenarios, 12 error cases) and
       [docs/LANGUAGE.md](LANGUAGE.md#default-parameter-values).
@@ -4185,7 +4185,7 @@ open) stays there.
       list is validated independently (must be a non-local record
       variable, no nested-record-typed field), so a bad second-or-later
       target reports the same error, anchored at its own line, as a bad
-      first target always did. See `examples/test/with/test_with_multi*.pas`
+      first target always did. See `examples/Pascal/with/test_with_multi*.pas`
       (2 positive cases: direct nested-vs-comma-list equivalence, and a
       three-target list proving the loop isn't hardcoded to two; 1 error
       case checking the second target specifically) and
@@ -4231,7 +4231,7 @@ open) stays there.
       run if the program terminates via an unhandled runtime error
       (`fatal_abort()`/`longjmp`, which never reaches trailing bytecode)
       - the same scope `try`/`finally` already has outside its own
-      handled exception. See `examples/test/units/test_units_initfinal_
+      handled exception. See `examples/Pascal/units/test_units_initfinal_
       *.pas` (basic single-unit init+final, a diamond-dependency ordering
       test proving the exact `Base, DiamondA, DiamondB` / `DiamondB,
       DiamondA, Base` sequence, and independently-optional sections) and
@@ -4288,7 +4288,7 @@ open) stays there.
       another `{$IFDEF}` inside `{$ELSE}` instead), `{$INCLUDE}` file
       inclusion, and a `-D` command-line flag to pre-define a symbol
       (`{$DEFINE}` from source is the only way in v1). See
-      `examples/test/directives/test_directives_*.pas` (8 positive
+      `examples/Pascal/directives/test_directives_*.pas` (8 positive
       cases including nested conditionals, cross-`uses`-boundary define
       persistence, and proof that a dead branch's invalid syntax causes
       no error; 5 error cases: unterminated, stray `$ELSE`/`$ENDIF`,
@@ -4342,19 +4342,132 @@ open) stays there.
 
       **`private` stays exactly as strict as before** - confirmed by
       re-running the pre-existing
-      `examples/test/class/test_class_visibility_bad_subclass.pas`
+      `examples/Pascal/class/test_class_visibility_bad_subclass.pas`
       regression test and diffing its error output byte-for-byte
       unchanged; `private` and `protected` are independently enforced
       even within the same class (see
       `test_protected_bad_private_still_strict.pas` below - a subclass
       may touch a protected sibling field but is still denied on a
-      private one). See `examples/test/protected/test_protected_*.pas`
+      private one). See `examples/Pascal/protected/test_protected_*.pas`
       (7 positive cases covering fields, properties, class vars, class
       methods, an `inherited`-called protected `Init`, and access two
       inheritance levels down through an intermediate class with no
       protected members of its own; 3 error cases: top-level code, an
       unrelated class, and private-vs-protected independence) and
       [docs/LANGUAGE.md](LANGUAGE.md#privateprotectedpublic).
+
+## Phase 3 — Additional front ends
+
+- [x] **`basicc`: classic line-numbered BASIC, milestone 1** — a sixth
+      binary (`src/basicc/`), compiling to the same `.bin` format
+      `pascalc` already produces. Design choices settled up front: v1
+      targets classic line-numbered BASIC (`GOTO`/`GOSUB` by line number,
+      no mandatory `SUB`/`FUNCTION`) rather than modern structured BASIC,
+      and classic sigil typing (`A$`/`A%`/bare `A`) rather than `DIM AS
+      Type` declarations — both the smaller, more authentic starting
+      point, with structured constructs and explicit declarations as
+      later increments. See [docs/BASIC.md](BASIC.md) for the full
+      dialect reference.
+
+      **Zero opcode/`.bin`-format/`solas`/`desole` changes** - confirmed
+      by design before writing any code: every opcode v1 needs (plain
+      arithmetic/comparison, `OP_JMP`/`OP_JZ`, `OP_CALL`/`OP_ENTER`/
+      `OP_RET` for `GOSUB`/`RETURN`, `OP_SCONCAT` for string `+`) already
+      existed and is Pascal-agnostic. `solvm` runs a `basicc`-compiled
+      `.bin` completely unmodified - the whole architectural bet behind
+      `common.h`'s bytecode-layer design (see docs/ARCHITECTURE.md's "Why
+      six binaries").
+
+      **Its own token/AST vocabulary, not an extension of `common.h`'s**:
+      `BasicTokenType`/`BasicNodeType`/`BasicASTNode` live in
+      `src/basicc/basic.h`, entirely separate from Pascal's `TokenType`/
+      `NodeType`/`ASTNode` - since `pascalc` and `basicc` are separate
+      binaries that never link together (enforced by the root Makefile's
+      per-binary `OBJS` split), nothing is gained by sharing Pascal's much
+      larger enums, and `common.h` needed zero edits. What IS reused
+      as-is: `DataType`, `Symbol`/`sym_table[]`, `Opcode`/`Instruction`/
+      `code[]`, `string_pool[]` - exactly the surface `save_bytecode()`
+      needs. `BasicASTNode` mirrors `ASTNode`'s own fixed `type`/`op`/
+      `data`-union/`left,right,next,extra` shape (see CLAUDE.md's "field
+      reuse by convention") - every one of v1's 16 node kinds fit without
+      a fifth pointer.
+
+      **`GOTO`/`GOSUB`/`THEN <linenum>` targets are BASIC line numbers,
+      resolved through a sorted `basic_line_numbers[]` table** (parser.c)
+      the parser builds while enforcing v1's one real structural rule:
+      source line numbers must be strictly ascending, with no reordering
+      pass. A statement's `BasicASTNode.line` field does double duty as
+      both "which BASIC line this came from" and the usual "line for an
+      error message" - the same concept in this language, unlike Pascal
+      where they differ - which let codegen derive "a new source line
+      started here" purely from `node->line` changing during its single
+      linear walk, with no extra AST plumbing needed. Every jump is
+      unconditionally backpatched in one final pass at the end of
+      `basic_generate_program()` (mirroring `pascalc`'s own
+      `pending_calls[]`/`pending_proc_refs[]` resolution), including a
+      back-to-front sweep that lets a `GOTO` to a comment-only or blank
+      line fall through correctly to whatever code follows it, cascading
+      through any number of such lines in a row - the same fallthrough
+      real BASIC gives a no-op line.
+
+      **`FOR`/`NEXT` need no parent/child relationship in the AST at
+      all**: they're matched the same way parentheses are, via a small
+      runtime (codegen-time) stack in codegen.c - the statement chain
+      between a `FOR` and its matching `NEXT` (arbitrarily long, however
+      many other lines apart) already IS the loop body, since it's just
+      the ordinary flat `next` chain every statement walks. `STEP`
+      (optionally negative, default `1`) is required to be a compile-time
+      literal so its SIGN can pick `LTE`/`GTE` at compile time; the end
+      bound (and `STEP`, if given) are deliberately re-evaluated every
+      iteration rather than cached at loop entry - a documented v1
+      simplification (see docs/BASIC.md), since caching would need a
+      hidden per-nesting-level temp variable that doesn't fit
+      `BasicASTNode`'s existing field budget without real plumbing, and
+      nothing in v1's scope (no function calls yet) makes the difference
+      observable except a loop whose body mutates a variable its own
+      bound expression reads.
+
+      **One real bug found, `-v`-only, not a codegen bug**: `ast_printer.c`'s
+      `BNODE_PRINT` case originally looped over each `PRINT` item calling
+      `basic_print_ast()` on every one - but `basic_print_ast()` already
+      walks a WHOLE `->next` chain itself (needed so it can print an
+      `IF`'s multi-statement `THEN`/`ELSE` chains and the top-level
+      program with a single call), so the manual loop caused every item
+      after the first to print twice. Caught via direct `-v` inspection
+      while hand-verifying a test program's actual runtime output (which
+      was unaffected - codegen's own `PRINT` case loops correctly, since
+      `basic_generate_code()` never auto-continues into `->next` for
+      expression node types). Fixed by replacing the loop with a single
+      `basic_print_ast(node->left, indent + 1)` call, matching how `IF`'s
+      `right`/`extra` branches were already handled correctly.
+
+      **Sigils are part of a variable's name, confirmed by testing, not
+      just documented**: a hand-written test using `B%` at its `LET`
+      declaration but bare `B` in a later expression compiled and ran
+      "successfully" - `B` (real, zero-initialized) and `B%` (integer, 3)
+      really are two independent variables, exactly as designed, and the
+      wrong output that produced was the test program's own bug, not
+      `basicc`'s - confirmed by fixing the test to use `B%` consistently
+      and re-verifying the arithmetic by hand (`5 + 3*2 = 11`).
+
+      **Explicit v1 scope cuts** (tracked as open roadmap items, not
+      silently missing): arrays (`DIM`), string functions, user-defined
+      `SUB`/`FUNCTION`, `^` exponentiation (no `OP_POW`/`OP_EXP` opcode
+      exists), `DATA`/`READ`/`RESTORE`, file I/O. Assigning a real value
+      to an integer-sigil variable is a compile error rather than an
+      implicit truncation, since v1 has no `ROUND`/`TRUNC`/`INT` builtin
+      to make that conversion explicit yet. `AND`/`OR` are bitwise (not
+      short-circuit logical) on plain integers - documented, not a bug -
+      see docs/BASIC.md's own note on this.
+
+      See `examples/BASIC/` (positive: a comprehensive smoke test
+      covering `LET`/arithmetic/`PRINT`/`IF`-`ELSE`/`FOR`-`NEXT`/`GOSUB`-
+      `RETURN`/string concatenation/`GOTO`-past-code, a negative-`STEP`+
+      `INPUT` program, and a comment-only-line `GOTO`-fallthrough program;
+      negative: undefined `GOTO` target, string/number type mismatch,
+      `NEXT` without `FOR`, non-ascending line numbers, non-constant
+      `STEP`, `FOR` without `NEXT`) and
+      [docs/BASIC.md](BASIC.md).
 
 ## Known issues (found via AddressSanitizer)
 
@@ -4387,7 +4500,7 @@ once they'd shown up on every single sweep since:
       `nesting_depth` has already been incremented), but the identical
       unguarded read either way if it ever were. Verified against the
       original ASan repro (any top-level `for` loop, e.g.
-      `examples/test/forin/test_forin_local.pas`) and a full
+      `examples/Pascal/forin/test_forin_local.pas`) and a full
       `examples/` sweep - clean.
 - [x] `OP_SHL`'s implementation (`vm.c`) computed `a << b` directly on a
       signed `int`; `b == 31` triggered signed left-shift overflow

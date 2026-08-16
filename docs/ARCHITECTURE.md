@@ -224,24 +224,38 @@ checklist exists to prevent:
   `pascalc.c` after the whole program is generated — `NODE_COMPOUND`
   itself just generates its body and continues the enclosing chain.
 
-## Why five binaries
+## Why six binaries
 
 ```
 pascalc  = src/pascalc/{pascalc,lexer,parser,type_checker,optimizer,codegen,ast_printer}.c + src/common/{bytecode,error}.c
 solvm    = src/solvm/{solvm,vm}.c                                                          + src/common/{bytecode,error}.c
 solas    = src/solas/solas.c                                                               + src/common/{bytecode,error}.c
 desole   = src/desole/desole.c                                                             + src/common/{bytecode,error}.c
+basicc   = src/basicc/{basicc,lexer,parser,type_checker,codegen,ast_printer}.c             + src/common/{bytecode,error}.c
 ```
 
 Source lives in one directory per binary (`src/pascalc/`, `src/solvm/`,
-`src/solas/`, `src/desole/`) plus a shared `src/common/`. The root
-Makefile's `FRONTEND_OBJS`/`VM_OBJS`/`COMMON_OBJS` split enforces the
-separation at the link level, not just by directory convention: `solvm`
-cannot accidentally end up linking any compiler-frontend code, and
-`pascalc` cannot end up linking the VM. `src/common/bytecode.c` (the
-`.bin` format + the shared `code[]`/`sym_table[]`/`string_pool[]` state)
-and `src/common/error.c` (the recoverable-error facility +
+`src/solas/`, `src/desole/`, `src/basicc/`) plus a shared `src/common/`.
+The root Makefile's `FRONTEND_OBJS`/`VM_OBJS`/`COMMON_OBJS`/
+`BASICC_FRONTEND_OBJS` split enforces the separation at the link level,
+not just by directory convention: `solvm` cannot accidentally end up
+linking any compiler-frontend code, `pascalc` cannot end up linking the
+VM, and `pascalc`/`basicc` never link together. `src/common/bytecode.c`
+(the `.bin` format + the shared `code[]`/`sym_table[]`/`string_pool[]`
+state) and `src/common/error.c` (the recoverable-error facility +
 `verbose_mode`) are the only things every binary shares.
+
+`basicc` (see [docs/BASIC.md](BASIC.md)) is the first front end besides
+`pascalc`, and deliberately does NOT extend `common.h`'s `TokenType`/
+`NodeType`/`ASTNode` with BASIC's own vocabulary — since `pascalc` and
+`basicc` are separate binaries that never link together, nothing is
+gained by sharing Pascal's much larger enums, and `common.h` stays
+untouched. Its own `BasicTokenType`/`BasicNodeType`/`BasicASTNode` live in
+`src/basicc/basic.h` instead. What IS shared, straight from `common.h`:
+`DataType`, `Symbol`/`sym_table[]`, `Opcode`/`Instruction`/`code[]`,
+`string_pool[]` — exactly the surface `save_bytecode()` needs, which is
+why `solvm`/`solas`/`desole` needed zero changes to run a BASIC-compiled
+`.bin` (confirmed: milestone 1 needed no new opcodes at all).
 
 ## Testing approach used throughout this project
 

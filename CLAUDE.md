@@ -10,21 +10,22 @@ for P-Code or any existing VM compatibility — the bytecode format and
 machine are designed from scratch, under project control, so that
 multiple front-end languages can eventually target it.
 
-The only compiler being worked on right now is `pascalc`, a Wirth-style
-Pascal compiler, developed in parallel with the assembler (`solas`) and
+The main compiler being worked on is `pascalc`, a Wirth-style Pascal
+compiler, developed in parallel with the assembler (`solas`) and
 disassembler (`desole`) for the VM's own bytecode. Current phase: get
 `pascalc` compatible with Wirth/standard Pascal, and expand `solvm` and
 `solas`/`desole` alongside it as new language features demand new
-bytecode capability.
+bytecode capability. A second front end, `basicc` (classic line-numbered
+BASIC — see [docs/BASIC.md](docs/BASIC.md)), has its first milestone
+shipped, targeting the same bytecode format and VM unmodified.
 
 ```
- source.pas ──(pascalc)──> program.bin ──(solvm)──> runs it
-                                ▲
-                 source.sasm ──(solas)──┘
-                                │
-                            (desole)
-                                ▼
-                          readable .sasm
+ source.pas  ──(pascalc)──┐
+ source.bas  ──(basicc)───┼──> program.bin ──(solvm)──> runs it
+ source.sasm ──(solas)────┘         │
+                                 (desole)
+                                     ▼
+                               readable .sasm
 ```
 
 ### Longer-term direction
@@ -35,17 +36,19 @@ these, but don't build for them speculatively either (see the "don't
 design for hypothetical future requirements" rule below — none of this
 is scoped work yet):
 
-- **Pascal** is the current and only active front end. After
+- **Pascal** is the main, most advanced front end. After
   Wirth-compatibility, the plan is to grow it toward object-oriented
   Pascal, then possibly add C-style `enum`/`union` concepts.
 - **The VM and assembler are meant to grow into general OOP support**
   (and other advanced features) so later languages can rely on the same
   bytecode primitives rather than each language inventing its own.
-- Planned future front ends, roughly in order of interest: a **BASIC**
-  compiler (not aiming for compatibility with any one dialect — pulls
-  features across BASIC's history, from early BASIC through Visual
-  Basic/VB.NET, for whatever's useful), and, further out and more
-  speculative, **Prolog**, **LISP**, and **Smalltalk**.
+- **BASIC** (`basicc`, classic line-numbered, not aiming for
+  compatibility with any one dialect — pulls features across BASIC's
+  history, from early BASIC through Visual Basic/VB.NET, for whatever's
+  useful) has its first milestone shipped — see
+  [docs/BASIC.md](docs/BASIC.md) and [docs/ROADMAP.md](docs/ROADMAP.md)
+  for what's still open. Further out and more speculative, roughly in
+  order of interest: **Logo**, **Prolog**, **LISP**, and **Smalltalk**.
 - Eventually, an original language of the author's own design, tentatively
   named **Phoenix**, drawing on ideas from the above, intended to have
   built-in GUI, lightweight database handling, networking, and
@@ -59,12 +62,12 @@ implement against.
 ## Build
 
 Source lives under `src/`, split into one directory per binary plus a
-shared `src/common/` (see "Why five binaries" below); a single
+shared `src/common/` (see "Why six binaries" below); a single
 non-recursive Makefile at the repo root builds all of them straight into
 `bin/`.
 
 ```sh
-make            # builds bin/pascalc, bin/solvm, bin/solas, bin/desole, bin/test_recovery
+make            # builds bin/pascalc, bin/solvm, bin/solas, bin/desole, bin/test_recovery, bin/basicc
 make pascalc    # build just one binary
 make clean      # remove binaries and object files
 ```
@@ -106,16 +109,21 @@ solvm.sh foo.bin      # solvm foo.bin
 
 ## Testing
 
-There is no formal test framework or test runner script. `examples/test/`
-holds one small `.pas` (or `.sasm`) file per feature/regression, named
+There is no formal test framework or test runner script. `examples/Pascal/`
+holds one small `.pas` file per `pascalc` feature/regression, named
 `test_<feature>_<variant>.pas`, grouped into one subdirectory per feature
-prefix (`examples/test/<feature>/test_<feature>_<variant>.pas` —
-e.g. `examples/test/ptr/test_ptr_basic.pas`, `examples/test/goto/
+prefix (`examples/Pascal/<feature>/test_<feature>_<variant>.pas` —
+e.g. `examples/Pascal/ptr/test_ptr_basic.pas`, `examples/Pascal/goto/
 test_goto_badscope.pas`); a new test for an existing feature goes in its
 existing subdirectory, a genuinely new feature gets a new one named after
-its prefix. Verify a change by compiling and running the relevant
-file(s) and hand-checking output. The approach used throughout this
-project, in order:
+its prefix. `examples/BASIC/` holds `basicc`'s own `.bas` regression
+tests the same way, flat for now (small enough not to need per-feature
+subdirectories yet — see [docs/BASIC.md](docs/BASIC.md)).
+Assembler/VM-opcode-level regression tests (hand-written `.sasm`, no
+Pascal or BASIC source involved) live in `examples/asm/` instead,
+grouped by feature prefix the same way as `examples/Pascal/`. Verify a
+change by compiling and running the relevant file(s) and hand-checking
+output. The approach used throughout this project, in order:
 
 1. **Positive case**: write/find a small `.pas` program exercising the
    feature, compile and run it, hand-verify the output (work it out, not
@@ -265,20 +273,26 @@ worth reading before touching this path):
    were added. Purely-syntactic features lowering to existing opcodes
    need no assembler/disassembler changes.
 
-### Why five binaries
+### Why six binaries
 
 ```
 pascalc  = src/pascalc/{pascalc,lexer,parser,type_checker,optimizer,codegen,ast_printer}.c + src/common/{bytecode,error}.c
 solvm    = src/solvm/{solvm,vm}.c                                                          + src/common/{bytecode,error}.c
 solas    = src/solas/solas.c                                                               + src/common/{bytecode,error}.c
 desole   = src/desole/desole.c                                                             + src/common/{bytecode,error}.c
+basicc   = src/basicc/{basicc,lexer,parser,type_checker,codegen,ast_printer}.c             + src/common/{bytecode,error}.c
 ```
 
 `src/common/bytecode.c` (the `.bin` format + shared `code[]`/
 `sym_table[]`/`string_pool[]` state) and `src/common/error.c`
 (recoverable-error facility + `verbose_mode`) are the only things every
 binary shares — hence the shared `src/common/` directory, separate from
-each binary's own subdirectory.
+each binary's own subdirectory. `basicc` deliberately does NOT extend
+`common.h`'s `TokenType`/`NodeType`/`ASTNode` with BASIC's own vocabulary
+— `pascalc` and `basicc` are separate binaries that never link together,
+so nothing is gained by sharing Pascal's much larger enums; BASIC's own
+`BasicTokenType`/`BasicNodeType`/`BasicASTNode` live in
+`src/basicc/basic.h` instead. See [docs/BASIC.md](docs/BASIC.md).
 
 ### SolVM memory model
 
@@ -307,7 +321,7 @@ opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
 
 ## Repo layout beyond `src/`
 
-- `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/`, `examples/test/` — `.pas`/`.sasm` sample and test programs, grouped by purpose (`test/` = regression tests, further split into one subdirectory per feature prefix since it's by far the largest — see [Testing](#testing) above; `doc/` = examples referenced from `docs/`; `tech/` = misc technical exercises; `audit/` = audit-driven test programs).
+- `examples/Pascal/`, `examples/BASIC/`, `examples/asm/`, `examples/audit/`, `examples/doc/`, `examples/tech/` — `.pas`/`.bas`/`.sasm` sample and test programs, grouped by purpose: `Pascal/` = `pascalc` regression tests, split into one subdirectory per feature prefix since it's by far the largest (see [Testing](#testing) above); `BASIC/` = `basicc` regression tests, flat for now (small enough not to need per-feature subdirectories yet); `asm/` = hand-written `solas`/`desole`/VM-opcode example AND regression-test `.sasm` programs (the latter grouped the same per-feature-prefix way as `Pascal/`); `doc/` = examples referenced from `docs/`; `tech/` = misc technical exercises; `audit/` = audit-driven test programs.
 - `notes/` — the author's own freeform design notes (naming ideas, musings); not authoritative — the actual plan lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 - `chats/` — saved transcripts from other AI assistants used during design.
-- `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `Makefile` → root, each `.c`/`.h` → its own `src/{common,pascalc,solvm,solas,desole}/` by filename, `*.sasm` → `examples/asm/`, `doc_*.pas` → `examples/doc/`, `test_*.pas` → `examples/test/`). Not part of the build.
+- `new/` — a staging inbox: `scripts/unpack.sh` unzips incoming work into `new/files/`, `scripts/mvnew.sh` distributes it into the right home (`README.md` → root, other `*.md` → `docs/`, `Makefile` → root, each `.c`/`.h` → its own `src/{common,pascalc,solvm,solas,desole,basicc}/` by filename, `doc_*.pas` → `examples/doc/`, `test_<feature>_<variant>.pas` → `examples/Pascal/<feature>/`, `test_<feature>_<variant>.sasm` → `examples/asm/<feature>/`, `test_<variant>.bas` → `examples/BASIC/`, any other `*.sasm` → `examples/asm/`). Not part of the build.

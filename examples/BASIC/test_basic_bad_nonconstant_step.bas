@@ -1,0 +1,2 @@
+10 FOR I = 1 TO 5 STEP X
+20 NEXT I

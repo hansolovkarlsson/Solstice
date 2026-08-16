@@ -4033,7 +4033,7 @@ end.
   everywhere else it's exactly as inaccessible as `private`. There's no
   distance limit: a member declared `protected` on a base class is
   still reachable from a grandchild, great-grandchild, and so on down
-  the hierarchy (see `examples/test/protected/test_protected_grandchild.pas`).
+  the hierarchy (see `examples/Pascal/protected/test_protected_grandchild.pas`).
 - **Per-class, not per-instance**: any method of `TFoo` can read/write
   *any* `TFoo` instance's private/protected members, not just `self`'s
   own (`if self.x = other.x then ...` is fine from inside a `TFoo`
@@ -4043,7 +4043,7 @@ end.
   private/protected method. A `protected` `Init`, in particular, is a
   common way to force construction only through some other, `public`
   factory method or a descendant's own constructor
-  (`examples/test/protected/test_protected_inherited_init.pas` calls an
+  (`examples/Pascal/protected/test_protected_inherited_init.pas` calls an
   ancestor's protected `Init` via `inherited`).
 - **Section ordering**: this compiler's class grammar parses all
   fields first, then all methods (not Pascal's free interleaving of

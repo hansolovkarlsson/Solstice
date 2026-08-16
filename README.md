@@ -8,7 +8,9 @@ compatibility.
 
 The active work right now is a Wirth-style **Pascal** compiler
 (`pascalc`), developed in parallel with a matching assembler (**solas**)
-and disassembler (**desole**) for SolVM's own bytecode. See
+and disassembler (**desole**) for SolVM's own bytecode. A second front
+end, a classic line-numbered **BASIC** compiler (`basicc`), has its first
+milestone shipped — see [docs/BASIC.md](docs/BASIC.md). See
 [Roadmap](#roadmap) below for where this is headed.
 
 ```
@@ -26,24 +28,27 @@ and disassembler (**desole**) for SolVM's own bytecode. See
 | Binary | Role |
 |---|---|
 | `pascalc` | Compiles a `.pas` source file to a `.bin` bytecode image |
+| `basicc`  | Compiles a `.bas` (classic BASIC) source file to a `.bin` bytecode image |
 | `solvm`   | Loads and runs a `.bin` bytecode image |
 | `solas`   | Assembles a readable `.sasm` text file directly to `.bin` |
 | `desole`  | Disassembles a `.bin` image back to readable `.sasm` |
 
 `solas` and `desole` exist for a reason beyond convenience: they let you
-inspect exactly what `pascalc`'s code generator produces, and hand-write or
-hand-modify bytecode without going through the compiler at all. Every one
+inspect exactly what a front end's code generator produces, and hand-write
+or hand-modify bytecode without going through a compiler at all. Every one
 of `pascalc`'s new code-generation patterns in this project was cross-checked
-by disassembling it and reading the result.
+by disassembling it and reading the result. `basicc` needed zero opcode or
+`.bin`-format changes for its first milestone — proof the bytecode layer
+really is language-agnostic, not just designed to be.
 
-All four tools share the same `.bin` file format (`bytecode.c`) and the
+All six tools share the same `.bin` file format (`bytecode.c`) and the
 same recoverable-error mechanism (`error.c`) — see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how that fits together.
 
 ## Quick start
 
 ```sh
-make                                   # builds all five binaries
+make                                   # builds all six binaries
 ./pascalc examples/hello.pas hello.bin
 ./solvm hello.bin
 ```
@@ -85,6 +90,7 @@ make clean      # remove binaries and object files
 ## Documentation
 
 - **[docs/LANGUAGE.md](docs/LANGUAGE.md)** — the Pascal dialect this compiler accepts: syntax, types, statements, operators, worked examples.
+- **[docs/BASIC.md](docs/BASIC.md)** — the classic line-numbered BASIC dialect `basicc` accepts (milestone 1).
 - **[docs/BYTECODE.md](docs/BYTECODE.md)** — SolVM's architecture, the full opcode reference, and the `.bin` file format.
 - **[docs/ASSEMBLER.md](docs/ASSEMBLER.md)** — `solas`/`desole` syntax reference and usage guide.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the compiler pipeline and project are put together internally; start here if you're extending the codebase.
@@ -116,6 +122,16 @@ src/solvm/             VM (solvm binary)
 
 src/solas/solas.c     Assembler (source + entry point, single file)
 src/desole/desole.c   Disassembler (source + entry point, single file)
+
+src/basicc/           BASIC front end (basicc binary)
+  basic.h              BASIC's own token/AST types - deliberately separate
+                       from common.h's (see docs/ARCHITECTURE.md)
+  lexer.c              Source text -> tokens (line-number/sigil-aware)
+  parser.c             Tokens -> AST (recursive descent)
+  type_checker.c       Static type checking over the AST
+  codegen.c            AST -> bytecode (no optimizer pass yet)
+  ast_printer.c        AST -> human-readable tree (used by -v)
+  basicc.c             Compiler binary entry point
 ```
 
 ## Roadmap
@@ -131,9 +147,10 @@ bytecode capability. From there, the plan is:
 - Grow SolVM and the assembler into general object-oriented support (and
   other advanced features), so later languages share the same bytecode
   primitives instead of each reinventing them.
-- Add further front ends over time — a **BASIC** compiler next (not
+- Add further front ends over time — a **BASIC** compiler (not
   compatible with any one dialect, but drawing features across BASIC's
-  history, from early BASIC through Visual Basic/VB.NET), and further
+  history, from early BASIC through Visual Basic/VB.NET) has its first
+  milestone shipped (see [docs/BASIC.md](docs/BASIC.md)), and further
   out, more speculatively, **Prolog**, **LISP**, and **Smalltalk**.
 - Eventually, an original language of its own design, tentatively named
   **Phoenix**, drawing on ideas from the above, with built-in GUI,
