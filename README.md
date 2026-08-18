@@ -13,6 +13,11 @@ end, a classic line-numbered **BASIC** compiler (`basicc`), has its first
 milestone shipped — see [docs/BASIC.md](docs/BASIC.md). See
 [Roadmap](#roadmap) below for where this is headed.
 
+📖 **[Browse the docs site](https://hansolovkarlsson.github.io/Solstice/)**
+— including a from-scratch [Pascal
+tutorial](https://hansolovkarlsson.github.io/Solstice/tutorial/), if
+you're new to this dialect.
+
 ```
  source.pas ──(pascalc)──> program.bin ──(solvm)──> runs it
                                 ▲
@@ -89,6 +94,10 @@ make clean      # remove binaries and object files
 
 ## Documentation
 
+All of the below is also published as a browsable site:
+**[hansolovkarlsson.github.io/Solstice](https://hansolovkarlsson.github.io/Solstice/)**.
+
+- **[Pascal tutorial](https://hansolovkarlsson.github.io/Solstice/tutorial/)** — a from-scratch, chapter-by-chapter walkthrough of the core language; every example is actually compiled and run, not just described.
 - **[docs/LANGUAGE.md](docs/LANGUAGE.md)** — the Pascal dialect this compiler accepts: syntax, types, statements, operators, worked examples.
 - **[docs/BASIC.md](docs/BASIC.md)** — the classic line-numbered BASIC dialect `basicc` accepts (milestone 1).
 - **[docs/BYTECODE.md](docs/BYTECODE.md)** — SolVM's architecture, the full opcode reference, and the `.bin` file format.
