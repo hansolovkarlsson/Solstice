@@ -85,7 +85,7 @@ see below) does the same build.
 ### Running a compiled program
 
 ```sh
-pascalc examples/hello.pas hello.bin   # bin/ is on PATH once config.sh is sourced
+pascalc examples/tech/hello.pas hello.bin   # bin/ is on PATH once config.sh is sourced
 solvm hello.bin
 ```
 
@@ -311,7 +311,17 @@ opcode reference and `.bin` file format: [docs/BYTECODE.md](docs/BYTECODE.md).
 
 ## Documentation map
 
+`docs/` also doubles as a published GitHub Pages site (Jekyll,
+`remote_theme: just-the-docs`, `docs/_config.yml`) — every page needs a
+YAML front matter block (`title`, `nav_order`, optionally `parent`) at
+the top for the site's sidebar nav; see any existing `docs/*.md` file
+for the pattern. Not yet pushed/enabled live — see docs/CHANGELOG.md's
+docs-site entry.
+
+- [docs/index.md](docs/index.md) — the site's own homepage; not part of the CLI/compiler docs, just the published site's landing page.
+- [docs/tutorial/](docs/tutorial/) — a from-scratch, chapter-by-chapter Pascal tutorial (core language first, OOP Pascal as a later Part 2); every example is compiled and run, not just written. Chapters 1–2 done, 3–10 stubbed — see [docs/ROADMAP.md](docs/ROADMAP.md#documentation) for what's left.
 - [docs/LANGUAGE.md](docs/LANGUAGE.md) — the accepted Pascal dialect: syntax, types, statements, operators, worked examples per feature.
+- [docs/BASIC.md](docs/BASIC.md) — the classic line-numbered BASIC dialect `basicc` accepts (milestone 1).
 - [docs/BYTECODE.md](docs/BYTECODE.md) — SolVM architecture, full opcode reference, `.bin` file format.
 - [docs/ASSEMBLER.md](docs/ASSEMBLER.md) — `solas`/`desole` `.sasm` syntax and usage.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — internals and extension checklist; start here before structural changes.

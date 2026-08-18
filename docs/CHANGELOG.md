@@ -1,3 +1,9 @@
+---
+title: Changelog
+parent: Project
+nav_order: 3
+---
+
 # Changelog
 
 Shipped features and fixed bugs, in the order they landed, with the
@@ -4468,6 +4474,76 @@ open) stays there.
       `NEXT` without `FOR`, non-ascending line numbers, non-constant
       `STEP`, `FOR` without `NEXT`) and
       [docs/BASIC.md](BASIC.md).
+
+## Documentation
+
+- [x] **Docs published as a GitHub Pages site, plus a from-scratch Pascal
+      tutorial** — `docs/` now doubles as the source for a Jekyll site
+      (`docs/_config.yml`, `remote_theme: just-the-docs/just-the-docs`),
+      using GitHub Pages' zero-config "deploy from branch" mode: no
+      build step or GitHub Actions workflow to maintain, just a
+      `remote_theme` line (on GitHub Pages' allowed-themes list) plus
+      YAML front matter on every page.
+
+      **Found and fixed a real, pre-existing dead file**: `docs/README.md`
+      turned out to be a frozen, much older snapshot of the root
+      `README.md` - stale enough to predate 2D arrays even being
+      "working" in its own text, never referenced from `CLAUDE.md`'s
+      documentation map or linked from anywhere. Removed outright rather
+      than reconciled, since Jekyll's `docs/`-folder mode needs
+      `index.md` as the site homepage anyway - a genuinely different role
+      (a folder-browsing landing page vs. a folder-browsing README) than
+      trying to keep two similar-but-different files in sync would have
+      served.
+
+      **`docs/LANGUAGE.md` deliberately stays ONE page**, not split into
+      per-chapter files like the new tutorial - it's cross-referenced by
+      anchor (`LANGUAGE.md#procedures` etc.) from this changelog and
+      elsewhere throughout the project; splitting it would break every
+      one of those links for no real benefit, and a single long page
+      works fine under just-the-docs' own search + in-page TOC.
+      `docs/ARCHITECTURE.md`/`ROADMAP.md`/`CHANGELOG.md` are grouped
+      under a new `docs/project.md` parent page ("Project") in the nav,
+      lower-priority than the tutorial/reference since they're aimed at
+      contributors extending Solstice itself, not at someone learning or
+      using the language.
+
+      **Reference audit confirmed currency, not a rewrite** - spot-checked
+      `docs/LANGUAGE.md` against the most recently shipped features (the
+      dynamic-array-follow-ups round, `protected`, the `basicc` milestone)
+      and found every one already documented in full, including the
+      `SetLength`-on-const-field and DCE-range-check bugs found and fixed
+      along the way - confirms this project's "keep `docs/LANGUAGE.md`
+      current with every shipped feature" discipline actually held over
+      time, rather than assuming it did.
+
+      **Tutorial scoped to core Pascal first** (Phase 1 material -
+      variables/types through records), mirroring this project's own
+      Phase 1/Phase 2 split - OOP Pascal becomes a Part 2 once Part 1 is
+      complete. `docs/tutorial/01-getting-started.md` and
+      `02-variables-and-types.md` are written and fully verified (every
+      example actually compiled with `pascalc` and run with `solvm`,
+      output hand-checked - including the exact compile-error text for
+      assigning a `real` value to an `integer` variable, and for
+      assigning to a `const`); chapters 3-10 are stub pages (correct nav
+      + front matter, pointing at the relevant `docs/LANGUAGE.md` section
+      in the meantime) tracked as an open checklist in
+      [docs/ROADMAP.md](ROADMAP.md#documentation) rather than left as a
+      silent gap.
+
+      **Also fixed in passing**: root `README.md` and `CLAUDE.md` both
+      told a reader to compile `examples/hello.pas` - a file that hasn't
+      existed at that path since before this changelog's own history
+      (the real file is `examples/tech/hello.pas`, confirmed by actually
+      running the corrected command). Pre-existing, unrelated to the
+      `examples/test` -> `examples/Pascal` rename earlier - caught only
+      because the new `docs/index.md` landing page needed the exact same
+      command to actually work.
+
+      **Not pushed or made live** - GitHub Pages isn't enabled in repo
+      settings yet, and nothing was pushed to the remote; both are
+      visible, external-facing actions saved for an explicit, separate
+      confirmation.
 
 ## Known issues (found via AddressSanitizer)
 

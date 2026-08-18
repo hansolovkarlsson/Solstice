@@ -1,3 +1,8 @@
+---
+title: Assembler Reference
+nav_order: 6
+---
+
 # `solas` / `desole`: Assembler & Disassembler Guide
 
 `solas` assembles a readable text format directly to SolVM's `.bin`

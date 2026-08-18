@@ -1,3 +1,8 @@
+---
+title: Pascal Language Reference
+nav_order: 3
+---
+
 # Language Reference
 
 The Pascal dialect accepted by `pascalc`. It follows Wirth-style Pascal

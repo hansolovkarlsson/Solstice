@@ -1,3 +1,9 @@
+---
+title: Architecture
+parent: Project
+nav_order: 1
+---
+
 # Architecture
 
 How this codebase is put together, and — more usefully — what to touch

@@ -49,7 +49,7 @@ same recoverable-error mechanism (`error.c`) — see
 
 ```sh
 make                                   # builds all six binaries
-./pascalc examples/hello.pas hello.bin
+./pascalc examples/tech/hello.pas hello.bin
 ./solvm hello.bin
 ```
 

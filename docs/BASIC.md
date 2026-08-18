@@ -1,3 +1,8 @@
+---
+title: BASIC Reference
+nav_order: 4
+---
+
 # BASIC (`basicc`) — milestone 1
 
 Classic line-numbered BASIC, compiled by `basicc` to the same `.bin`

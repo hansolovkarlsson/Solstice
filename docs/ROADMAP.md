@@ -1,3 +1,9 @@
+---
+title: Roadmap
+parent: Project
+nav_order: 2
+---
+
 # Roadmap
 
 Where Solstice is headed, and — more usefully — what's actually left to
@@ -473,6 +479,29 @@ dialect, so tracked here rather than against Phase 1/2:
 
 - [ ] Tuples
 - [ ] Lambda expressions (anonymous functions with closure capture)
+
+## Documentation
+
+The docs site (published from `docs/` via GitHub Pages, see
+[Home](../) and [docs/index.md](index.md)) now includes a from-scratch
+[Pascal Tutorial](tutorial/), covering the core language chapter by
+chapter. Chapters 1–2 (Getting Started, Variables and Types) are
+written and verified — every example actually compiled and run.
+Still open:
+
+- [ ] Tutorial chapter 3: Expressions and Operators
+- [ ] Tutorial chapter 4: Input and Output
+- [ ] Tutorial chapter 5: Control Flow
+- [ ] Tutorial chapter 6: Procedures and Functions
+- [ ] Tutorial chapter 7: Arrays
+- [ ] Tutorial chapter 8: Strings
+- [ ] Tutorial chapter 9: Records
+- [ ] Tutorial chapter 10: What's Next (pointer to OOP Pascal + the full reference)
+- [ ] A Part 2 tutorial covering OOP Pascal (classes, inheritance,
+      pointers, exceptions, units), once Part 1 above is complete
+- [ ] A unified "Manual" combining reference + tutorial + tooling docs
+      into one cohesive book, once both exist in full — deliberately not
+      started yet (see docs/CHANGELOG.md's docs-site entry for why)
 
 ## Ideas / not yet scheduled
 

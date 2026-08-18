@@ -1,3 +1,8 @@
+---
+title: Bytecode / VM Reference
+nav_order: 5
+---
+
 # SolVM: Bytecode & Virtual Machine Reference
 
 SolVM is a stack-based virtual machine. Every instruction is an
